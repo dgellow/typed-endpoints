@@ -15,7 +15,7 @@ deno add jsr:@dgellow/typed-endpoints
 
 ```typescript
 // routes/api/users/[id].ts
-import { createApiHandlers } from "typed-endpoints/fresh";
+import { createApiHandlers } from "@dgellow/typed-endpoints/fresh";
 import { z } from "zod";
 
 export const handler = createApiHandlers({
@@ -57,7 +57,7 @@ Add the Vite plugin to generate an OpenAPI spec at build time:
 
 ```typescript
 // vite.config.ts
-import { openApiPlugin } from "typed-endpoints";
+import { openApiPlugin } from "@dgellow/typed-endpoints";
 
 export default defineConfig({
   plugins: [

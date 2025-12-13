@@ -1,6 +1,13 @@
 import type { z } from "zod";
 
-export type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
+export type HttpMethod =
+  | "GET"
+  | "POST"
+  | "PUT"
+  | "DELETE"
+  | "PATCH"
+  | "HEAD"
+  | "OPTIONS";
 
 export interface ValidatedRequest<
   TBody = unknown,

@@ -11,6 +11,7 @@ export type {
 
 // Validation
 export {
+  parseSearchParams,
   type RawRequest,
   validateRequest,
   type ValidationError,

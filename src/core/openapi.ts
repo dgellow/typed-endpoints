@@ -3,12 +3,21 @@ import {
   OpenApiGeneratorV31,
   OpenAPIRegistry,
 } from "@asteasolutions/zod-to-openapi";
+import { toFileUrl } from "@std/path";
 import { z } from "zod";
 import type { ApiDef, ApiMethodDef, HttpMethod } from "./types.ts";
 
 extendZodWithOpenApi(z);
 
-const HTTP_METHODS: HttpMethod[] = ["GET", "POST", "PUT", "DELETE", "PATCH"];
+const HTTP_METHODS: HttpMethod[] = [
+  "GET",
+  "POST",
+  "PUT",
+  "DELETE",
+  "PATCH",
+  "HEAD",
+  "OPTIONS",
+];
 
 export interface OpenApiInfo {
   title?: string;
@@ -35,15 +44,22 @@ export interface RouteModule {
 /**
  * Convert file-based route path to OpenAPI path format.
  * e.g. routes/api/users/[id].ts -> /api/users/{id}
+ * Handles Windows backslashes and route groups like (auth).
  */
 export function filePathToOpenApiPath(filePath: string): string {
-  let path = filePath
+  // Normalize Windows backslashes to forward slashes
+  let path = filePath.replace(/\\/g, "/");
+
+  path = path
     .replace(/^routes\//, "/")
     .replace(/\.(ts|tsx)$/, "");
 
   if (path.endsWith("/index")) {
     path = path.slice(0, -6) || "/";
   }
+
+  // Strip route groups like (auth), (admin), etc.
+  path = path.replace(/\/\([^)]+\)/g, "");
 
   // Convert [param] to {param} and [...param] to {param}
   path = path.replace(/\[\.\.\.(\w+)\]/g, "{$1}");
@@ -78,10 +94,14 @@ export async function generateOpenApiSpec(
     await collectRouteFiles(routesDir, entry, routeFiles);
   }
 
+  // Cache-bust timestamp for fresh imports during build
+  const cacheBuster = `?t=${Date.now()}`;
+
   for (const filePath of routeFiles) {
     try {
       const absolutePath = await Deno.realPath(filePath);
-      const mod = (await import(`file://${absolutePath}`)) as RouteModule;
+      const fileUrl = toFileUrl(absolutePath).href + cacheBuster;
+      const mod = (await import(fileUrl)) as RouteModule;
 
       const apiDef = mod.handler?.__apiDef;
       if (!apiDef) continue;
@@ -112,23 +132,53 @@ export async function generateOpenApiSpec(
   });
 }
 
+/** Check if a file should be skipped (tests, private, dotfiles). */
+function shouldSkipFile(name: string): boolean {
+  return (
+    name.startsWith(".") ||
+    name.startsWith("_") ||
+    name.includes("_test.") ||
+    name.includes(".test.") ||
+    name.endsWith("_test.ts") ||
+    name.endsWith("_test.tsx")
+  );
+}
+
 async function collectRouteFiles(
   baseDir: string,
   entry: Deno.DirEntry,
   files: string[],
 ): Promise<void> {
+  // Skip hidden files and directories
+  if (entry.name.startsWith(".")) return;
+
   const fullPath = `${baseDir}/${entry.name}`;
+
+  // Handle symlinks safely
+  if (entry.isSymlink) {
+    try {
+      const stat = await Deno.stat(fullPath);
+      if (stat.isDirectory) {
+        for await (const subEntry of Deno.readDir(fullPath)) {
+          await collectRouteFiles(fullPath, subEntry, files);
+        }
+      } else if (stat.isFile && /\.(ts|tsx)$/.test(entry.name)) {
+        if (!shouldSkipFile(entry.name)) {
+          files.push(fullPath);
+        }
+      }
+    } catch {
+      // Broken symlink, skip silently
+    }
+    return;
+  }
 
   if (entry.isDirectory) {
     for await (const subEntry of Deno.readDir(fullPath)) {
       await collectRouteFiles(fullPath, subEntry, files);
     }
   } else if (entry.isFile && /\.(ts|tsx)$/.test(entry.name)) {
-    if (
-      entry.name.includes("_test.") ||
-      entry.name.includes(".test.") ||
-      entry.name.startsWith("_")
-    ) {
+    if (shouldSkipFile(entry.name)) {
       return;
     }
     files.push(fullPath);

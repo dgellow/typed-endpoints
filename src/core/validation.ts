@@ -23,6 +23,21 @@ export interface RawRequest {
 }
 
 /**
+ * Parse URLSearchParams preserving array values for duplicate keys.
+ * Single values remain strings, duplicate keys become arrays.
+ */
+export function parseSearchParams(
+  searchParams: URLSearchParams,
+): Record<string, string | string[]> {
+  const result: Record<string, string | string[]> = {};
+  for (const key of new Set(searchParams.keys())) {
+    const values = searchParams.getAll(key);
+    result[key] = values.length === 1 ? values[0] : values;
+  }
+  return result;
+}
+
+/**
  * Validates a request against an API method definition.
  * Framework-agnostic - works with any request that provides json(), url, and params.
  */
@@ -68,8 +83,13 @@ export async function validateRequest<
   // Validate query
   let query: unknown = undefined;
   if (def.query) {
-    const url = new URL(req.url);
-    const rawQuery = Object.fromEntries(url.searchParams);
+    let url: URL;
+    try {
+      url = new URL(req.url);
+    } catch {
+      return { success: false, error: "Invalid request URL", type: "query" };
+    }
+    const rawQuery = parseSearchParams(url.searchParams);
     const result = def.query.safeParse(rawQuery);
     if (!result.success) {
       const errors = result.error.issues

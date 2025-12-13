@@ -24,11 +24,7 @@ export function openApiPlugin(options: OpenApiPluginOptions = {}): Plugin {
         // Ensure output directory exists
         const dir = outputPath.split("/").slice(0, -1).join("/");
         if (dir) {
-          try {
-            await Deno.mkdir(dir, { recursive: true });
-          } catch {
-            // Directory may already exist
-          }
+          await Deno.mkdir(dir, { recursive: true });
         }
 
         await Deno.writeTextFile(
