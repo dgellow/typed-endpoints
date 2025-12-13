@@ -20,7 +20,7 @@ jobs:
           cache: true
 
       - name: Bootstrap
-        run: ./scrips/bootstrap
+        run: ./scripts/bootstrap
 
       - name: Run linters
         run: ./scripts/lint
