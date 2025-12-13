@@ -1,7 +1,7 @@
 # typed-endpoints
 
-Define API endpoints once with Zod schemas. Get runtime validation and OpenAPI
-spec generation for free.
+Define API endpoints once with Zod schemas. Get runtime validation, OpenAPI
+specs, and TypeScript types for free.
 
 ## Installation
 
@@ -73,6 +73,36 @@ export default defineConfig({
 By default only endpoints with `public: true` are included in the generated
 spec.
 
+### TypeScript Type Generation
+
+Generate TypeScript types from your route schemas:
+
+```bash
+deno run -A jsr:@dgellow/typed-endpoints/cli -r routes/api -o src/api-types.ts
+```
+
+Or programmatically:
+
+```typescript
+import { generateTypes } from "@dgellow/typed-endpoints";
+
+await generateTypes({
+  routesDir: "routes/api",
+  output: "src/api-types.ts",
+});
+```
+
+This generates types like:
+
+```typescript
+// GET /api/users
+export type UsersGetResponse = { id: string; name: string; email: string }[];
+
+// POST /api/users
+export type UsersPostRequest = { name: string; email: string };
+export type UsersPostResponse = { id: string; name: string; email: string };
+```
+
 ## API
 
 ### `createApiHandlers(def)`
@@ -103,19 +133,41 @@ Options:
 - `info` - OpenAPI info object (title, version, description)
 - `servers` - OpenAPI servers array
 
-## Architecture
+### `generateTypes(options)`
 
-The package uses an adapter pattern for framework support:
+Generates TypeScript types from route Zod schemas.
+
+Options:
+
+- `routesDir` - Directory to scan (default: "routes/api")
+- `output` - Output file path (if provided, writes to file)
+
+Returns the generated types as a string.
+
+### CLI
+
+```
+typed-endpoints - Generate TypeScript types from API route Zod schemas
+
+Options:
+  -r, --routes <dir>    Routes directory (default: routes/api)
+  -o, --output <file>   Output file path (required)
+  -h, --help            Show help
+```
+
+## Architecture
 
 ```
 src/
 ├── core/
 │   ├── types.ts       # Shared types
-│   ├── validation.ts  # Framework-agnostic validation
-│   └── openapi.ts     # Spec generation
+│   ├── validation.ts  # Request validation
+│   └── openapi.ts     # OpenAPI spec generation
+├── tsgen/             # TypeScript type generation
 ├── adapters/
 │   └── fresh.ts       # Fresh adapter
-└── vite-plugin.ts     # Build-time generation
+├── vite-plugin.ts     # Build-time OpenAPI generation
+└── cli.ts             # CLI for type generation
 ```
 
 ## License

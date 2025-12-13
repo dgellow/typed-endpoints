@@ -2,4 +2,5 @@
 
 set -e
 
-deno test
+# --allow-read needed for generate_test.ts fixtures
+deno test --allow-read
