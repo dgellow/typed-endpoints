@@ -1,0 +1,17 @@
+{
+  "name": "typed-endpoints",
+  "version": "0.1.0-alpha.0",
+  "exports": "./src/mod.ts",
+  "tasks": {
+    "check": "deno check",
+    "test": "deno test"
+  },
+  "license": "MIT",
+  "imports": {
+    "@asteasolutions/zod-to-openapi": "npm:@asteasolutions/zod-to-openapi@^8.2.0",
+    "@fresh/core": "jsr:@fresh/core@^2.2.0",
+    "@std/assert": "jsr:@std/assert@1",
+    "vite": "npm:vite@^7.2.7",
+    "zod": "npm:zod@^4.1.13"
+  }
+}

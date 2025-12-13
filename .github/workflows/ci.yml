@@ -1,0 +1,47 @@
+name: CI
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.5.x
+          cache: true
+
+      - name: Bootstrap
+        run: ./scrips/bootstrap
+
+      - name: Run linters
+        run: ./scripts/lint
+
+      - name: Check lockfile is up to date
+        run: |
+          deno install
+          git diff --exit-code deno.lock || (echo "::error::deno.lock is out of date. Run 'deno install' and commit the changes." && exit 1)
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.5.x
+          cache: true
+
+      - name: Bootstrap
+        run: ./scripts/bootstrap
+
+      - name: Run tests
+        run: ./scripts/test

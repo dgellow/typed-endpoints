@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+set -e
+
+deno fmt --check
+deno lint
+deno check
