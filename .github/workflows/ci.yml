@@ -16,19 +16,14 @@ jobs:
 
       - uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.5.x
+          deno-version: v2.6.x
           cache: true
 
       - name: Bootstrap
-        run: ./scripts/bootstrap
+        run: deno install --frozen
 
       - name: Run linters
         run: ./scripts/lint
-
-      - name: Check lockfile is up to date
-        run: |
-          deno install
-          git diff --exit-code deno.lock || (echo "::error::deno.lock is out of date. Run 'deno install' and commit the changes." && exit 1)
 
   test:
     runs-on: ubuntu-latest
@@ -37,11 +32,11 @@ jobs:
 
       - uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.5.x
+          deno-version: v2.6.x
           cache: true
 
       - name: Bootstrap
-        run: ./scripts/bootstrap
+        run: deno install --frozen
 
       - name: Run tests
         run: ./scripts/test
