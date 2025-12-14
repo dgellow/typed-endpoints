@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0-alpha.4
+
+### Features
+
+- support multiple route directories via -r flag
+- support multiple route directories via -r flag
+
+### Chores
+
+- fixes
+- remove debug console.log from type test
+
 ## 0.1.0-alpha.3
 
 ### Bug Fixes
