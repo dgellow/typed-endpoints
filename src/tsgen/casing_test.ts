@@ -14,7 +14,10 @@ Deno.test("toPascalCase converts path segments", () => {
 });
 
 Deno.test("toPascalCase handles mixed separators", () => {
-  assertEquals(toPascalCase("user-profile/settings_page"), "UserProfileSettingsPage");
+  assertEquals(
+    toPascalCase("user-profile/settings_page"),
+    "UserProfileSettingsPage",
+  );
 });
 
 Deno.test("toPascalCase handles single word", () => {

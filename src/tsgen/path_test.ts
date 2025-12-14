@@ -59,7 +59,10 @@ Deno.test("pathToTypeName strips /api/ prefix", () => {
 });
 
 Deno.test("pathToTypeName strips /api/internal/ prefix", () => {
-  assertEquals(pathToTypeName("/api/internal/store-notification"), "StoreNotification");
+  assertEquals(
+    pathToTypeName("/api/internal/store-notification"),
+    "StoreNotification",
+  );
 });
 
 Deno.test("pathToTypeName converts [param] to ByParam", () => {
@@ -67,7 +70,10 @@ Deno.test("pathToTypeName converts [param] to ByParam", () => {
 });
 
 Deno.test("pathToTypeName handles nested params", () => {
-  assertEquals(pathToTypeName("/api/users/[userId]/posts/[postId]"), "UsersByuserIdPostsBypostId");
+  assertEquals(
+    pathToTypeName("/api/users/[userId]/posts/[postId]"),
+    "UsersByuserIdPostsBypostId",
+  );
 });
 
 Deno.test("pathToTypeName handles kebab-case paths", () => {

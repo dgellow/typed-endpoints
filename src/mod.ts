@@ -30,10 +30,7 @@ export {
 } from "./core/openapi.ts";
 
 // TypeScript generation
-export {
-  generateTypes,
-  type TypeGenOptions,
-} from "./tsgen/mod.ts";
+export { generateTypes, type TypeGenOptions } from "./tsgen/mod.ts";
 
 // Vite plugin
 export { openApiPlugin, type OpenApiPluginOptions } from "./vite-plugin.ts";
