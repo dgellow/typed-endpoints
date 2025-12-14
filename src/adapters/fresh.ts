@@ -33,21 +33,37 @@ export interface FreshApiMethodDef<
   ) => Response | Promise<Response>;
 }
 
-export type FreshApiDef<TState> = {
-  [M in HttpMethod]?: FreshApiMethodDef<
-    TState,
-    z.ZodType | undefined,
-    z.ZodType | undefined,
-    z.ZodType | undefined
-  >;
-};
+/**
+ * Helper to define a single API method with full type inference.
+ * Use this to get proper typing for the handler's validated parameter.
+ */
+export function defineMethod<
+  TState,
+  TBodySchema extends z.ZodType | undefined = undefined,
+  TQuerySchema extends z.ZodType | undefined = undefined,
+  TParamsSchema extends z.ZodType | undefined = undefined,
+>(
+  def: FreshApiMethodDef<TState, TBodySchema, TQuerySchema, TParamsSchema>,
+): FreshApiMethodDef<TState, TBodySchema, TQuerySchema, TParamsSchema> {
+  return def;
+}
 
 /**
  * Create Fresh route handlers with automatic validation.
  * Returns handlers compatible with Fresh's file-based routing.
+ *
+ * For full type inference in handlers, wrap each method with `defineMethod()`:
+ * ```ts
+ * createApiHandlers({
+ *   GET: defineMethod({
+ *     params: z.object({ id: z.string() }),
+ *     handler: (ctx, { params }) => { ... } // params is typed!
+ *   })
+ * })
+ * ```
  */
-export function createApiHandlers<TState, T extends FreshApiDef<TState>>(
-  apiDef: T,
+export function createApiHandlers<TState, TDef extends Record<string, unknown>>(
+  apiDef: TDef,
 ): Record<string, (ctx: Context<TState>) => Promise<Response>> & {
   __apiDef: ApiDef;
 } {
@@ -56,8 +72,11 @@ export function createApiHandlers<TState, T extends FreshApiDef<TState>>(
     (ctx: Context<TState>) => Promise<Response>
   > = {};
 
+  type MethodDef = FreshApiMethodDef<TState, z.ZodType, z.ZodType, z.ZodType>;
+
   for (const [method, def] of Object.entries(apiDef)) {
     if (!def) continue;
+    const methodDef = def as MethodDef;
 
     handlers[method] = async (ctx: Context<TState>) => {
       const result = await validateRequest(
@@ -66,7 +85,7 @@ export function createApiHandlers<TState, T extends FreshApiDef<TState>>(
           url: ctx.req.url,
           params: ctx.params as Record<string, string>,
         },
-        def,
+        methodDef,
         method,
       );
 
@@ -74,7 +93,7 @@ export function createApiHandlers<TState, T extends FreshApiDef<TState>>(
         return jsonError(result.error, 400);
       }
 
-      return await def.handler(ctx, result.data);
+      return await methodDef.handler(ctx, result.data);
     };
   }
 
@@ -82,7 +101,8 @@ export function createApiHandlers<TState, T extends FreshApiDef<TState>>(
   const apiDefWithoutHandlers: ApiDef = {};
   for (const [method, def] of Object.entries(apiDef)) {
     if (!def) continue;
-    const { handler: _, ...rest } = def;
+    const methodDef = def as MethodDef;
+    const { handler: _, ...rest } = methodDef;
     apiDefWithoutHandlers[method as HttpMethod] = rest;
   }
 

@@ -15,11 +15,11 @@ deno add jsr:@dgellow/typed-endpoints
 
 ```typescript
 // routes/api/users/[id].ts
-import { createApiHandlers } from "@dgellow/typed-endpoints/fresh";
+import { createApiHandlers, defineMethod } from "@dgellow/typed-endpoints/fresh";
 import { z } from "zod";
 
 export const handler = createApiHandlers({
-  GET: {
+  GET: defineMethod({
     summary: "Get user by ID",
     params: z.object({ id: z.string() }),
     response: z.object({
@@ -32,9 +32,9 @@ export const handler = createApiHandlers({
       const user = await getUser(params.id);
       return Response.json(user);
     },
-  },
+  }),
 
-  PUT: {
+  PUT: defineMethod({
     summary: "Update user",
     params: z.object({ id: z.string() }),
     body: z.object({
@@ -47,7 +47,7 @@ export const handler = createApiHandlers({
       await updateUser(params.id, body);
       return Response.json({ success: true });
     },
-  },
+  }),
 });
 ```
 
