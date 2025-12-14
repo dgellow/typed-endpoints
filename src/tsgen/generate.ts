@@ -237,11 +237,13 @@ export async function generateTypes(
 
   // Import all route files (in parallel when using config for better perf)
   const importResults = await Promise.all(
-    routeFiles.sort().map((filePath) => getApiDef(filePath, config, cacheBuster)
-      .catch((error) => {
-        console.error(`Failed to process ${filePath}:`, error);
-        return { filePath, apiDef: undefined };
-      })),
+    routeFiles.sort().map((filePath) =>
+      getApiDef(filePath, config, cacheBuster)
+        .catch((error) => {
+          console.error(`Failed to process ${filePath}:`, error);
+          return { filePath, apiDef: undefined };
+        })
+    ),
   );
 
   for (const { filePath, apiDef } of importResults) {
@@ -279,13 +281,17 @@ export async function generateTypes(
       if (def.bodyType) {
         endpoint.request = def.bodyType;
       } else if (def.body) {
-        endpoint.request = zodToTypeString(def.body as Parameters<typeof zodToTypeString>[0]);
+        endpoint.request = zodToTypeString(
+          def.body as Parameters<typeof zodToTypeString>[0],
+        );
       }
 
       if (def.responseType) {
         endpoint.response = def.responseType;
       } else if (def.response) {
-        endpoint.response = zodToTypeString(def.response as Parameters<typeof zodToTypeString>[0]);
+        endpoint.response = zodToTypeString(
+          def.response as Parameters<typeof zodToTypeString>[0],
+        );
       }
 
       endpoints.push(endpoint);
