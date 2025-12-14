@@ -152,40 +152,42 @@ async function importWithConfig(
   filePath: string,
   configPath: string,
 ): Promise<ApiDef | undefined> {
-  const tempHelperPath = await Deno.makeTempFile({ suffix: ".ts" });
-  await Deno.writeTextFile(tempHelperPath, IMPORT_HELPER_SCRIPT);
+  const absolutePath = await Deno.realPath(filePath);
+  const fileUrl = toFileUrl(absolutePath).href;
+
+  const cmd = new Deno.Command("deno", {
+    args: [
+      "eval",
+      "--config",
+      configPath,
+      IMPORT_HELPER_SCRIPT,
+      fileUrl, // Pass target file URL as an argument to the script
+    ],
+    stdout: "piped",
+    stderr: "piped",
+  });
+
+  const { code, stdout, stderr } = await cmd.output();
+
+  if (code !== 0) {
+    const errorText = new TextDecoder().decode(stderr);
+    throw new Error(`Failed to import ${filePath} via eval: ${errorText}`);
+  }
+
+  const output = new TextDecoder().decode(stdout).trim();
+  if (output === "null") {
+    return undefined;
+  }
 
   try {
-    const absolutePath = await Deno.realPath(filePath);
-    const fileUrl = toFileUrl(absolutePath).href;
-
-    const cmd = new Deno.Command("deno", {
-      args: [
-        "run",
-        "--allow-read",
-        "--allow-net",
-        "--allow-env",
-        "--config",
-        configPath,
-        tempHelperPath,
-        fileUrl,
-      ],
-      stdout: "piped",
-      stderr: "piped",
-    });
-
-    const { code, stdout, stderr } = await cmd.output();
-
-    if (code !== 0) {
-      const errorText = new TextDecoder().decode(stderr);
-      throw new Error(`Failed to import ${filePath}: ${errorText}`);
-    }
-
-    const output = new TextDecoder().decode(stdout).trim();
     const result = JSON.parse(output);
     return result ?? undefined;
-  } finally {
-    await Deno.remove(tempHelperPath);
+  } catch (e) {
+    throw new Error(
+      `Failed to parse JSON from eval subprocess for ${filePath}: ${
+        typeof e === "object" && e && "message" in e ? e.message : e
+      }\nReceived: ${output}`,
+    );
   }
 }
 
@@ -237,13 +239,9 @@ export async function generateTypes(
 
   // Import all route files (in parallel when using config for better perf)
   const importResults = await Promise.all(
-    routeFiles.sort().map((filePath) =>
-      getApiDef(filePath, config, cacheBuster)
-        .catch((error) => {
-          console.error(`Failed to process ${filePath}:`, error);
-          return { filePath, apiDef: undefined };
-        })
-    ),
+    routeFiles
+      .sort()
+      .map((filePath) => getApiDef(filePath, config, cacheBuster)),
   );
 
   for (const { filePath, apiDef } of importResults) {

@@ -2,5 +2,26 @@
 
 set -e
 
-# --allow-read needed for generate_test.ts fixtures
-deno test --allow-read
+cmd_run_tests() {
+  deno test --allow-read --allow-write --allow-run
+}
+
+cmd_update_snapshots() {
+  deno test --allow-read --allow-write --allow-run -- --update
+}
+
+cmd_help() {
+  echo "Usage: scripts/test or scripts/test --update"
+  echo ""
+}
+
+case "${1}" in
+  "") cmd_run_tests ;;
+  update|--update|-u) cmd_update_snapshots ;;
+  help|--help|-h) cmd_help ;;
+  *)
+    error "Unknown command: $1"
+    cmd_help
+    exit 1
+    ;;
+esac
