@@ -38,6 +38,6 @@ export { openApiPlugin, type OpenApiPluginOptions } from "./vite-plugin.ts";
 // Fresh adapter
 export {
   createApiHandlers,
-  defineMethod,
+  endpoint,
   type FreshApiMethodDef,
 } from "./adapters/fresh.ts";

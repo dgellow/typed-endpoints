@@ -15,14 +15,15 @@ deno add jsr:@dgellow/typed-endpoints
 
 ```typescript
 // routes/api/users/[id].ts
-import {
-  createApiHandlers,
-  defineMethod,
-} from "@dgellow/typed-endpoints/fresh";
+import { createApiHandlers, endpoint } from "@dgellow/typed-endpoints/fresh";
 import { z } from "zod";
 
+// The `endpoint()` wrapper enables TypeScript to infer types from your Zod
+// schemas and pass them to the handler callback. Without it, `params`, `body`,
+// and `query` would be untyped. This is a TypeScript limitation - it can't
+// infer types between sibling properties in an object literal.
 export const handler = createApiHandlers({
-  GET: defineMethod({
+  GET: endpoint({
     summary: "Get user by ID",
     params: z.object({ id: z.string() }),
     response: z.object({
@@ -37,7 +38,7 @@ export const handler = createApiHandlers({
     },
   }),
 
-  PUT: defineMethod({
+  PUT: endpoint({
     summary: "Update user",
     params: z.object({ id: z.string() }),
     body: z.object({

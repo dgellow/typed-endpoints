@@ -34,10 +34,16 @@ export interface FreshApiMethodDef<
 }
 
 /**
- * Helper to define a single API method with full type inference.
- * Use this to get proper typing for the handler's validated parameter.
+ * Define an API endpoint with full type inference for the handler.
+ *
+ * This wrapper is needed because TypeScript can't infer types between sibling
+ * properties in an object literal. Without it, params/body/query in the handler
+ * would be untyped. The wrapper creates an inference context that connects your
+ * Zod schemas to the handler's validated parameter types.
+ *
+ * Zero runtime cost - this function just returns its argument unchanged.
  */
-export function defineMethod<
+export function endpoint<
   TState,
   TBodySchema extends z.ZodType | undefined = undefined,
   TQuerySchema extends z.ZodType | undefined = undefined,
@@ -52,10 +58,10 @@ export function defineMethod<
  * Create Fresh route handlers with automatic validation.
  * Returns handlers compatible with Fresh's file-based routing.
  *
- * For full type inference in handlers, wrap each method with `defineMethod()`:
+ * For full type inference in handlers, wrap each method with `endpoint()`:
  * ```ts
  * createApiHandlers({
- *   GET: defineMethod({
+ *   GET: endpoint({
  *     params: z.object({ id: z.string() }),
  *     handler: (ctx, { params }) => { ... } // params is typed!
  *   })

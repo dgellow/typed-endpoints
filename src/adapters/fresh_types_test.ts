@@ -3,7 +3,7 @@
 
 import {
   createApiHandlers,
-  defineMethod,
+  endpoint,
   type FreshApiMethodDef,
 } from "./fresh.ts";
 import { z } from "zod";
@@ -30,9 +30,9 @@ const methodDef: FreshApiMethodDef<
 
 console.log(methodDef);
 
-// Test 2: Via defineMethod helper - should have full inference
+// Test 2: Via endpoint helper - should have full inference
 const handlers = createApiHandlers({
-  GET: defineMethod({
+  GET: endpoint({
     params: z.object({ id: z.string(), count: z.number() }),
     handler: (_ctx, { params }) => {
       // These MUST be typed correctly - not `any`
@@ -46,7 +46,7 @@ const handlers = createApiHandlers({
     },
   }),
 
-  POST: defineMethod({
+  POST: endpoint({
     body: z.object({ name: z.string() }),
     handler: (_ctx, { body }) => {
       body.name satisfies string;
@@ -60,7 +60,7 @@ const handlers = createApiHandlers({
 console.log(handlers);
 
 // Test 3: Verify types are NOT `any` by checking specific type assertions
-const _getMethodTest = defineMethod({
+const _getMethodTest = endpoint({
   params: z.object({ userId: z.string(), orgId: z.number() }),
   query: z.object({ limit: z.number().optional() }),
   body: z.object({ action: z.literal("activate") }),
