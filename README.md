@@ -15,7 +15,10 @@ deno add jsr:@dgellow/typed-endpoints
 
 ```typescript
 // routes/api/users/[id].ts
-import { createApiHandlers, defineMethod } from "@dgellow/typed-endpoints/fresh";
+import {
+  createApiHandlers,
+  defineMethod,
+} from "@dgellow/typed-endpoints/fresh";
 import { z } from "zod";
 
 export const handler = createApiHandlers({
