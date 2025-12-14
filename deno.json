@@ -1,6 +1,7 @@
 {
   "name": "@dgellow/typed-endpoints",
   "version": "0.1.0-alpha.1",
+  "exclude": ["CHANGELOG.md"],
   "exports": {
     ".": "./src/mod.ts",
     "./fresh": "./src/adapters/fresh.ts",
