@@ -23,12 +23,12 @@ const methodDef: FreshApiMethodDef<
     // With explicit generic, this should work
     const id: string = params.id;
     const count: number = params.count;
-    console.log(id, count);
+    void id;
+    void count;
     return Response.json({ ok: true });
   },
 };
-
-console.log(methodDef);
+void methodDef;
 
 // Test 2: Via endpoint helper - should have full inference
 const handlers = createApiHandlers({
@@ -56,8 +56,7 @@ const handlers = createApiHandlers({
     },
   }),
 });
-
-console.log(handlers);
+void handlers;
 
 // Test 3: Verify types are NOT `any` by checking specific type assertions
 const _getMethodTest = endpoint({
@@ -80,7 +79,7 @@ const _getMethodTest = endpoint({
     // @ts-expect-error - wrong type for action
     const _wrongBody: { action: "deactivate" } = validated.body;
 
-    console.log(_p, _q, _b, _wrongParams, _wrongBody);
+    void [_p, _q, _b, _wrongParams, _wrongBody];
     return Response.json({ ok: true });
   },
 });
