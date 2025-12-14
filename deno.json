@@ -1,14 +1,21 @@
 {
   "name": "@dgellow/typed-endpoints",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "exports": {
     ".": "./src/mod.ts",
     "./fresh": "./src/adapters/fresh.ts",
     "./cli": "./src/cli.ts"
   },
   "publish": {
-    "include": ["src/**/*.ts", "README.md", "LICENSE"],
-    "exclude": ["**/*_test.ts", "**/*.test.ts"]
+    "include": [
+      "src/**/*.ts",
+      "README.md",
+      "LICENSE"
+    ],
+    "exclude": [
+      "**/*_test.ts",
+      "**/*.test.ts"
+    ]
   },
   "tasks": {
     "check": "deno check",
