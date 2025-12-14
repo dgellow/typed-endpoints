@@ -145,6 +145,7 @@ Options:
 
 - `routesDir` - Directory to scan (default: "routes/api")
 - `output` - Output file path (if provided, writes to file)
+- `config` - Path to deno.json (needed when routes use import map aliases)
 
 Returns the generated types as a string.
 
@@ -156,6 +157,7 @@ typed-endpoints - Generate TypeScript types from API route Zod schemas
 Options:
   -r, --routes <dir>    Routes directory (default: routes/api)
   -o, --output <file>   Output file path (required)
+  -c, --config <file>   Path to deno.json (auto-detected if not provided)
   -h, --help            Show help
 ```
 

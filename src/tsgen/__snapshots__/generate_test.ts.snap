@@ -12,7 +12,25 @@ export type UsersPostRequest = { name: string; email: string; };
 export type UsersPostResponse = { id: string; name: string; email: string; };
 
 // GET /api/users/[id]
-export type UsersByidGetResponse = { id: string; name: string; email: string; };
+export type UsersByIdGetResponse = { id: string; name: string; email: string; };
+
+// DELETE /api/users/[id]
+"
+`;
+
+snapshot[`generateTypes with config uses subprocess import 1`] = `
+"// Auto-generated from API route Zod schemas
+// Do not edit manually
+
+// GET /api/users
+export type UsersGetResponse = { id: string; name: string; email: string; }[];
+
+// POST /api/users
+export type UsersPostRequest = { name: string; email: string; };
+export type UsersPostResponse = { id: string; name: string; email: string; };
+
+// GET /api/users/[id]
+export type UsersByIdGetResponse = { id: string; name: string; email: string; };
 
 // DELETE /api/users/[id]
 "

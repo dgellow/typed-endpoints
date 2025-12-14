@@ -66,13 +66,13 @@ Deno.test("pathToTypeName strips /api/internal/ prefix", () => {
 });
 
 Deno.test("pathToTypeName converts [param] to ByParam", () => {
-  assertEquals(pathToTypeName("/api/users/[id]"), "UsersByid");
+  assertEquals(pathToTypeName("/api/users/[id]"), "UsersById");
 });
 
 Deno.test("pathToTypeName handles nested params", () => {
   assertEquals(
     pathToTypeName("/api/users/[userId]/posts/[postId]"),
-    "UsersByuserIdPostsBypostId",
+    "UsersByUserIdPostsByPostId",
   );
 });
 
