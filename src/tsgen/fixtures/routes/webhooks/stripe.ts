@@ -12,7 +12,7 @@ export const handler = createApiHandlers({
     response: z.object({
       received: z.boolean(),
     }),
-    handler: async (_ctx, { body: _body }) => {
+    handler: (_ctx, { body: _body }) => {
       return Response.json({ received: true });
     },
   }),

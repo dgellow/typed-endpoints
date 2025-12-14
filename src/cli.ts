@@ -63,7 +63,8 @@ async function main() {
   const config = args.config ?? (await findDenoConfig());
 
   // Default to routes/api if no routes specified
-  const routesDirs = args.routes.length > 0 ? args.routes : ["routes/api"];
+  const routes = args.routes as string[];
+  const routesDirs = routes.length > 0 ? routes : ["routes/api"];
 
   try {
     await generateTypes({
