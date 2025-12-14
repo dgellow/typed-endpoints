@@ -15,8 +15,8 @@ const HTTP_METHODS: HttpMethod[] = [
 ];
 
 export interface TypeGenOptions {
-  /** Directory containing route files. Defaults to "routes/api" */
-  routesDir?: string;
+  /** Directories containing route files. Defaults to ["routes/api"] */
+  routesDirs?: string[];
   /** Output file path. If provided, writes generated types to this file */
   output?: string;
   /**
@@ -227,11 +227,13 @@ async function getApiDef(
 export async function generateTypes(
   options: TypeGenOptions = {},
 ): Promise<string> {
-  const { routesDir = "routes/api", output, config } = options;
+  const { routesDirs = ["routes/api"], output, config } = options;
 
   const routeFiles: string[] = [];
-  for await (const entry of Deno.readDir(routesDir)) {
-    await collectRouteFiles(routesDir, entry, routeFiles);
+  for (const dir of routesDirs) {
+    for await (const entry of Deno.readDir(dir)) {
+      await collectRouteFiles(dir, entry, routeFiles);
+    }
   }
 
   const endpoints: EndpointType[] = [];

@@ -143,7 +143,7 @@ Generates TypeScript types from route Zod schemas.
 
 Options:
 
-- `routesDir` - Directory to scan (default: "routes/api")
+- `routesDirs` - Directories to scan (default: ["routes/api"])
 - `output` - Output file path (if provided, writes to file)
 - `config` - Path to deno.json (needed when routes use import map aliases)
 

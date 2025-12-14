@@ -10,13 +10,14 @@ Usage:
   typed-endpoints [options]
 
 Options:
-  -r, --routes <dir>    Routes directory (default: routes/api)
+  -r, --routes <dir>    Routes directory (can be specified multiple times)
   -o, --output <file>   Output file path (required)
   -c, --config <file>   Path to deno.json (auto-detected if not provided)
   -h, --help            Show this help message
 
-Example:
-  typed-endpoints --routes routes/api --output src/api-types.ts
+Examples:
+  typed-endpoints -r routes/api -o src/api-types.ts
+  typed-endpoints -r routes/api -r routes/webhooks -o src/api-types.ts
 `;
 
 /**
@@ -36,16 +37,14 @@ async function findDenoConfig(): Promise<string | undefined> {
 
 async function main() {
   const args = parseArgs(Deno.args, {
-    string: ["routes", "output", "config"],
+    string: ["output", "config"],
     boolean: ["help"],
+    collect: ["routes"],
     alias: {
       r: "routes",
       o: "output",
       c: "config",
       h: "help",
-    },
-    default: {
-      routes: "routes/api",
     },
   });
 
@@ -63,9 +62,12 @@ async function main() {
   // Auto-detect deno.json if not provided
   const config = args.config ?? (await findDenoConfig());
 
+  // Default to routes/api if no routes specified
+  const routesDirs = args.routes.length > 0 ? args.routes : ["routes/api"];
+
   try {
     await generateTypes({
-      routesDir: args.routes,
+      routesDirs,
       output: args.output,
       config,
     });
