@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.0-alpha.3
+
+### Bug Fixes
+
+- use deno eval instead of use of temp file
+- resolve user's import map when generating types via CLI <details><summary>Details</summary>
+  When running the CLI from JSR (`deno run jsr:@dgellow/typed-endpoints/cli`),
+  dynamic imports couldn't resolve the user's import map aliases (e.g., `zod`).<br>
+  Fix: Add --config flag to CLI that spawns a subprocess with the user's
+  deno.json config. The subprocess imports route files with the correct
+  import map context and converts Zod schemas to type strings before
+  returning.<br>
+  Also improves type naming: `[id]` now becomes `ById` instead of `Byid`.
+</details>
+
+
+### Chores
+
+- formatting
+
 ## 0.1.0-alpha.2
 
 ### Bug Fixes
