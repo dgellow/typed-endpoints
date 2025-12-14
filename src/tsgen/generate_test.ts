@@ -2,7 +2,8 @@ import { assertSnapshot } from "@std/testing/snapshot";
 import { generateTypes } from "./generate.ts";
 
 const FIXTURES_DIR = new URL("./fixtures/routes/api", import.meta.url).pathname;
-const WEBHOOKS_DIR = new URL("./fixtures/routes/webhooks", import.meta.url).pathname;
+const WEBHOOKS_DIR =
+  new URL("./fixtures/routes/webhooks", import.meta.url).pathname;
 
 Deno.test("generateTypes", async (t) => {
   const output = await generateTypes({ routesDirs: [FIXTURES_DIR] });
