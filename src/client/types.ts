@@ -87,6 +87,51 @@ export type DeleteMethod<M extends MethodDef> = (
 ) => Promise<M["response"]>;
 
 // =============================================================================
+// SSE Types
+// =============================================================================
+
+/** SSE events definition for generated types */
+export interface SseEventsDef {
+  [eventName: string]: unknown;
+}
+
+/** SSE method definition in generated Api interface */
+export interface SseMethodDef {
+  params?: Record<string, string>;
+  query?: Record<string, unknown>;
+  events: SseEventsDef;
+}
+
+/** Options for SSE subscription */
+export interface SubscribeOptions {
+  query?: Record<string, unknown>;
+  signal?: AbortSignal;
+  /** Reconnect on error. Default: true */
+  reconnect?: boolean;
+  /** Reconnect delay in ms. Default: 1000 */
+  reconnectDelay?: number;
+  /** Max reconnect attempts. Default: 5 */
+  maxReconnectAttempts?: number;
+}
+
+/** Typed SSE event from subscription */
+export type TypedSseEvent<TEvents extends SseEventsDef> = {
+  [K in keyof TEvents]: {
+    event: K;
+    data: TEvents[K];
+    id?: string;
+  };
+}[keyof TEvents];
+
+/** Subscribe method - with or without id based on params */
+export type SubscribeMethod<M extends SseMethodDef> = M["params"] extends
+  Record<string, string> ? (
+    id: string,
+    options?: SubscribeOptions,
+  ) => AsyncIterable<TypedSseEvent<M["events"]>>
+  : (options?: SubscribeOptions) => AsyncIterable<TypedSseEvent<M["events"]>>;
+
+// =============================================================================
 // Resource to Client type mapping
 // =============================================================================
 
@@ -95,7 +140,7 @@ type Empty = {};
 
 /** Convert a ResourceDef to client methods */
 export type ResourceClient<R extends ResourceDef> =
-  // Methods
+  // REST Methods
   & (R["list"] extends MethodDef ? { list: ListMethod<R["list"]> } : Empty)
   & (R["retrieve"] extends MethodDef
     ? { retrieve: RetrieveMethod<R["retrieve"]> }
@@ -106,10 +151,14 @@ export type ResourceClient<R extends ResourceDef> =
     : Empty)
   & (R["delete"] extends MethodDef ? { delete: DeleteMethod<R["delete"]> }
     : Empty)
+  // SSE Method
+  & (R["subscribe"] extends SseMethodDef
+    ? { subscribe: SubscribeMethod<R["subscribe"]> }
+    : Empty)
   & // Nested resources (exclude method names)
   {
-    [K in Exclude<keyof R, ResourceMethod>]: R[K] extends ResourceDef
-      ? ResourceClient<R[K]>
+    [K in Exclude<keyof R, ResourceMethod | "subscribe">]: R[K] extends
+      ResourceDef ? ResourceClient<R[K]>
       : never;
   };
 

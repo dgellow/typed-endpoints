@@ -4,6 +4,8 @@ snapshot[`generateTypes 1`] = `
 "// Auto-generated from API route Zod schemas
 // Do not edit manually
 
+// GET /api/tasks/[id]/events
+
 // GET /api/users
 export type UsersGetResponse = { id: string; name: string; email: string; }[];
 
@@ -22,6 +24,8 @@ snapshot[`generateTypes with config uses subprocess import 1`] = `
 "// Auto-generated from API route Zod schemas
 // Do not edit manually
 
+// GET /api/tasks/[id]/events
+
 // GET /api/users
 export type UsersGetResponse = { id: string; name: string; email: string; }[];
 
@@ -39,6 +43,8 @@ export type UsersByIdGetResponse = { id: string; name: string; email: string; };
 snapshot[`generateTypes with multiple directories 1`] = `
 "// Auto-generated from API route Zod schemas
 // Do not edit manually
+
+// GET /api/tasks/[id]/events
 
 // GET /api/users
 export type UsersGetResponse = { id: string; name: string; email: string; }[];
@@ -63,6 +69,17 @@ snapshot[`generateTypes with client format 1`] = `
 // Do not edit manually
 
 export interface Api {
+  tasks: {
+    events: {
+      subscribe: {
+        events: {
+          progress: { percent: number; };
+          complete: { result: string; };
+          error: { message: string; };
+        };
+      };
+    };
+  };
   users: {
     list: {
       response: { id: string; name: string; email: string; }[];

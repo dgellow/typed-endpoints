@@ -138,10 +138,20 @@ try {
   const result = {};
   for (const [method, def] of Object.entries(apiDef)) {
     if (!def) continue;
-    result[method] = {
+    const methodResult = {
       bodyType: def.body ? zodToTypeString(def.body) : undefined,
       responseType: def.response ? zodToTypeString(def.response) : undefined,
     };
+
+    // Handle SSE events
+    if (def.events) {
+      methodResult.events = {};
+      for (const [eventName, schema] of Object.entries(def.events)) {
+        methodResult.events[eventName] = zodToTypeString(schema);
+      }
+    }
+
+    result[method] = methodResult;
   }
   console.log(JSON.stringify(result));
 } catch (e) {
@@ -203,6 +213,7 @@ interface EndpointType {
   method: string;
   request?: string;
   response?: string;
+  events?: Record<string, string>;
 }
 
 /**
@@ -274,14 +285,15 @@ export async function generateTypes(
         method,
       };
 
-      // When using subprocess, we get type strings directly (bodyType/responseType)
-      // When using direct import, we get Zod schemas (body/response)
+      // When using subprocess, we get type strings directly (bodyType/responseType/events)
+      // When using direct import, we get Zod schemas (body/response/events)
       // Use type assertion since subprocess returns a different shape
       const def = methodDef as {
         body?: unknown;
         response?: unknown;
         bodyType?: string;
         responseType?: string;
+        events?: Record<string, unknown>;
       };
 
       if (def.bodyType) {
@@ -298,6 +310,22 @@ export async function generateTypes(
         endpoint.response = zodToTypeString(
           def.response as Parameters<typeof zodToTypeString>[0],
         );
+      }
+
+      // Handle SSE events
+      if (def.events) {
+        endpoint.events = {};
+        for (const [eventName, eventSchema] of Object.entries(def.events)) {
+          if (typeof eventSchema === "string") {
+            // From subprocess - already a type string
+            endpoint.events[eventName] = eventSchema;
+          } else {
+            // Direct import - convert Zod schema
+            endpoint.events[eventName] = zodToTypeString(
+              eventSchema as Parameters<typeof zodToTypeString>[0],
+            );
+          }
+        }
       }
 
       endpoints.push(endpoint);
@@ -395,6 +423,7 @@ interface ResourceMethod {
   name: string;
   body?: string;
   response?: string;
+  events?: Record<string, string>;
 }
 
 interface ResourceNode {
@@ -427,10 +456,13 @@ function generateClientFormat(endpoints: EndpointType[]): string {
 
       if (i === segments.length - 1) {
         // Last segment - add the method
-        current[segment].methods[resourceMethod] = {
-          name: resourceMethod,
+        // SSE endpoints use "subscribe" method
+        const methodName = endpoint.events ? "subscribe" : resourceMethod;
+        current[segment].methods[methodName] = {
+          name: methodName,
           body: endpoint.request,
           response: endpoint.response,
+          events: endpoint.events,
         };
       } else {
         // Intermediate segment - go deeper
@@ -462,6 +494,13 @@ function generateClientFormat(endpoints: EndpointType[]): string {
         }
         if (method.response) {
           lines.push(`${indent}    response: ${method.response};`);
+        }
+        if (method.events) {
+          lines.push(`${indent}    events: {`);
+          for (const [eventName, eventType] of Object.entries(method.events)) {
+            lines.push(`${indent}      ${eventName}: ${eventType};`);
+          }
+          lines.push(`${indent}    };`);
         }
         lines.push(`${indent}  };`);
       }

@@ -25,7 +25,14 @@
  * ```
  */
 
-import type { ApiSchema, RequestOptions, TypedClient } from "./types.ts";
+import type {
+  ApiSchema,
+  RequestOptions,
+  SseEventsDef,
+  SubscribeOptions,
+  TypedClient,
+  TypedSseEvent,
+} from "./types.ts";
 
 export type {
   ApiSchema,
@@ -33,7 +40,12 @@ export type {
   RequestOptions,
   ResourceDef,
   ResourceMethod,
+  SseEventsDef,
+  SseMethodDef,
+  SubscribeMethod,
+  SubscribeOptions,
   TypedClient,
+  TypedSseEvent,
 } from "./types.ts";
 
 export interface ClientConfig {
@@ -68,6 +80,134 @@ function buildQuery(query?: Record<string, unknown>): string {
 
   const str = params.toString();
   return str ? `?${str}` : "";
+}
+
+/**
+ * Parse SSE messages from raw text chunk.
+ */
+function parseSseMessages(
+  chunk: string,
+): Array<{ event?: string; data?: string; id?: string }> {
+  const messages: Array<{ event?: string; data?: string; id?: string }> = [];
+  const blocks = chunk.split("\n\n").filter(Boolean);
+
+  for (const block of blocks) {
+    const message: { event?: string; data?: string; id?: string } = {};
+    for (const line of block.split("\n")) {
+      if (line.startsWith("event: ")) {
+        message.event = line.slice(7);
+      } else if (line.startsWith("data: ")) {
+        message.data = line.slice(6);
+      } else if (line.startsWith("id: ")) {
+        message.id = line.slice(4);
+      }
+    }
+    if (message.data !== undefined) {
+      messages.push(message);
+    }
+  }
+  return messages;
+}
+
+/**
+ * Create SSE subscription as AsyncIterable.
+ */
+async function* createSseSubscription<TEvents extends SseEventsDef>(
+  fetchFn: typeof fetch,
+  url: string,
+  headers: Record<string, string>,
+  options: SubscribeOptions = {},
+): AsyncIterable<TypedSseEvent<TEvents>> {
+  const {
+    signal,
+    reconnect = true,
+    reconnectDelay = 1000,
+    maxReconnectAttempts = 5,
+  } = options;
+
+  let attempts = 0;
+  let lastEventId: string | undefined;
+
+  while (true) {
+    try {
+      const requestHeaders: Record<string, string> = {
+        ...headers,
+        Accept: "text/event-stream",
+        "Cache-Control": "no-cache",
+      };
+
+      if (lastEventId) {
+        requestHeaders["Last-Event-ID"] = lastEventId;
+      }
+
+      const response = await fetchFn(url, {
+        headers: requestHeaders,
+        signal,
+      });
+
+      if (!response.ok) {
+        throw new ClientError(
+          response.status,
+          response.statusText,
+          await response.text(),
+        );
+      }
+
+      if (!response.body) {
+        throw new Error("SSE response has no body");
+      }
+
+      attempts = 0; // Reset on successful connection
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const messages = parseSseMessages(buffer);
+
+        // Keep incomplete messages in buffer
+        const lastNewline = buffer.lastIndexOf("\n\n");
+        if (lastNewline !== -1) {
+          buffer = buffer.slice(lastNewline + 2);
+        }
+
+        for (const msg of messages) {
+          if (msg.id) {
+            lastEventId = msg.id;
+          }
+
+          if (msg.data) {
+            yield {
+              event: msg.event ?? "message",
+              data: JSON.parse(msg.data),
+              id: msg.id,
+            } as TypedSseEvent<TEvents>;
+          }
+        }
+      }
+
+      // Stream ended normally, exit
+      return;
+    } catch (error) {
+      if (signal?.aborted) {
+        return;
+      }
+
+      attempts++;
+      if (!reconnect || attempts >= maxReconnectAttempts) {
+        throw error;
+      }
+
+      await new Promise((resolve) =>
+        setTimeout(resolve, reconnectDelay * attempts)
+      );
+    }
+  }
 }
 
 /**
@@ -186,6 +326,33 @@ export function createClient<Api extends ApiSchema>(
             const path = basePath + "/" + pathSegments.join("/") + "/" +
               encodeURIComponent(id);
             return request("DELETE", path, undefined, options);
+          };
+        }
+
+        if (prop === "subscribe") {
+          return (
+            idOrOptions?: string | SubscribeOptions,
+            maybeOptions?: SubscribeOptions,
+          ) => {
+            let path: string;
+            let options: SubscribeOptions;
+
+            if (typeof idOrOptions === "string") {
+              path = basePath + "/" + pathSegments.join("/") + "/" +
+                encodeURIComponent(idOrOptions);
+              options = maybeOptions ?? {};
+            } else {
+              path = basePath + "/" + pathSegments.join("/");
+              options = idOrOptions ?? {};
+            }
+
+            const url = cfg.baseUrl + path + buildQuery(options.query);
+            return createSseSubscription(
+              fetchFn,
+              url,
+              cfg.headers ?? {},
+              options,
+            );
           };
         }
 

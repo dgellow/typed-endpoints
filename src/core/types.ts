@@ -59,3 +59,38 @@ export type InferQuery<T extends ApiMethodDef> = T["query"] extends z.ZodType
 export type InferParams<T extends ApiMethodDef> = T["params"] extends z.ZodType
   ? z.infer<T["params"]>
   : unknown;
+
+// =============================================================================
+// SSE Types
+// =============================================================================
+
+/** SSE event definitions - maps event names to Zod schemas */
+export type SseEventDef = Record<string, z.ZodType>;
+
+/** SSE method definition */
+export interface SseMethodDef<
+  TQuerySchema extends z.ZodType | undefined = undefined,
+  TParamsSchema extends z.ZodType | undefined = undefined,
+  TEvents extends SseEventDef = SseEventDef,
+> {
+  query?: TQuerySchema;
+  params?: TParamsSchema;
+  events: TEvents;
+  public?: boolean;
+  summary?: string;
+  description?: string;
+  tags?: string[];
+}
+
+/** Typed SSE event for handlers - discriminated union of all event types */
+export type SseEvent<TEvents extends SseEventDef> = {
+  [K in keyof TEvents]: {
+    event: K;
+    data: z.infer<TEvents[K]>;
+    id?: string;
+    retry?: number;
+  };
+}[keyof TEvents];
+
+/** Infer SSE events union from method def */
+export type InferSseEvents<T extends SseMethodDef> = SseEvent<T["events"]>;

@@ -17,6 +17,16 @@ type TestApi = {
       };
     };
   };
+  tasks: {
+    subscribe: {
+      params: { id: string };
+      events: {
+        progress: { percent: number };
+        complete: { result: string };
+        error: { message: string };
+      };
+    };
+  };
 };
 
 // Helper to create a mock fetch
@@ -226,4 +236,80 @@ Deno.test("createClient with string config uses it as baseUrl", async () => {
   await client.users.list();
 
   assertEquals(requests[0].url, "https://api.example.com/api/users");
+});
+
+Deno.test("createClient.subscribe creates SSE connection", async () => {
+  const requests: { url: string; headers: Record<string, string> }[] = [];
+
+  // Create a mock SSE response
+  const sseData = [
+    'event: progress\ndata: {"percent":50}\n\n',
+    'event: complete\ndata: {"result":"done"}\n\n',
+  ].join("");
+
+  const mockFetch = createMockFetch((url, init) => {
+    const headers: Record<string, string> = {};
+    if (init?.headers) {
+      for (const [k, v] of Object.entries(init.headers)) {
+        headers[k] = v as string;
+      }
+    }
+    requests.push({ url, headers });
+
+    return new Response(sseData, {
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  });
+
+  const client = createClient<TestApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: mockFetch,
+  });
+
+  const events: Array<{ event: string; data: unknown }> = [];
+  for await (const event of client.tasks.subscribe("task-123")) {
+    events.push({ event: event.event as string, data: event.data });
+  }
+
+  assertEquals(requests[0].url, "http://localhost:3000/api/tasks/task-123");
+  assertEquals(requests[0].headers["Accept"], "text/event-stream");
+  assertEquals(events.length, 2);
+  assertEquals(events[0], { event: "progress", data: { percent: 50 } });
+  assertEquals(events[1], { event: "complete", data: { result: "done" } });
+});
+
+Deno.test("createClient.subscribe without id", async () => {
+  const requests: { url: string }[] = [];
+
+  const sseData = 'event: update\ndata: {"count":1}\n\n';
+
+  const mockFetch = createMockFetch((url) => {
+    requests.push({ url });
+    return new Response(sseData, {
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  });
+
+  // Test API without params requirement
+  type NoParamsSseApi = {
+    metrics: {
+      subscribe: {
+        events: { update: { count: number } };
+      };
+    };
+  };
+
+  const client = createClient<NoParamsSseApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: mockFetch,
+  });
+
+  const events: Array<{ event: string; data: unknown }> = [];
+  for await (const event of client.metrics.subscribe()) {
+    events.push({ event: event.event as string, data: event.data });
+  }
+
+  assertEquals(requests[0].url, "http://localhost:3000/api/metrics");
+  assertEquals(events.length, 1);
+  assertEquals(events[0], { event: "update", data: { count: 1 } });
 });
