@@ -642,10 +642,11 @@ x-protocol:
 
 **Phase 5: Arazzo Spec Generation**
 
-Export protocols to [OpenAPI Arazzo](https://spec.openapis.org/arazzo/latest.html)
-format for interoperability with other tools. Note: Arazzo is a lossy export -
-our compile-time schema derivation (`z.literal(prev.code)`) is more powerful
-than Arazzo's runtime value passing.
+Export protocols to
+[OpenAPI Arazzo](https://spec.openapis.org/arazzo/latest.html) format for
+interoperability with other tools. Note: Arazzo is a lossy export - our
+compile-time schema derivation (`z.literal(prev.code)`) is more powerful than
+Arazzo's runtime value passing.
 
 ```yaml
 # PLANNED: Arazzo workflow export

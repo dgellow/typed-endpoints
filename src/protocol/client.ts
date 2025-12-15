@@ -14,31 +14,17 @@
  */
 
 import type { z } from "zod";
-import type { DependentStep, Protocol, Step } from "./types.ts";
+import type {
+  AnyStep,
+  DependentStep,
+  Protocol,
+  Step,
+  StepResponse,
+} from "./types.ts";
 
 // =============================================================================
 // Type Utilities
 // =============================================================================
-
-/** Any step (simplified for client use) */
-type AnyClientStep =
-  // deno-lint-ignore no-explicit-any
-  | Step<string, any, any>
-  // deno-lint-ignore no-explicit-any
-  | DependentStep<string, any, any, any, any>;
-
-/** Extract response type from a step */
-// deno-lint-ignore no-explicit-any
-export type ResponseOf<T> = T extends Step<string, any, infer R>
-  ? z.infer<R>
-  // deno-lint-ignore no-explicit-any
-  : T extends DependentStep<string, any, any, infer R>
-    ? z.infer<R>
-    : never;
-
-/** Extract request type from an independent step */
-type RequestOf<T> = T extends Step<string, infer R, z.ZodType> ? z.infer<R>
-  : never;
 
 /** Check if step is independent (no dependencies) - checks __kind directly */
 type IsIndependent<T> = T extends { __kind: "step" } ? true : false;
@@ -50,7 +36,7 @@ type DependencyOf<T> = T extends { __kind: "dependent_step"; dependsOn: string }
 
 /** Steps available when state has certain completed steps */
 export type AvailableSteps<
-  TSteps extends Record<string, AnyClientStep>,
+  TSteps extends Record<string, AnyStep>,
   TDone extends string,
 > = {
   [K in keyof TSteps & string]: IsIndependent<TSteps[K]> extends true ? K
@@ -84,10 +70,10 @@ export interface ExecutionContext {
  * and what their response types are.
  */
 export type SessionState<
-  TSteps extends Record<string, AnyClientStep>,
+  TSteps extends Record<string, AnyStep>,
   TDone extends keyof TSteps,
 > = {
-  [K in TDone]: ResponseOf<TSteps[K]>;
+  [K in TDone]: StepResponse<TSteps[K]>;
 };
 
 /**
@@ -95,7 +81,7 @@ export type SessionState<
  */
 export interface ExecuteResult<
   TResponse,
-  TSteps extends Record<string, AnyClientStep>,
+  TSteps extends Record<string, AnyStep>,
   TNewDone extends keyof TSteps,
 > {
   response: TResponse;
@@ -115,7 +101,7 @@ export interface ExecuteResult<
  * Each method that executes a step returns a NEW session with updated TDone type.
  */
 export class ProtocolSession<
-  TSteps extends Record<string, AnyClientStep>,
+  TSteps extends Record<string, AnyStep>,
   TDone extends keyof TSteps = never,
 > {
   readonly __tag = "ProtocolSession" as const;
@@ -143,7 +129,7 @@ export class ProtocolSession<
     stepName: K,
     request: TSteps[K] extends Step<string, infer R, z.ZodType> ? z.infer<R>
       : unknown,
-  ): Promise<ExecuteResult<ResponseOf<TSteps[K]>, TSteps, TDone | K>> {
+  ): Promise<ExecuteResult<StepResponse<TSteps[K]>, TSteps, TDone | K>> {
     const step = this.protocol.steps[stepName];
 
     if (!step) {
@@ -190,7 +176,7 @@ export class ProtocolSession<
     );
 
     // Validate response
-    const resSchema = step.__kind === "step" ? step.response : step.response;
+    const resSchema = step.response;
     const resResult = resSchema.safeParse(response);
     if (!resResult.success) {
       throw new Error(
@@ -212,7 +198,7 @@ export class ProtocolSession<
     );
 
     return {
-      response: resResult.data as ResponseOf<TSteps[K]>,
+      response: resResult.data as StepResponse<TSteps[K]>,
       session: newSession,
     };
   }
@@ -248,7 +234,7 @@ export class ProtocolSession<
 /**
  * Create initial session - no steps executed yet.
  */
-export function createSession<TSteps extends Record<string, AnyClientStep>>(
+export function createSession<TSteps extends Record<string, AnyStep>>(
   protocol: Protocol<string, TSteps>,
   executor: StepExecutor,
 ): ProtocolSession<TSteps, never> {
@@ -271,12 +257,14 @@ export function createSession<TSteps extends Record<string, AnyClientStep>>(
 
 /** Mock response configuration - static value or function */
 // deno-lint-ignore no-explicit-any
-export type MockResponses<TSteps extends Record<string, AnyClientStep>> = {
+export type MockResponses<TSteps extends Record<string, AnyStep>> = {
   // deno-lint-ignore no-explicit-any
-  [K in keyof TSteps]?: ResponseOf<TSteps[K]> | ((req: any) => ResponseOf<TSteps[K]>);
+  [K in keyof TSteps]?:
+    | StepResponse<TSteps[K]>
+    | ((req: any) => StepResponse<TSteps[K]>);
 };
 
-export function createMockExecutor<TSteps extends Record<string, AnyClientStep>>(
+export function createMockExecutor<TSteps extends Record<string, AnyStep>>(
   _protocol: Protocol<string, TSteps>,
   responses: MockResponses<TSteps>,
 ): StepExecutor {

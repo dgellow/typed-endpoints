@@ -1,6 +1,13 @@
 import type { z } from "zod";
 import type { ApiMethodDef, ValidatedRequest } from "./types.ts";
 
+/** Format Zod validation errors into a readable string */
+function formatZodErrors(error: z.ZodError): string {
+  return error.issues
+    .map((e) => `${e.path.join(".")}: ${e.message}`)
+    .join(", ");
+}
+
 export interface ValidationResult<TBody, TQuery, TParams> {
   success: true;
   data: ValidatedRequest<TBody, TQuery, TParams>;
@@ -68,12 +75,9 @@ export async function validateRequest<
 
     const result = def.body.safeParse(rawBody);
     if (!result.success) {
-      const errors = result.error.issues
-        .map((e) => `${e.path.join(".")}: ${e.message}`)
-        .join(", ");
       return {
         success: false,
-        error: `Validation error: ${errors}`,
+        error: `Validation error: ${formatZodErrors(result.error)}`,
         type: "body",
       };
     }
@@ -92,12 +96,9 @@ export async function validateRequest<
     const rawQuery = parseSearchParams(url.searchParams);
     const result = def.query.safeParse(rawQuery);
     if (!result.success) {
-      const errors = result.error.issues
-        .map((e) => `${e.path.join(".")}: ${e.message}`)
-        .join(", ");
       return {
         success: false,
-        error: `Query validation error: ${errors}`,
+        error: `Query validation error: ${formatZodErrors(result.error)}`,
         type: "query",
       };
     }
@@ -109,12 +110,9 @@ export async function validateRequest<
   if (def.params) {
     const result = def.params.safeParse(req.params);
     if (!result.success) {
-      const errors = result.error.issues
-        .map((e) => `${e.path.join(".")}: ${e.message}`)
-        .join(", ");
       return {
         success: false,
-        error: `Params validation error: ${errors}`,
+        error: `Params validation error: ${formatZodErrors(result.error)}`,
         type: "params",
       };
     }

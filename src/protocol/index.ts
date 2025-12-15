@@ -127,7 +127,6 @@ export type {
   ExecuteResult,
   ExecutionContext,
   MockResponses,
-  ResponseOf,
   SessionState,
   StepExecutor,
 } from "./client.ts";

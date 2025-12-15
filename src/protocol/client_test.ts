@@ -15,9 +15,9 @@ import {
 } from "./client.ts";
 import { dependentStep, protocol, step } from "./dsl.ts";
 import {
-  oauth2AuthCodeProtocol,
   type AuthorizeResponse,
   type ExchangeResponse,
+  oauth2AuthCodeProtocol,
 } from "./oauth.ts";
 
 // =============================================================================
@@ -247,7 +247,10 @@ Deno.test("isTerminal returns true after terminal step", async () => {
 
   const session = createSession(simpleProtocol, mockExecutor);
   const { session: s1 } = await session.execute("start", { input: "x" });
-  const { session: s2 } = await s1.execute("middle", { id: "t", multiplier: 1 });
+  const { session: s2 } = await s1.execute("middle", {
+    id: "t",
+    multiplier: 1,
+  });
   const { session: s3 } = await s2.execute("end", { confirm: true });
 
   assertEquals(s3.isTerminal(), true);
@@ -432,8 +435,11 @@ Deno.test("OAuth protocol: error response blocks exchange", async () => {
 type Steps = (typeof simpleProtocol)["steps"];
 
 // Verify step kinds are correctly identified
-type StartIsIndependent = Steps["start"] extends { __kind: "step" } ? true : false;
-type MiddleIsDependent = Steps["middle"] extends { __kind: "dependent_step" } ? true : false;
+type StartIsIndependent = Steps["start"] extends { __kind: "step" } ? true
+  : false;
+type MiddleIsDependent = Steps["middle"] extends { __kind: "dependent_step" }
+  ? true
+  : false;
 const _checkStartIndep: StartIsIndependent = true;
 const _checkMiddleDependent: MiddleIsDependent = true;
 
@@ -443,8 +449,10 @@ const _checkMiddleDep: MiddleDependsOn = "start"; // Must be exactly "start", no
 
 // Verify AvailableSteps correctly unlocks dependent steps
 type StepsAfterStart = AvailableSteps<Steps, "start">;
-const _checkMiddleAvailable: "middle" extends StepsAfterStart ? true : false = true;
-const _checkEndNotAvailable: "end" extends StepsAfterStart ? true : false = false;
+const _checkMiddleAvailable: "middle" extends StepsAfterStart ? true : false =
+  true;
+const _checkEndNotAvailable: "end" extends StepsAfterStart ? true : false =
+  false;
 
 type StepsAfterMiddle = AvailableSteps<Steps, "start" | "middle">;
 const _checkEndAvailable: "end" extends StepsAfterMiddle ? true : false = true;
