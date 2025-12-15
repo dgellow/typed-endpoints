@@ -400,6 +400,108 @@ src/
 └── cli.ts             # CLI for type generation
 ```
 
+## Future Exploration
+
+Ideas inspired by academic research in type systems, API design, and formal methods:
+
+### Resource Protocol Types
+
+Encode valid API operation sequences in the type system, inspired by
+[Dependent Types for Safe and Secure Web Programming](https://dl.acm.org/doi/10.1145/2620678.2620683)
+(Brady, IFL 2013) and session types research.
+
+```typescript
+// Define state machine for resource lifecycle
+const taskProtocol = protocol({
+  states: ["created", "running", "completed"],
+  transitions: {
+    "created -> running": "POST /tasks/:id/start",
+    "running -> completed": "POST /tasks/:id/complete",
+  }
+});
+
+// Client gets typed state machine - invalid transitions are compile errors
+const task = await client.tasks.create({ name: "build" }); // state: "created"
+await task.start();    // valid: created -> running
+await task.complete(); // valid: running -> completed
+await task.start();    // compile error: no transition from "completed"
+```
+
+### Branded Validated Types
+
+Use phantom types to track validation state at compile time, preventing mixing of
+validated and unvalidated data. See
+[Branded Types in TypeScript](https://tigerabrodi.blog/branded-types-in-typescript).
+
+```typescript
+const Email = z.string().email().brand<"ValidEmail">();
+const UserId = z.string().uuid().brand<"UserId">();
+
+function sendEmail(to: z.infer<typeof Email>) { ... }
+const userId: UserId = ...;
+sendEmail(userId); // compile error: UserId is not assignable to ValidEmail
+```
+
+### Effect Tracking
+
+Track side effects in endpoint types, inspired by
+[Algebraic Effects and Dependent Types](https://dl.acm.org/doi/10.1145/2544174.2500581)
+(Brady) and the [Effect](https://effect.website/) TypeScript library.
+
+```typescript
+const secured = endpoint({
+  requires: ["auth", "database"], // declare required capabilities
+  handler: async (ctx, data, { auth, database }) => {
+    const user = auth.getCurrentUser(); // provided by middleware
+    return database.query(`SELECT * FROM posts WHERE user_id = ?`, [user.id]);
+  }
+});
+```
+
+### API Evolution Checker
+
+Static analysis to detect breaking changes between API versions, based on
+[API Evolution and Compatibility](https://www.researchgate.net/publication/320031017_API_Evolution_and_Compatibility_A_Data_Corpus_and_Tool_Evaluation)
+research.
+
+```bash
+typed-endpoints diff --old v1/api-types.ts --new v2/api-types.ts
+
+# BREAKING: UsersGetResponse removed required field 'legacyId'
+# SAFE: UsersGetResponse added optional field 'avatarUrl'
+# BREAKING: UsersPostRequest.email changed from optional to required
+```
+
+### Contract Testing Integration
+
+Generate [Pact](https://docs.pact.io/) consumer-driven contracts from endpoint
+definitions for microservices testing.
+
+```typescript
+await generatePactContract({
+  consumer: "web-frontend",
+  provider: "users-api",
+  routesDir: "routes/api",
+  output: "pacts/web-users.json",
+});
+```
+
+### Refinement Predicates
+
+Encode logical constraints in types verified by SMT solvers, inspired by
+[Liquid Types](https://goto.ucsd.edu/~rjhala/liquid/liquid_types.pdf)
+(Rondon, Kawaguchi & Jhala, PLDI 2008).
+
+```typescript
+const PageNumber = z.number().int().min(1).meta({
+  refinement: "n >= 1",  // captured in OpenAPI x-refinement
+});
+
+const Percentage = z.number().min(0).max(100).meta({
+  refinement: "0 <= n <= 100",
+});
+```
+
 ## License
 
 MIT
