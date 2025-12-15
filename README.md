@@ -390,6 +390,11 @@ src/
 ├── pagination/
 │   ├── types.ts       # Pagination type definitions
 │   └── index.ts       # cursor, cursorId, offset, page, url helpers
+├── protocol/          # Protocol schemas (experimental)
+│   ├── types.ts       # Step, DependentStep, Sequence, Protocol types
+│   ├── dsl.ts         # Builder functions: step(), dependentStep(), etc.
+│   ├── oauth.ts       # OAuth 2.0 reference implementation
+│   └── index.ts       # Module exports
 ├── client/
 │   ├── index.ts       # Typed HTTP client
 │   └── types.ts       # Client type definitions
@@ -400,34 +405,258 @@ src/
 └── cli.ts             # CLI for type generation
 ```
 
+## Protocol Schemas (Experimental)
+
+Multi-step protocols like OAuth flows, file sessions, and database transactions require
+more than single request/response validation. The `protocol` module provides a DSL for
+defining **protocol shapes** - sequences of operations where each step's request type
+can depend on the previous step's response.
+
+This is a direct implementation of insights from
+[André Videla's](https://andrevidela.com/) research on container morphisms.
+
+### The Key Innovation: Sequential Product (>>)
+
+From André Videla's [Container Morphisms for Composable Interactive Systems](https://arxiv.org/abs/2407.16713)
+(APLAS 2024), the Sequential Product operator captures the essence of multi-step protocols:
+
+```idris
+-- From aplas-code/src/APLAS.idr line 248
+(>>) : Container -> Container -> Container
+(>>) c1 c2 = (x : Σ c1.req (\r => c1.res r -> c2.req))
+            !> Σ (c1.res x.π1) (\r => c2.res (x.π2 r))
+```
+
+Translation: **The request type of step 2 is a function of the response of step 1.**
+
+This is the missing primitive that enables type-safe OAuth, multi-step wizards,
+database transactions, and any protocol where later steps depend on earlier responses.
+
+### Example: OAuth 2.0 Authorization Code Flow
+
+```typescript
+import { step, dependentStep, protocol } from "@dgellow/typed-endpoints/protocol";
+import { z } from "zod";
+
+// Step 1: Authorization Request (independent step)
+const authorizeStep = step({
+  name: "authorize",
+  request: z.object({
+    response_type: z.literal("code"),
+    client_id: z.string(),
+    redirect_uri: z.string().url().optional(),
+    scope: z.string().optional(),
+    state: z.string(),
+  }),
+  response: z.discriminatedUnion("type", [
+    z.object({ type: z.literal("success"), code: z.string(), state: z.string() }),
+    z.object({ type: z.literal("error"), error: z.string() }),
+  ]),
+});
+
+// Step 2: Token Exchange - REQUEST DEPENDS ON STEP 1 RESPONSE
+const exchangeStep = dependentStep({
+  name: "exchange",
+  dependsOn: "authorize",
+  request: (prev) => {
+    // Only valid if authorize succeeded
+    if (prev.type !== "success") return z.never();
+    return z.object({
+      grant_type: z.literal("authorization_code"),
+      code: z.literal(prev.code),  // THE KEY: enforces exact code from step 1
+      client_id: z.string(),
+      client_secret: z.string(),
+    });
+  },
+  response: z.object({
+    access_token: z.string(),
+    token_type: z.literal("Bearer"),
+    expires_in: z.number(),
+    refresh_token: z.string().optional(),
+  }),
+});
+
+// Step 3: Token Refresh - depends on exchange response
+const refreshStep = dependentStep({
+  name: "refresh",
+  dependsOn: "exchange",
+  request: (prev) => {
+    if (prev.type !== "success" || !prev.refresh_token) return z.never();
+    return z.object({
+      grant_type: z.literal("refresh_token"),
+      refresh_token: z.literal(prev.refresh_token),  // From exchange response
+      client_id: z.string(),
+    });
+  },
+  response: z.object({ access_token: z.string(), expires_in: z.number() }),
+});
+
+// Complete protocol definition
+const oauth2Protocol = protocol({
+  name: "OAuth2AuthorizationCode",
+  description: "OAuth 2.0 Authorization Code Grant (RFC 6749 Section 4.1)",
+  initial: "authorize",
+  terminal: ["revoke"],
+  steps: { authorize: authorizeStep, exchange: exchangeStep, refresh: refreshStep },
+});
+```
+
+### Core Primitives
+
+The DSL maps category theory concepts from André's research to TypeScript:
+
+| Primitive | Category Theory | Description |
+|-----------|-----------------|-------------|
+| `step()` | Container | Independent request/response pair |
+| `dependentStep()` | Sequential Product (>>) | Request schema derived from previous response |
+| `sequence()` | Sequential composition | Chain of steps executed in order |
+| `repeat()` | Kleene Star (*) | Zero-or-more repetitions |
+| `repeat1()` | Kleene Plus (+) | One-or-more repetitions |
+| `choice()` | Coproduct (+) | One of several alternatives |
+| `branch()` | Conditional | Branch based on predicate |
+| `parallel()` | Tensor (⊗) | Concurrent execution |
+
+### Protocol Introspection
+
+```typescript
+import {
+  validateProtocol,
+  buildDependencyGraph,
+  topologicalSort,
+  getStepNames,
+} from "@dgellow/typed-endpoints/protocol";
+
+// Validate protocol is well-formed
+const result = validateProtocol(oauth2Protocol);
+// { valid: true, errors: [] }
+
+// Build dependency graph
+const graph = buildDependencyGraph(oauth2Protocol);
+// Map { "authorize" => [], "exchange" => ["authorize"], "refresh" => ["exchange"] }
+
+// Topological sort for execution order
+const order = topologicalSort(oauth2Protocol);
+// ["authorize", "exchange", "refresh"]
+```
+
+### What's Implemented (Phase 1-2)
+
+- Core type definitions (`Step`, `DependentStep`, `Sequence`, `Repeat`, `Choice`, etc.)
+- DSL builder functions (`step()`, `dependentStep()`, `sequence()`, `repeat()`, etc.)
+- Protocol validation and introspection utilities
+- OAuth 2.0 Authorization Code Flow as reference implementation
+- Comprehensive test suite (32 tests)
+
+### Coming Next
+
+**Phase 3: Type-Safe Protocol Clients**
+
+```typescript
+// PLANNED: Client that enforces protocol sequences at compile time
+const client = createProtocolClient(oauth2Protocol);
+
+const auth = await client.authorize({ client_id: "...", state: "..." });
+if (auth.type === "error") {
+  // TypeScript knows `exchange` is NOT available here
+  return;
+}
+// TypeScript knows `exchange` IS available, and `code` is typed
+const tokens = await client.exchange({
+  code: auth.code,  // Type-safe: must be the exact code from authorize
+  client_id: "...",
+  client_secret: "...",
+});
+```
+
+**Phase 4: OpenAPI Protocol Extensions**
+
+```yaml
+# PLANNED: x-protocol extension in OpenAPI spec
+x-protocol:
+  name: OAuth2AuthorizationCode
+  steps:
+    - name: authorize
+      next: [exchange]
+    - name: exchange
+      dependsOn: authorize
+      next: [refresh, revoke]
+    - name: refresh
+      dependsOn: exchange
+      repeatable: true
+```
+
+**Phase 5: Protocol Visualization**
+
+```mermaid
+sequenceDiagram
+    Client->>AuthServer: authorize(client_id, redirect_uri)
+    AuthServer-->>Client: code OR error
+    alt success
+        Client->>TokenServer: exchange(code)
+        TokenServer-->>Client: access_token, refresh_token
+        loop Token refresh
+            Client->>TokenServer: refresh(refresh_token)
+            TokenServer-->>Client: new access_token
+        end
+    end
+```
+
+### References
+
+- [Container Morphisms for Composable Interactive Systems](https://arxiv.org/abs/2407.16713) - André Videla (APLAS 2024)
+- [Lenses for Composable Servers](https://arxiv.org/abs/2203.15633) - André Videla (2022)
+- **Stellar** (TYPES 2025) - Practical Idris library for container-based API architecture
+- [RFC 6749: OAuth 2.0 Authorization Framework](https://datatracker.ietf.org/doc/html/rfc6749)
+
+---
+
 ## Future Exploration
 
 Ideas inspired by academic research in type systems, API design, and formal methods.
 
-### Container Morphisms for API Composition
+### Extended Protocol Applications
 
-[André Videla's research](https://andrevidela.com/) provides the theoretical foundation
-for type-safe client-server communication using category theory and dependent types:
+Building on the protocol schema foundation, additional patterns from André Videla's
+container morphism research:
 
-- [Container Morphisms for Composable Interactive Systems](https://arxiv.org/abs/2407.16713)
-  (2024) - Models request/response as container morphisms where response types
-  *depend on* request types, ensuring correctness at compile time
-- [Lenses for Composable Servers](https://arxiv.org/abs/2203.15633) (2022) -
-  Uses parameterised lenses to compose endpoints; lens laws mirror HTTP semantics
-- **Stellar** (TYPES 2025) - Practical Idris library implementing containers for
-  API architecture, enabling dependent sequences like "query A, then based on
-  response, query B"
+**File Session Protocol** (from the APLAS paper):
 
 ```typescript
-// Inspired by container morphisms: response type depends on request
-const api = container({
-  // Response type is indexed by the request path
-  "/users": { response: User[] },
-  "/users/:id": { response: User },
-  "/users/:id/posts": { response: Post[] },
+// Write-many-then-close pattern using Kleene star
+const fileSession = protocol({
+  name: "FileSession",
+  initial: "open",
+  terminal: ["close"],
+  steps: {
+    open: step({
+      name: "open",
+      request: z.object({ filename: z.string(), mode: z.enum(["read", "write"]) }),
+      response: z.object({ handle: z.string(), size: z.number() }),
+    }),
+    write: dependentStep({
+      name: "write",
+      dependsOn: "open",
+      request: (prev) => z.object({
+        handle: z.literal(prev.handle),  // Must use handle from open
+        content: z.string(),
+      }),
+      response: z.object({ bytesWritten: z.number() }),
+    }),
+    close: dependentStep({
+      name: "close",
+      dependsOn: "open",
+      request: (prev) => z.object({ handle: z.literal(prev.handle) }),
+      response: z.object({ success: z.boolean() }),
+    }),
+  },
 });
+```
 
+**Container Morphisms for Middleware:**
+
+```typescript
 // Middleware as morphism composition (f ∘ g ∘ h)
+// Each morphism transforms both request (forward) and response (backward)
 const handler = compose(
   authMiddleware,     // Container morphism: adds user to context
   cacheMiddleware,    // Container morphism: adds cache capability
@@ -445,11 +674,15 @@ Encode valid API operation sequences in the type system, inspired by
 ```typescript
 // Define state machine for resource lifecycle
 const taskProtocol = protocol({
-  states: ["created", "running", "completed"],
-  transitions: {
-    "created -> running": "POST /tasks/:id/start",
-    "running -> completed": "POST /tasks/:id/complete",
-  }
+  name: "TaskLifecycle",
+  initial: "create",
+  terminal: ["completed", "cancelled"],
+  steps: {
+    create: step({ ... }),           // -> created
+    start: dependentStep({ ... }),   // created -> running
+    complete: dependentStep({ ... }),// running -> completed
+    cancel: dependentStep({ ... }),  // created|running -> cancelled
+  },
 });
 
 // Client gets typed state machine - invalid transitions are compile errors

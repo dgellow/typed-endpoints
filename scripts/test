@@ -3,11 +3,11 @@
 set -e
 
 cmd_run_tests() {
-  deno test --allow-read --allow-write --allow-run
+  deno test --allow-read --allow-write --allow-run --allow-net
 }
 
 cmd_update_snapshots() {
-  deno test --allow-read --allow-write --allow-run -- --update
+  deno test --allow-read --allow-write --allow-run --allow-net -- --update
 }
 
 cmd_help() {
