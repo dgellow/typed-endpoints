@@ -330,8 +330,8 @@ Config: Same as cursor, plus `names.total` and `names.offsetParam`.
 
 Page number pagination.
 
-Config: Same as cursor, plus `names.total`, `names.totalPages`, `names.pageParam`,
-`names.perPageParam`, `defaultPerPage`, `maxPerPage`.
+Config: Same as cursor, plus `names.total`, `names.totalPages`,
+`names.pageParam`, `names.perPageParam`, `defaultPerPage`, `maxPerPage`.
 
 #### `url.paginated(config)`
 
@@ -407,18 +407,20 @@ src/
 
 ## Protocol Schemas (Experimental)
 
-Multi-step protocols like OAuth flows, file sessions, and database transactions require
-more than single request/response validation. The `protocol` module provides a DSL for
-defining **protocol shapes** - sequences of operations where each step's request type
-can depend on the previous step's response.
+Multi-step protocols like OAuth flows, file sessions, and database transactions
+require more than single request/response validation. The `protocol` module
+provides a DSL for defining **protocol shapes** - sequences of operations where
+each step's request type can depend on the previous step's response.
 
 This is a direct implementation of insights from
 [André Videla's](https://andrevidela.com/) research on container morphisms.
 
 ### The Key Innovation: Sequential Product (>>)
 
-From André Videla's [Container Morphisms for Composable Interactive Systems](https://arxiv.org/abs/2407.16713)
-(APLAS 2024), the Sequential Product operator captures the essence of multi-step protocols:
+From André Videla's
+[Container Morphisms for Composable Interactive Systems](https://arxiv.org/abs/2407.16713)
+(APLAS 2024), the Sequential Product operator captures the essence of multi-step
+protocols:
 
 ```idris
 -- From aplas-code/src/APLAS.idr line 248
@@ -427,15 +429,21 @@ From André Videla's [Container Morphisms for Composable Interactive Systems](ht
             !> Σ (c1.res x.π1) (\r => c2.res (x.π2 r))
 ```
 
-Translation: **The request type of step 2 is a function of the response of step 1.**
+Translation: **The request type of step 2 is a function of the response of
+step 1.**
 
 This is the missing primitive that enables type-safe OAuth, multi-step wizards,
-database transactions, and any protocol where later steps depend on earlier responses.
+database transactions, and any protocol where later steps depend on earlier
+responses.
 
 ### Example: OAuth 2.0 Authorization Code Flow
 
 ```typescript
-import { step, dependentStep, protocol } from "@dgellow/typed-endpoints/protocol";
+import {
+  dependentStep,
+  protocol,
+  step,
+} from "@dgellow/typed-endpoints/protocol";
 import { z } from "zod";
 
 // Step 1: Authorization Request (independent step)
@@ -449,7 +457,11 @@ const authorizeStep = step({
     state: z.string(),
   }),
   response: z.discriminatedUnion("type", [
-    z.object({ type: z.literal("success"), code: z.string(), state: z.string() }),
+    z.object({
+      type: z.literal("success"),
+      code: z.string(),
+      state: z.string(),
+    }),
     z.object({ type: z.literal("error"), error: z.string() }),
   ]),
 });
@@ -463,7 +475,7 @@ const exchangeStep = dependentStep({
     if (prev.type !== "success") return z.never();
     return z.object({
       grant_type: z.literal("authorization_code"),
-      code: z.literal(prev.code),  // THE KEY: enforces exact code from step 1
+      code: z.literal(prev.code), // THE KEY: enforces exact code from step 1
       client_id: z.string(),
       client_secret: z.string(),
     });
@@ -484,7 +496,7 @@ const refreshStep = dependentStep({
     if (prev.type !== "success" || !prev.refresh_token) return z.never();
     return z.object({
       grant_type: z.literal("refresh_token"),
-      refresh_token: z.literal(prev.refresh_token),  // From exchange response
+      refresh_token: z.literal(prev.refresh_token), // From exchange response
       client_id: z.string(),
     });
   },
@@ -497,7 +509,11 @@ const oauth2Protocol = protocol({
   description: "OAuth 2.0 Authorization Code Grant (RFC 6749 Section 4.1)",
   initial: "authorize",
   terminal: ["revoke"],
-  steps: { authorize: authorizeStep, exchange: exchangeStep, refresh: refreshStep },
+  steps: {
+    authorize: authorizeStep,
+    exchange: exchangeStep,
+    refresh: refreshStep,
+  },
 });
 ```
 
@@ -505,25 +521,25 @@ const oauth2Protocol = protocol({
 
 The DSL maps category theory concepts from André's research to TypeScript:
 
-| Primitive | Category Theory | Description |
-|-----------|-----------------|-------------|
-| `step()` | Container | Independent request/response pair |
+| Primitive         | Category Theory         | Description                                   |
+| ----------------- | ----------------------- | --------------------------------------------- |
+| `step()`          | Container               | Independent request/response pair             |
 | `dependentStep()` | Sequential Product (>>) | Request schema derived from previous response |
-| `sequence()` | Sequential composition | Chain of steps executed in order |
-| `repeat()` | Kleene Star (*) | Zero-or-more repetitions |
-| `repeat1()` | Kleene Plus (+) | One-or-more repetitions |
-| `choice()` | Coproduct (+) | One of several alternatives |
-| `branch()` | Conditional | Branch based on predicate |
-| `parallel()` | Tensor (⊗) | Concurrent execution |
+| `sequence()`      | Sequential composition  | Chain of steps executed in order              |
+| `repeat()`        | Kleene Star (*)         | Zero-or-more repetitions                      |
+| `repeat1()`       | Kleene Plus (+)         | One-or-more repetitions                       |
+| `choice()`        | Coproduct (+)           | One of several alternatives                   |
+| `branch()`        | Conditional             | Branch based on predicate                     |
+| `parallel()`      | Tensor (⊗)              | Concurrent execution                          |
 
 ### Protocol Introspection
 
 ```typescript
 import {
-  validateProtocol,
   buildDependencyGraph,
-  topologicalSort,
   getStepNames,
+  topologicalSort,
+  validateProtocol,
 } from "@dgellow/typed-endpoints/protocol";
 
 // Validate protocol is well-formed
@@ -541,8 +557,10 @@ const order = topologicalSort(oauth2Protocol);
 
 ### What's Implemented (Phase 1-2)
 
-- Core type definitions (`Step`, `DependentStep`, `Sequence`, `Repeat`, `Choice`, etc.)
-- DSL builder functions (`step()`, `dependentStep()`, `sequence()`, `repeat()`, etc.)
+- Core type definitions (`Step`, `DependentStep`, `Sequence`, `Repeat`,
+  `Choice`, etc.)
+- DSL builder functions (`step()`, `dependentStep()`, `sequence()`, `repeat()`,
+  etc.)
 - Protocol validation and introspection utilities
 - OAuth 2.0 Authorization Code Flow as reference implementation
 - Comprehensive test suite (32 tests)
@@ -562,7 +580,7 @@ if (auth.type === "error") {
 }
 // TypeScript knows `exchange` IS available, and `code` is typed
 const tokens = await client.exchange({
-  code: auth.code,  // Type-safe: must be the exact code from authorize
+  code: auth.code, // Type-safe: must be the exact code from authorize
   client_id: "...",
   client_secret: "...",
 });
@@ -603,21 +621,25 @@ sequenceDiagram
 
 ### References
 
-- [Container Morphisms for Composable Interactive Systems](https://arxiv.org/abs/2407.16713) - André Videla (APLAS 2024)
-- [Lenses for Composable Servers](https://arxiv.org/abs/2203.15633) - André Videla (2022)
-- **Stellar** (TYPES 2025) - Practical Idris library for container-based API architecture
+- [Container Morphisms for Composable Interactive Systems](https://arxiv.org/abs/2407.16713) -
+  André Videla (APLAS 2024)
+- [Lenses for Composable Servers](https://arxiv.org/abs/2203.15633) - André
+  Videla (2022)
+- **Stellar** (TYPES 2025) - Practical Idris library for container-based API
+  architecture
 - [RFC 6749: OAuth 2.0 Authorization Framework](https://datatracker.ietf.org/doc/html/rfc6749)
 
 ---
 
 ## Future Exploration
 
-Ideas inspired by academic research in type systems, API design, and formal methods.
+Ideas inspired by academic research in type systems, API design, and formal
+methods.
 
 ### Extended Protocol Applications
 
-Building on the protocol schema foundation, additional patterns from André Videla's
-container morphism research:
+Building on the protocol schema foundation, additional patterns from André
+Videla's container morphism research:
 
 **File Session Protocol** (from the APLAS paper):
 
@@ -630,16 +652,20 @@ const fileSession = protocol({
   steps: {
     open: step({
       name: "open",
-      request: z.object({ filename: z.string(), mode: z.enum(["read", "write"]) }),
+      request: z.object({
+        filename: z.string(),
+        mode: z.enum(["read", "write"]),
+      }),
       response: z.object({ handle: z.string(), size: z.number() }),
     }),
     write: dependentStep({
       name: "write",
       dependsOn: "open",
-      request: (prev) => z.object({
-        handle: z.literal(prev.handle),  // Must use handle from open
-        content: z.string(),
-      }),
+      request: (prev) =>
+        z.object({
+          handle: z.literal(prev.handle), // Must use handle from open
+          content: z.string(),
+        }),
       response: z.object({ bytesWritten: z.number() }),
     }),
     close: dependentStep({
@@ -658,10 +684,10 @@ const fileSession = protocol({
 // Middleware as morphism composition (f ∘ g ∘ h)
 // Each morphism transforms both request (forward) and response (backward)
 const handler = compose(
-  authMiddleware,     // Container morphism: adds user to context
-  cacheMiddleware,    // Container morphism: adds cache capability
+  authMiddleware, // Container morphism: adds user to context
+  cacheMiddleware, // Container morphism: adds cache capability
   databaseMiddleware, // Container morphism: adds db connection
-  endpoint,           // Final handler
+  endpoint, // Final handler
 );
 ```
 
@@ -694,8 +720,8 @@ await task.start();    // compile error: no transition from "completed"
 
 ### Branded Validated Types
 
-Use phantom types to track validation state at compile time, preventing mixing of
-validated and unvalidated data. See
+Use phantom types to track validation state at compile time, preventing mixing
+of validated and unvalidated data. See
 [Branded Types in TypeScript](https://tigerabrodi.blog/branded-types-in-typescript).
 
 ```typescript
@@ -719,7 +745,7 @@ const secured = endpoint({
   handler: async (ctx, data, { auth, database }) => {
     const user = auth.getCurrentUser(); // provided by middleware
     return database.query(`SELECT * FROM posts WHERE user_id = ?`, [user.id]);
-  }
+  },
 });
 ```
 
@@ -754,12 +780,12 @@ await generatePactContract({
 ### Refinement Predicates
 
 Encode logical constraints in types verified by SMT solvers, inspired by
-[Liquid Types](https://goto.ucsd.edu/~rjhala/liquid/liquid_types.pdf)
-(Rondon, Kawaguchi & Jhala, PLDI 2008).
+[Liquid Types](https://goto.ucsd.edu/~rjhala/liquid/liquid_types.pdf) (Rondon,
+Kawaguchi & Jhala, PLDI 2008).
 
 ```typescript
 const PageNumber = z.number().int().min(1).meta({
-  refinement: "n >= 1",  // captured in OpenAPI x-refinement
+  refinement: "n >= 1", // captured in OpenAPI x-refinement
 });
 
 const Percentage = z.number().min(0).max(100).meta({

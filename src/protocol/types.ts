@@ -70,7 +70,9 @@ export interface DependentStep<
  *
  * The response of each step flows to the next step's request.
  */
-export interface Sequence<TSteps extends readonly AnyStep[] = readonly AnyStep[]> {
+export interface Sequence<
+  TSteps extends readonly AnyStep[] = readonly AnyStep[],
+> {
   readonly __kind: "sequence";
   readonly steps: TSteps;
 }
@@ -96,7 +98,9 @@ export interface Repeat<TStep extends AnyStep = AnyStep> {
  * Corresponds to (+) in container theory:
  * c1 + c2 = (c1.req + c2.req) !> choice c1.res c2.res
  */
-export interface Choice<TSteps extends readonly AnyStep[] = readonly AnyStep[]> {
+export interface Choice<
+  TSteps extends readonly AnyStep[] = readonly AnyStep[],
+> {
   readonly __kind: "choice";
   readonly steps: TSteps;
 }
@@ -123,7 +127,9 @@ export interface Branch<
  * Corresponds to tensor (⊗) in container theory:
  * c1 ⊗ c2 = (c1.req × c2.req) !> (c1.res × c2.res)
  */
-export interface Parallel<TSteps extends readonly AnyStep[] = readonly AnyStep[]> {
+export interface Parallel<
+  TSteps extends readonly AnyStep[] = readonly AnyStep[],
+> {
   readonly __kind: "parallel";
   readonly steps: TSteps;
 }
@@ -159,7 +165,9 @@ export interface Protocol<
 
 /** Any step type - uses `any` for variance compatibility */
 // deno-lint-ignore no-explicit-any
-export type AnyStep = Step<string, any, any> | DependentStep<string, any, any, any>;
+export type AnyStep =
+  | Step<string, any, any>
+  | DependentStep<string, any, any, any>;
 
 /** Any composition type */
 export type AnyComposition = Sequence | Repeat | Choice | Branch | Parallel;
@@ -176,29 +184,26 @@ export type StepRequest<T extends AnyStep> = T extends Step<
   string,
   infer Req,
   z.ZodType
->
-  ? z.infer<Req>
+> ? z.infer<Req>
   : T extends DependentStep<string, unknown, infer Req, z.ZodType>
     ? z.infer<Req>
-    : never;
+  : never;
 
 /** Extract the response type from a step */
 export type StepResponse<T extends AnyStep> = T extends Step<
   string,
   z.ZodType,
   infer Res
->
-  ? z.infer<Res>
+> ? z.infer<Res>
   : T extends DependentStep<string, unknown, z.ZodType, infer Res>
     ? z.infer<Res>
-    : never;
+  : never;
 
 /** Extract step name */
-export type StepName<T extends AnyStep> = T extends Step<infer N, z.ZodType, z.ZodType>
-  ? N
-  : T extends DependentStep<infer N, unknown, z.ZodType, z.ZodType>
-    ? N
-    : never;
+export type StepName<T extends AnyStep> = T extends
+  Step<infer N, z.ZodType, z.ZodType> ? N
+  : T extends DependentStep<infer N, unknown, z.ZodType, z.ZodType> ? N
+  : never;
 
 /**
  * Infer the accumulated state after a sequence of steps.
@@ -211,11 +216,13 @@ export type StepName<T extends AnyStep> = T extends Step<infer N, z.ZodType, z.Z
 export type SequenceState<
   TSteps extends readonly AnyStep[],
   TAcc extends Record<string, unknown> = Record<string, never>,
-> = TSteps extends readonly [infer First extends AnyStep, ...infer Rest extends readonly AnyStep[]]
-  ? SequenceState<
-      Rest,
-      TAcc & { [K in StepName<First>]: StepResponse<First> }
-    >
+> = TSteps extends readonly [
+  infer First extends AnyStep,
+  ...infer Rest extends readonly AnyStep[],
+] ? SequenceState<
+    Rest,
+    TAcc & { [K in StepName<First>]: StepResponse<First> }
+  >
   : TAcc;
 
 /**

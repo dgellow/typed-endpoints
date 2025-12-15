@@ -9,11 +9,12 @@ import type { ApiDef, ApiMethodDef, HttpMethod } from "./types.ts";
 import type { AnyPaginationMeta } from "../pagination/types.ts";
 
 /** Extended method def that may include pagination metadata */
-interface MethodDefWithPagination extends ApiMethodDef<
-  z.ZodType | undefined,
-  z.ZodType | undefined,
-  z.ZodType | undefined
-> {
+interface MethodDefWithPagination extends
+  ApiMethodDef<
+    z.ZodType | undefined,
+    z.ZodType | undefined,
+    z.ZodType | undefined
+  > {
   __pagination?: AnyPaginationMeta;
 }
 

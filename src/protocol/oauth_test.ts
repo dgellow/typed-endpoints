@@ -9,25 +9,25 @@ import { z } from "zod";
 
 import {
   buildDependencyGraph,
+  choice,
+  dependentStep,
   getStepDependencies,
   getStepNames,
-  step,
-  dependentStep,
   protocol,
-  sequence,
   repeat,
-  choice,
+  sequence,
+  step,
   topologicalSort,
   validateProtocol,
 } from "./dsl.ts";
 
 import {
-  authorizeStep,
-  exchangeStep,
-  refreshStep,
-  oauth2AuthCodeProtocol,
   AuthorizeRequestSchema,
   AuthorizeResponseSchema,
+  authorizeStep,
+  exchangeStep,
+  oauth2AuthCodeProtocol,
+  refreshStep,
 } from "./oauth.ts";
 
 // =============================================================================

@@ -88,19 +88,19 @@ export type { DependentStepConfig, ProtocolConfig, StepConfig } from "./dsl.ts";
 
 // OAuth 2.0 example (for reference)
 export {
-  // Protocol
-  oauth2AuthCodeProtocol,
-  // Steps
-  authorizeStep,
-  exchangeStep,
-  refreshStep,
-  revokeStep,
   // Schemas
   AuthorizeRequestSchema,
   AuthorizeResponseSchema,
+  // Steps
+  authorizeStep,
   AuthorizeSuccessSchema,
   ExchangeResponseSchema,
+  exchangeStep,
+  // Protocol
+  oauth2AuthCodeProtocol,
   OAuthErrorSchema,
+  refreshStep,
+  revokeStep,
   TokenErrorSchema,
   TokenResponseSchema,
 } from "./oauth.ts";

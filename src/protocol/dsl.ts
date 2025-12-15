@@ -115,7 +115,13 @@ export function dependentStep<
   TResponse extends z.ZodType,
   TDependsOn extends string,
 >(
-  config: DependentStepConfig<TName, TPrevResponse, TRequest, TResponse, TDependsOn>,
+  config: DependentStepConfig<
+    TName,
+    TPrevResponse,
+    TRequest,
+    TResponse,
+    TDependsOn
+  >,
 ): DependentStep<TName, TPrevResponse, TRequest, TResponse> {
   return {
     __kind: "dependent_step",
@@ -320,7 +326,9 @@ interface ProtocolLike {
 /**
  * Get all step names from a protocol.
  */
-export function getStepNames<T extends ProtocolLike>(proto: T): (keyof T["steps"])[] {
+export function getStepNames<T extends ProtocolLike>(
+  proto: T,
+): (keyof T["steps"])[] {
   return Object.keys(proto.steps) as (keyof T["steps"])[];
 }
 

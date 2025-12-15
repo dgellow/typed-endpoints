@@ -479,14 +479,14 @@ export const url = {
     // Response type uses PathToObject for inferred value types (not Zod schema types)
     // The runtime schema correctly builds nested objects from dot-notation paths
     response: z.ZodType<
-      PathToObject<TItemsField, z.infer<TItem>[]> &
-        PathToObject<TNextUrlField, string | undefined> &
-        (TPrevUrlField extends string
-          ? PathToObject<TPrevUrlField, string | undefined>
-          : object) &
-        (TExtraResponse extends MutableShape
-          ? { [K in keyof TExtraResponse]: z.infer<TExtraResponse[K]> }
-          : object)
+      & PathToObject<TItemsField, z.infer<TItem>[]>
+      & PathToObject<TNextUrlField, string | undefined>
+      & (TPrevUrlField extends string
+        ? PathToObject<TPrevUrlField, string | undefined>
+        : object)
+      & (TExtraResponse extends MutableShape
+        ? { [K in keyof TExtraResponse]: z.infer<TExtraResponse[K]> }
+        : object)
     >;
     __pagination: UrlPaginationMeta;
   } {

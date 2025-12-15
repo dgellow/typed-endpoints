@@ -62,9 +62,9 @@ export type MergeZodShapes<T, U> = {
       ? T[K] extends z.ZodObject<infer TA>
         ? U[K] extends z.ZodObject<infer UA>
           ? z.ZodObject<MergeZodShapes<TA, UA>>
-          : U[K]
         : U[K]
-      : T[K]
+      : U[K]
+    : T[K]
     : K extends keyof U ? U[K]
     : never;
 };
