@@ -28,3 +28,12 @@ Deno.test("generateTypes with multiple directories", async (t) => {
 
   await assertSnapshot(t, output);
 });
+
+Deno.test("generateTypes with client format", async (t) => {
+  const output = await generateTypes({
+    routesDirs: [FIXTURES_DIR, WEBHOOKS_DIR],
+    format: "client",
+  });
+
+  await assertSnapshot(t, output);
+});

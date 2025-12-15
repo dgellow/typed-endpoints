@@ -57,3 +57,34 @@ export type WebhooksStripeRequest = { type: string; data: { id: string; }; };
 export type WebhooksStripeResponse = { received: boolean; };
 "
 `;
+
+snapshot[`generateTypes with client format 1`] = `
+"// Auto-generated API types for use with createClient()
+// Do not edit manually
+
+export interface Api {
+  users: {
+    list: {
+      response: { id: string; name: string; email: string; }[];
+    };
+    create: {
+      body: { name: string; email: string; };
+      response: { id: string; name: string; email: string; };
+    };
+    retrieve: {
+      response: { id: string; name: string; email: string; };
+    };
+    delete: {
+    };
+  };
+  webhooks: {
+    stripe: {
+      create: {
+        body: { type: string; data: { id: string; }; };
+        response: { received: boolean; };
+      };
+    };
+  };
+}
+"
+`;

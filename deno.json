@@ -7,6 +7,7 @@
   "exports": {
     ".": "./src/mod.ts",
     "./fresh": "./src/adapters/fresh.ts",
+    "./client": "./src/client/index.ts",
     "./cli": "./src/cli.ts"
   },
   "publish": {

@@ -25,6 +25,12 @@ export interface TypeGenOptions {
    * the CLI as an external package.
    */
   config?: string;
+  /**
+   * Output format. Defaults to "types" for backwards compatibility.
+   * - "types": Flat type exports (UsersGetResponse, etc.)
+   * - "client": Resource-based Api interface for use with createClient()
+   */
+  format?: "types" | "client";
 }
 
 interface RouteModule {
@@ -298,6 +304,22 @@ export async function generateTypes(
     }
   }
 
+  const format = options.format ?? "types";
+  const content = format === "client"
+    ? generateClientFormat(endpoints)
+    : generateTypesFormat(endpoints);
+
+  if (output) {
+    await Deno.writeTextFile(output, content);
+  }
+
+  return content;
+}
+
+/**
+ * Generate flat type exports (legacy format).
+ */
+function generateTypesFormat(endpoints: EndpointType[]): string {
   const lines: string[] = [
     "// Auto-generated from API route Zod schemas",
     "// Do not edit manually",
@@ -320,11 +342,143 @@ export async function generateTypes(
     lines.push("");
   }
 
-  const content = lines.join("\n");
+  return lines.join("\n");
+}
 
-  if (output) {
-    await Deno.writeTextFile(output, content);
+/**
+ * Convert HTTP method + path pattern to resource method name.
+ * - GET /users -> list
+ * - GET /users/:id -> retrieve
+ * - POST /users -> create
+ * - PUT/PATCH /users/:id -> update
+ * - DELETE /users/:id -> delete
+ */
+function httpMethodToResourceMethod(
+  method: string,
+  hasParams: boolean,
+): string {
+  switch (method) {
+    case "GET":
+      return hasParams ? "retrieve" : "list";
+    case "POST":
+      return "create";
+    case "PUT":
+    case "PATCH":
+      return "update";
+    case "DELETE":
+      return "delete";
+    default:
+      return method.toLowerCase();
+  }
+}
+
+/**
+ * Convert a path like /api/users/[id]/posts to resource segments.
+ * Returns: ["users", "posts"] (strips /api prefix and param segments)
+ */
+function pathToResourceSegments(path: string): string[] {
+  return path
+    .replace(/^\/api\//, "") // Remove /api/ prefix
+    .replace(/^\/(webhooks|internal)\//, "$1/") // Keep webhooks/internal as first segment
+    .split("/")
+    .filter((seg) => seg && !seg.startsWith("[") && !seg.startsWith(":"));
+}
+
+/**
+ * Check if a path has dynamic parameters.
+ */
+function pathHasParams(path: string): boolean {
+  return path.includes("[") || path.includes(":");
+}
+
+interface ResourceMethod {
+  name: string;
+  body?: string;
+  response?: string;
+}
+
+interface ResourceNode {
+  methods: Record<string, ResourceMethod>;
+  children: Record<string, ResourceNode>;
+}
+
+/**
+ * Generate resource-based Api interface for use with createClient().
+ */
+function generateClientFormat(endpoints: EndpointType[]): string {
+  // Build resource tree
+  const root: Record<string, ResourceNode> = {};
+
+  for (const endpoint of endpoints) {
+    const segments = pathToResourceSegments(endpoint.path);
+    const hasParams = pathHasParams(endpoint.path);
+    const resourceMethod = httpMethodToResourceMethod(
+      endpoint.method,
+      hasParams,
+    );
+
+    // Navigate/create the tree structure
+    let current = root;
+    for (let i = 0; i < segments.length; i++) {
+      const segment = segments[i];
+      if (!current[segment]) {
+        current[segment] = { methods: {}, children: {} };
+      }
+
+      if (i === segments.length - 1) {
+        // Last segment - add the method
+        current[segment].methods[resourceMethod] = {
+          name: resourceMethod,
+          body: endpoint.request,
+          response: endpoint.response,
+        };
+      } else {
+        // Intermediate segment - go deeper
+        current = current[segment].children;
+      }
+    }
   }
 
-  return content;
+  // Generate TypeScript interface
+  const lines: string[] = [
+    "// Auto-generated API types for use with createClient()",
+    "// Do not edit manually",
+    "",
+    "export interface Api {",
+  ];
+
+  function renderNode(
+    node: Record<string, ResourceNode>,
+    indent: string,
+  ): void {
+    for (const [name, resource] of Object.entries(node)) {
+      lines.push(`${indent}${name}: {`);
+
+      // Render methods
+      for (const [methodName, method] of Object.entries(resource.methods)) {
+        lines.push(`${indent}  ${methodName}: {`);
+        if (method.body) {
+          lines.push(`${indent}    body: ${method.body};`);
+        }
+        if (method.response) {
+          lines.push(`${indent}    response: ${method.response};`);
+        }
+        lines.push(`${indent}  };`);
+      }
+
+      // Render children
+      if (Object.keys(resource.children).length > 0) {
+        renderNode(resource.children, indent + "  ");
+      }
+
+      lines.push(`${indent}};`);
+    }
+  }
+
+  renderNode(root, "  ");
+
+  lines.push("}");
+  lines.push("");
+
+  return lines.join("\n");
 }
