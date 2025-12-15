@@ -107,6 +107,86 @@ export type UsersPostRequest = { name: string; email: string };
 export type UsersPostResponse = { id: string; name: string; email: string };
 ```
 
+### Typed Client
+
+Generate a resource-based API interface and use the typed client:
+
+```bash
+deno run -A jsr:@dgellow/typed-endpoints/cli -r routes/api -o src/api-types.ts --format client
+```
+
+This generates:
+
+```typescript
+export interface Api {
+  users: {
+    list: { response: { id: string; name: string }[] };
+    retrieve: { response: { id: string; name: string } };
+    create: { body: { name: string }; response: { id: string; name: string } };
+    delete: {};
+  };
+}
+```
+
+Use it with the typed client:
+
+```typescript
+import { createClient } from "@dgellow/typed-endpoints/client";
+import type { Api } from "./api-types.ts";
+
+const client = createClient<Api>("http://localhost:3000");
+
+// All methods are typed
+const users = await client.users.list();
+const user = await client.users.retrieve("123");
+const created = await client.users.create({ name: "Sam" });
+await client.users.delete("123");
+```
+
+### Server-Sent Events (SSE)
+
+Define typed SSE endpoints with `sseEndpoint`:
+
+```typescript
+// routes/api/tasks/[id]/events.ts
+import { createApiHandlers, sseEndpoint } from "@dgellow/typed-endpoints/fresh";
+import { z } from "zod";
+
+export const handler = createApiHandlers({
+  GET: sseEndpoint({
+    params: z.object({ id: z.string() }),
+    events: {
+      progress: z.object({ percent: z.number() }),
+      complete: z.object({ result: z.string() }),
+      error: z.object({ message: z.string() }),
+    },
+    async *handler(ctx, { params }, signal) {
+      for (let i = 0; i <= 100; i += 10) {
+        if (signal.aborted) return;
+        yield { event: "progress", data: { percent: i } };
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      yield { event: "complete", data: { result: "done" } };
+    },
+  }),
+});
+```
+
+Subscribe from the client with typed events:
+
+```typescript
+for await (const event of client.tasks.subscribe("task-123")) {
+  switch (event.event) {
+    case "progress":
+      console.log(`${event.data.percent}%`); // percent is number
+      break;
+    case "complete":
+      console.log(event.data.result); // result is string
+      break;
+  }
+}
+```
+
 ## API
 
 ### `createApiHandlers(def)`
@@ -125,6 +205,38 @@ Each method definition can include:
 - `summary` - OpenAPI summary
 - `description` - OpenAPI description
 - `tags` - OpenAPI tags
+
+### `sseEndpoint(def)`
+
+Defines a Server-Sent Events endpoint with typed events.
+
+Definition includes:
+
+- `events` - Object mapping event names to Zod schemas (required)
+- `query` - Zod schema for query parameters
+- `params` - Zod schema for path parameters
+- `handler` - AsyncGenerator that yields typed events
+- `public`, `summary`, `description`, `tags` - OpenAPI metadata
+
+### `createClient<Api>(config)`
+
+Creates a typed HTTP client from a generated Api interface.
+
+Config can be a URL string or an object:
+
+- `baseUrl` - Base URL for requests
+- `basePath` - API path prefix (default: "/api")
+- `headers` - Default headers for all requests
+- `fetch` - Custom fetch implementation
+
+Methods:
+
+- `list(options?)` - GET collection
+- `retrieve(id, options?)` - GET single resource
+- `create(body, options?)` - POST new resource
+- `update(id, body, options?)` - PUT resource
+- `delete(id, options?)` - DELETE resource
+- `subscribe(id?, options?)` - SSE subscription (returns AsyncIterable)
 
 ### `openApiPlugin(options)`
 
@@ -155,8 +267,9 @@ Returns the generated types as a string.
 typed-endpoints - Generate TypeScript types from API route Zod schemas
 
 Options:
-  -r, --routes <dir>    Routes directory (default: routes/api)
+  -r, --routes <dir>    Routes directory (can be specified multiple times)
   -o, --output <file>   Output file path (required)
+  -f, --format <type>   Output format: "types" or "client" (default: types)
   -c, --config <file>   Path to deno.json (auto-detected if not provided)
   -h, --help            Show help
 ```
@@ -166,12 +279,15 @@ Options:
 ```
 src/
 ├── core/
-│   ├── types.ts       # Shared types
+│   ├── types.ts       # Shared types (including SSE)
 │   ├── validation.ts  # Request validation
 │   └── openapi.ts     # OpenAPI spec generation
+├── client/
+│   ├── index.ts       # Typed HTTP client
+│   └── types.ts       # Client type definitions
 ├── tsgen/             # TypeScript type generation
 ├── adapters/
-│   └── fresh.ts       # Fresh adapter
+│   └── fresh.ts       # Fresh adapter (endpoint, sseEndpoint)
 ├── vite-plugin.ts     # Build-time OpenAPI generation
 └── cli.ts             # CLI for type generation
 ```
