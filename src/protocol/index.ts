@@ -113,3 +113,21 @@ export type {
   OAuth2Protocol,
   TokenResponse,
 } from "./oauth.ts";
+
+// Protocol client
+export {
+  createMockExecutor,
+  createSession,
+  ProtocolSession,
+} from "./client.ts";
+
+// Client types
+export type {
+  AvailableSteps,
+  ExecuteResult,
+  ExecutionContext,
+  MockResponses,
+  ResponseOf,
+  SessionState,
+  StepExecutor,
+} from "./client.ts";

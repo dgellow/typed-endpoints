@@ -48,13 +48,14 @@ export interface DependentStep<
   TPrevResponse = unknown,
   TRequest extends z.ZodType = z.ZodType,
   TResponse extends z.ZodType = z.ZodType,
+  TDependsOn extends string = string,
 > {
   readonly __kind: "dependent_step";
   readonly name: TName;
   /** Request schema is derived from previous step's response */
   readonly request: (prev: TPrevResponse) => TRequest;
   readonly response: TResponse;
-  readonly dependsOn: string;
+  readonly dependsOn: TDependsOn;
   readonly description?: string;
 }
 
@@ -146,7 +147,8 @@ export interface Parallel<
  */
 export interface Protocol<
   TName extends string = string,
-  TSteps extends Record<string, AnyStep | AnyComposition> = Record<
+  // Minimal constraint to preserve literal types in steps
+  TSteps extends Record<string, { readonly __kind: string }> = Record<
     string,
     AnyStep | AnyComposition
   >,
@@ -167,7 +169,8 @@ export interface Protocol<
 // deno-lint-ignore no-explicit-any
 export type AnyStep =
   | Step<string, any, any>
-  | DependentStep<string, any, any, any>;
+  // deno-lint-ignore no-explicit-any
+  | DependentStep<string, any, any, any, any>;
 
 /** Any composition type */
 export type AnyComposition = Sequence | Repeat | Choice | Branch | Parallel;

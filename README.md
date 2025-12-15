@@ -393,6 +393,7 @@ src/
 ├── protocol/          # Protocol schemas (experimental)
 │   ├── types.ts       # Step, DependentStep, Sequence, Protocol types
 │   ├── dsl.ts         # Builder functions: step(), dependentStep(), etc.
+│   ├── client.ts      # Type-safe protocol session client
 │   ├── oauth.ts       # OAuth 2.0 reference implementation
 │   └── index.ts       # Module exports
 ├── client/
@@ -555,7 +556,7 @@ const order = topologicalSort(oauth2Protocol);
 // ["authorize", "exchange", "refresh"]
 ```
 
-### What's Implemented (Phase 1-2)
+### What's Implemented (Phase 1-3)
 
 - Core type definitions (`Step`, `DependentStep`, `Sequence`, `Repeat`,
   `Choice`, etc.)
@@ -563,28 +564,64 @@ const order = topologicalSort(oauth2Protocol);
   etc.)
 - Protocol validation and introspection utilities
 - OAuth 2.0 Authorization Code Flow as reference implementation
-- Comprehensive test suite (32 tests)
+- **Type-safe protocol client** with compile-time step enforcement
+- Comprehensive test suite (49 tests)
 
-### Coming Next
+### Type-Safe Protocol Client (Phase 3)
 
-**Phase 3: Type-Safe Protocol Clients**
+The protocol client enforces valid step sequences at compile time. After
+executing a step, TypeScript knows which steps become available:
 
 ```typescript
-// PLANNED: Client that enforces protocol sequences at compile time
-const client = createProtocolClient(oauth2Protocol);
+import {
+  createMockExecutor,
+  createSession,
+} from "@dgellow/typed-endpoints/protocol";
 
-const auth = await client.authorize({ client_id: "...", state: "..." });
+// Create a session for the protocol
+const executor = createMockExecutor(oauth2Protocol, {
+  authorize: { type: "success", code: "auth-code-123", state: "random" },
+  exchange: { type: "success", access_token: "token-xyz", ... },
+});
+
+const session = createSession(oauth2Protocol, executor);
+
+// Execute steps - TypeScript tracks which are available
+const { response: auth, session: s1 } = await session.execute("authorize", {
+  response_type: "code",
+  client_id: "my-client",
+  state: "random",
+});
+
 if (auth.type === "error") {
-  // TypeScript knows `exchange` is NOT available here
+  // TypeScript knows: only "authorize" is available (can retry)
+  // s1.execute("exchange", ...) would be a compile error!
   return;
 }
-// TypeScript knows `exchange` IS available, and `code` is typed
-const tokens = await client.exchange({
-  code: auth.code, // Type-safe: must be the exact code from authorize
-  client_id: "...",
-  client_secret: "...",
+
+// After successful authorize, "exchange" is now available
+const { response: tokens, session: s2 } = await s1.execute("exchange", {
+  grant_type: "authorization_code",
+  code: auth.code, // Must match the code from authorize response
+  client_id: "my-client",
+  client_secret: "secret",
 });
+
+// Session tracks all responses with their types
+console.log(s2.responses.authorize.code); // typed as string
+console.log(s2.responses.exchange.access_token); // typed as string
 ```
+
+Key features:
+
+- **Compile-time step enforcement**: Can only execute steps whose dependencies
+  are satisfied
+- **Literal type preservation**: `dependsOn: "authorize"` is preserved as the
+  literal `"authorize"`, not widened to `string`
+- **Accumulating state**: Session responses are typed as they accumulate
+- **Runtime validation**: Request/response schemas are validated at runtime
+
+### Coming Next
 
 **Phase 4: OpenAPI Protocol Extensions**
 
@@ -603,20 +640,31 @@ x-protocol:
       repeatable: true
 ```
 
-**Phase 5: Protocol Visualization**
+**Phase 5: Arazzo Spec Generation**
 
-```mermaid
-sequenceDiagram
-    Client->>AuthServer: authorize(client_id, redirect_uri)
-    AuthServer-->>Client: code OR error
-    alt success
-        Client->>TokenServer: exchange(code)
-        TokenServer-->>Client: access_token, refresh_token
-        loop Token refresh
-            Client->>TokenServer: refresh(refresh_token)
-            TokenServer-->>Client: new access_token
-        end
-    end
+Export protocols to [OpenAPI Arazzo](https://spec.openapis.org/arazzo/latest.html)
+format for interoperability with other tools. Note: Arazzo is a lossy export -
+our compile-time schema derivation (`z.literal(prev.code)`) is more powerful
+than Arazzo's runtime value passing.
+
+```yaml
+# PLANNED: Arazzo workflow export
+arazzo: "1.0.0"
+info:
+  title: OAuth2 Authorization Code Flow
+workflows:
+  - workflowId: oauth2-auth-code
+    steps:
+      - stepId: authorize
+        operationId: authorize
+        outputs:
+          code: $response.body.code
+      - stepId: exchange
+        operationId: exchange
+        parameters:
+          - name: code
+            in: body
+            value: $steps.authorize.outputs.code
 ```
 
 ### References

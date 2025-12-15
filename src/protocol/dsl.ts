@@ -122,7 +122,7 @@ export function dependentStep<
     TResponse,
     TDependsOn
   >,
-): DependentStep<TName, TPrevResponse, TRequest, TResponse> {
+): DependentStep<TName, TPrevResponse, TRequest, TResponse, TDependsOn> {
   return {
     __kind: "dependent_step",
     name: config.name,
@@ -270,7 +270,8 @@ export function parallel<TSteps extends readonly AnyStep[]>(
  */
 export interface ProtocolConfig<
   TName extends string,
-  TSteps extends Record<string, AnyStep>,
+  // Use minimal constraint to avoid widening literal types in steps
+  TSteps extends Record<string, { readonly __kind: string }>,
 > {
   readonly name: TName;
   readonly steps: TSteps;
@@ -298,7 +299,8 @@ export interface ProtocolConfig<
  */
 export function protocol<
   TName extends string,
-  TSteps extends Record<string, AnyStep>,
+  // Use minimal constraint to preserve literal types - const ensures no widening
+  const TSteps extends Record<string, { readonly __kind: string }>,
 >(config: ProtocolConfig<TName, TSteps>): Protocol<TName, TSteps> {
   return {
     __kind: "protocol",
