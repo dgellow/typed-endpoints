@@ -313,3 +313,200 @@ Deno.test("createClient.subscribe without id", async () => {
   assertEquals(events.length, 1);
   assertEquals(events[0], { event: "update", data: { count: 1 } });
 });
+
+Deno.test("createClient.subscribe parses event IDs", async () => {
+  const sseData = 'id: msg-001\nevent: update\ndata: {"value":1}\n\n';
+
+  const mockFetch = createMockFetch(() => {
+    return new Response(sseData, {
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  });
+
+  type TestApi = {
+    stream: {
+      subscribe: { events: { update: { value: number } } };
+    };
+  };
+
+  const client = createClient<TestApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: mockFetch,
+  });
+
+  const events: Array<{ event: string; data: unknown; id?: string }> = [];
+  for await (const event of client.stream.subscribe()) {
+    events.push({
+      event: event.event as string,
+      data: event.data,
+      id: event.id,
+    });
+  }
+
+  assertEquals(events[0].id, "msg-001");
+  assertEquals(events[0].data, { value: 1 });
+});
+
+Deno.test("createClient.subscribe handles default event type", async () => {
+  // When no event: field, should default to "message"
+  const sseData = 'data: {"test":true}\n\n';
+
+  const mockFetch = createMockFetch(() => {
+    return new Response(sseData, {
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  });
+
+  type TestApi = {
+    stream: {
+      subscribe: { events: { message: { test: boolean } } };
+    };
+  };
+
+  const client = createClient<TestApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: mockFetch,
+  });
+
+  const events: Array<{ event: string; data: unknown }> = [];
+  for await (const event of client.stream.subscribe()) {
+    events.push({ event: event.event as string, data: event.data });
+  }
+
+  assertEquals(events[0].event, "message");
+  assertEquals(events[0].data, { test: true });
+});
+
+Deno.test("createClient.subscribe handles multiple events in one chunk", async () => {
+  const sseData = [
+    'event: a\ndata: {"n":1}\n\n',
+    'event: b\ndata: {"n":2}\n\n',
+    'event: c\ndata: {"n":3}\n\n',
+  ].join("");
+
+  const mockFetch = createMockFetch(() => {
+    return new Response(sseData, {
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  });
+
+  type TestApi = {
+    stream: {
+      subscribe: {
+        events: { a: { n: number }; b: { n: number }; c: { n: number } };
+      };
+    };
+  };
+
+  const client = createClient<TestApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: mockFetch,
+  });
+
+  const events: Array<{ event: string; data: unknown }> = [];
+  for await (const event of client.stream.subscribe()) {
+    events.push({ event: event.event as string, data: event.data });
+  }
+
+  assertEquals(events.length, 3);
+  assertEquals(events[0], { event: "a", data: { n: 1 } });
+  assertEquals(events[1], { event: "b", data: { n: 2 } });
+  assertEquals(events[2], { event: "c", data: { n: 3 } });
+});
+
+Deno.test("createClient.subscribe throws on non-ok response", async () => {
+  const mockFetch = createMockFetch(() => {
+    return new Response("Not found", { status: 404, statusText: "Not Found" });
+  });
+
+  type TestApi = {
+    stream: {
+      subscribe: { events: { update: { value: number } } };
+    };
+  };
+
+  const client = createClient<TestApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: mockFetch,
+  });
+
+  const error = await assertRejects(async () => {
+    for await (const _ of client.stream.subscribe({ reconnect: false })) {
+      // Should not reach here
+    }
+  }, ClientError);
+
+  assertEquals(error.status, 404);
+});
+
+Deno.test("createClient.subscribe respects abort signal", async () => {
+  const controller = new AbortController();
+  let fetchCount = 0;
+
+  const mockFetch = createMockFetch(() => {
+    fetchCount++;
+    // Return a stream that would keep going, but we'll abort
+    return new Response('event: ping\ndata: {"n":1}\n\n', {
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  });
+
+  type TestApi = {
+    stream: {
+      subscribe: { events: { ping: { n: number } } };
+    };
+  };
+
+  const client = createClient<TestApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: mockFetch,
+  });
+
+  const events: unknown[] = [];
+  for await (
+    const event of client.stream.subscribe({
+      signal: controller.signal,
+    })
+  ) {
+    events.push(event);
+    controller.abort(); // Abort after first event
+  }
+
+  assertEquals(events.length, 1);
+  assertEquals(fetchCount, 1);
+});
+
+Deno.test("createClient.subscribe passes query params", async () => {
+  const requests: { url: string }[] = [];
+
+  const mockFetch = createMockFetch((url) => {
+    requests.push({ url });
+    return new Response('data: {"ok":true}\n\n', {
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  });
+
+  type TestApi = {
+    stream: {
+      subscribe: { events: { message: { ok: boolean } } };
+    };
+  };
+
+  const client = createClient<TestApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: mockFetch,
+  });
+
+  for await (
+    const _ of client.stream.subscribe({
+      query: { filter: "active", limit: 10 },
+    })
+  ) {
+    // consume
+  }
+
+  assertEquals(
+    requests[0].url,
+    "http://localhost:3000/api/stream?filter=active&limit=10",
+  );
+});

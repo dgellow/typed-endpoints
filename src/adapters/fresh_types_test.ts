@@ -5,6 +5,8 @@ import {
   createApiHandlers,
   endpoint,
   type FreshApiMethodDef,
+  type FreshSseMethodDef,
+  sseEndpoint,
 } from "./fresh.ts";
 import { z } from "zod";
 
@@ -82,4 +84,67 @@ const _getMethodTest = endpoint({
     void [_p, _q, _b, _wrongParams, _wrongBody];
     return Response.json({ ok: true });
   },
+});
+
+// Test 4: SSE endpoint type inference
+const sseHandlers = createApiHandlers({
+  GET: sseEndpoint({
+    params: z.object({ taskId: z.string() }),
+    events: {
+      progress: z.object({ percent: z.number() }),
+      complete: z.object({ result: z.string() }),
+      error: z.object({ message: z.string(), code: z.number() }),
+    },
+    async *handler(_ctx, { params }, signal) {
+      // Params should be typed
+      params.taskId satisfies string;
+      // @ts-expect-error - taskId is string, not number
+      params.taskId satisfies number;
+
+      // Signal should be AbortSignal
+      signal satisfies AbortSignal;
+
+      // Yielded events must match schema
+      yield { event: "progress", data: { percent: 50 } };
+      yield { event: "complete", data: { result: "done" } };
+      yield { event: "error", data: { message: "failed", code: 500 } };
+    },
+  }),
+});
+void sseHandlers;
+
+// Test 5: Direct FreshSseMethodDef type
+const progressEvents = {
+  tick: z.object({ count: z.number() }),
+};
+type ProgressEvents = typeof progressEvents;
+type QuerySchema = z.ZodObject<{ limit: z.ZodNumber }>;
+
+const _sseDef: FreshSseMethodDef<
+  unknown,
+  QuerySchema,
+  undefined,
+  ProgressEvents
+> = {
+  query: z.object({ limit: z.number() }),
+  events: progressEvents,
+  async *handler(_ctx, { query }, _signal) {
+    query.limit satisfies number;
+    yield { event: "tick", data: { count: 1 } };
+  },
+};
+
+// Test 6: SSE without params (no id required on client)
+const _noParamsSse = createApiHandlers({
+  GET: sseEndpoint({
+    events: {
+      update: z.object({ value: z.number() }),
+    },
+    async *handler(_ctx, { params, query }, _signal) {
+      // params and query should be unknown when not specified
+      void params;
+      void query;
+      yield { event: "update", data: { value: 42 } };
+    },
+  }),
 });
