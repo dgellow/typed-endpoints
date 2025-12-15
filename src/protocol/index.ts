@@ -130,3 +130,13 @@ export type {
   SessionState,
   StepExecutor,
 } from "./client.ts";
+
+// OpenAPI extensions
+export {
+  addProtocolsToSpec,
+  addProtocolToSpec,
+  protocolToOpenApi,
+} from "./openapi.ts";
+
+// OpenAPI extension types
+export type { XProtocol, XProtocolStep } from "./openapi.ts";

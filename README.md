@@ -556,7 +556,7 @@ const order = topologicalSort(oauth2Protocol);
 // ["authorize", "exchange", "refresh"]
 ```
 
-### What's Implemented (Phase 1-3)
+### What's Implemented
 
 - Core type definitions (`Step`, `DependentStep`, `Sequence`, `Repeat`,
   `Choice`, etc.)
@@ -565,9 +565,9 @@ const order = topologicalSort(oauth2Protocol);
 - Protocol validation and introspection utilities
 - OAuth 2.0 Authorization Code Flow as reference implementation
 - **Type-safe protocol client** with compile-time step enforcement
-- Comprehensive test suite (49 tests)
+- **OpenAPI x-protocol extension** for spec generation
 
-### Type-Safe Protocol Client (Phase 3)
+### Type-Safe Protocol Client
 
 The protocol client enforces valid step sequences at compile time. After
 executing a step, TypeScript knows which steps become available:
@@ -621,51 +621,46 @@ Key features:
 - **Accumulating state**: Session responses are typed as they accumulate
 - **Runtime validation**: Request/response schemas are validated at runtime
 
-### Coming Next
+### OpenAPI Protocol Extensions
 
-**Phase 4: OpenAPI Protocol Extensions**
+Export protocols to OpenAPI `x-protocol` extension format:
+
+```typescript
+import {
+  addProtocolToSpec,
+  protocolToOpenApi,
+} from "@dgellow/typed-endpoints/protocol";
+
+// Convert protocol to x-protocol format
+const xProtocol = protocolToOpenApi(oauth2Protocol);
+
+// Or add directly to an OpenAPI spec
+const spec = await generateOpenApiSpec({ routesDir: "routes/api" });
+const specWithProtocol = addProtocolToSpec(spec, oauth2Protocol);
+```
+
+Generated x-protocol extension:
 
 ```yaml
-# PLANNED: x-protocol extension in OpenAPI spec
 x-protocol:
   name: OAuth2AuthorizationCode
+  description: OAuth 2.0 Authorization Code Grant (RFC 6749 Section 4.1)
+  initial: authorize
+  terminal: [revoke]
   steps:
     - name: authorize
+      description: Redirect user to authorization server for authentication
       next: [exchange]
     - name: exchange
       dependsOn: authorize
+      description: Exchange authorization code for access token
       next: [refresh, revoke]
     - name: refresh
       dependsOn: exchange
-      repeatable: true
-```
-
-**Phase 5: Arazzo Spec Generation**
-
-Export protocols to
-[OpenAPI Arazzo](https://spec.openapis.org/arazzo/latest.html) format for
-interoperability with other tools. Note: Arazzo is a lossy export - our
-compile-time schema derivation (`z.literal(prev.code)`) is more powerful than
-Arazzo's runtime value passing.
-
-```yaml
-# PLANNED: Arazzo workflow export
-arazzo: "1.0.0"
-info:
-  title: OAuth2 Authorization Code Flow
-workflows:
-  - workflowId: oauth2-auth-code
-    steps:
-      - stepId: authorize
-        operationId: authorize
-        outputs:
-          code: $response.body.code
-      - stepId: exchange
-        operationId: exchange
-        parameters:
-          - name: code
-            in: body
-            value: $steps.authorize.outputs.code
+      description: Refresh access token using refresh token
+    - name: revoke
+      dependsOn: exchange
+      description: Revoke access or refresh token
 ```
 
 ### References

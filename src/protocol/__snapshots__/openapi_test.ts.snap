@@ -1,0 +1,101 @@
+export const snapshot = {};
+
+snapshot[`protocolToOpenApi converts simple protocol 1`] = `
+{
+  description: "A simple test protocol",
+  initial: "start",
+  name: "SimpleProtocol",
+  steps: [
+    {
+      description: "Initial step",
+      name: "start",
+      next: [
+        "middle",
+      ],
+    },
+    {
+      dependsOn: "start",
+      description: "Middle step",
+      name: "middle",
+      next: [
+        "end",
+      ],
+    },
+    {
+      dependsOn: "middle",
+      description: "Final step",
+      name: "end",
+    },
+  ],
+  terminal: [
+    "end",
+  ],
+}
+`;
+
+snapshot[`protocolToOpenApi handles branching (multiple next) 1`] = `
+{
+  initial: "init",
+  name: "BranchingProtocol",
+  steps: [
+    {
+      name: "init",
+      next: [
+        "success",
+        "failure",
+      ],
+    },
+    {
+      dependsOn: "init",
+      name: "success",
+    },
+    {
+      dependsOn: "init",
+      name: "failure",
+    },
+  ],
+  terminal: [
+    "success",
+    "failure",
+  ],
+}
+`;
+
+snapshot[`protocolToOpenApi converts OAuth protocol 1`] = `
+{
+  description: "OAuth 2.0 Authorization Code Grant (RFC 6749 Section 4.1)",
+  initial: "authorize",
+  name: "OAuth2AuthorizationCode",
+  steps: [
+    {
+      description: "Redirect user to authorization server for authentication",
+      name: "authorize",
+      next: [
+        "exchange",
+      ],
+    },
+    {
+      dependsOn: "authorize",
+      description: "Exchange authorization code for access token",
+      name: "exchange",
+      next: [
+        "refresh",
+        "revoke",
+      ],
+    },
+    {
+      dependsOn: "exchange",
+      description: "Refresh access token using refresh token",
+      name: "refresh",
+    },
+    {
+      dependsOn: "exchange",
+      description: "Revoke access or refresh token",
+      name: "revoke",
+    },
+  ],
+  terminal: [
+    "revoke",
+  ],
+}
+`;

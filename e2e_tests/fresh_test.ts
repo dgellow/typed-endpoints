@@ -6,9 +6,13 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { createApiHandlers, endpoint, sseEndpoint } from "./fresh.ts";
+import {
+  createApiHandlers,
+  endpoint,
+  sseEndpoint,
+} from "../src/adapters/fresh.ts";
 import { z } from "zod";
-import { cursor } from "../pagination/index.ts";
+import { cursor } from "../src/pagination/index.ts";
 
 const UserSchema = z.object({
   id: z.string(),
