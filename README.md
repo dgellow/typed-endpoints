@@ -402,7 +402,39 @@ src/
 
 ## Future Exploration
 
-Ideas inspired by academic research in type systems, API design, and formal methods:
+Ideas inspired by academic research in type systems, API design, and formal methods.
+
+### Container Morphisms for API Composition
+
+[André Videla's research](https://andrevidela.com/) provides the theoretical foundation
+for type-safe client-server communication using category theory and dependent types:
+
+- [Container Morphisms for Composable Interactive Systems](https://arxiv.org/abs/2407.16713)
+  (2024) - Models request/response as container morphisms where response types
+  *depend on* request types, ensuring correctness at compile time
+- [Lenses for Composable Servers](https://arxiv.org/abs/2203.15633) (2022) -
+  Uses parameterised lenses to compose endpoints; lens laws mirror HTTP semantics
+- **Stellar** (TYPES 2025) - Practical Idris library implementing containers for
+  API architecture, enabling dependent sequences like "query A, then based on
+  response, query B"
+
+```typescript
+// Inspired by container morphisms: response type depends on request
+const api = container({
+  // Response type is indexed by the request path
+  "/users": { response: User[] },
+  "/users/:id": { response: User },
+  "/users/:id/posts": { response: Post[] },
+});
+
+// Middleware as morphism composition (f ∘ g ∘ h)
+const handler = compose(
+  authMiddleware,     // Container morphism: adds user to context
+  cacheMiddleware,    // Container morphism: adds cache capability
+  databaseMiddleware, // Container morphism: adds db connection
+  endpoint,           // Final handler
+);
+```
 
 ### Resource Protocol Types
 
