@@ -1,0 +1,51 @@
+export const snapshot = {};
+
+snapshot[`createApiHandlers preserves __pagination in __apiDef for cursor pagination 1`] = `
+{
+  cursor: "nextCursor",
+  cursorParam: "cursor",
+  items: "data",
+  limitParam: "limit",
+  style: "cursor",
+}
+`;
+
+snapshot[`createApiHandlers preserves __pagination for offset pagination 1`] = `
+{
+  items: "results",
+  limitParam: "take",
+  offsetParam: "skip",
+  style: "offset",
+  total: "count",
+}
+`;
+
+snapshot[`createApiHandlers preserves __pagination for page pagination 1`] = `
+{
+  items: "users",
+  pageParam: "p",
+  perPageParam: "size",
+  style: "page",
+  total: "totalCount",
+  totalPages: "pageCount",
+}
+`;
+
+snapshot[`createApiHandlers preserves __pagination for cursorId pagination 1`] = `
+{
+  cursorIdParam: "after",
+  idField: "id",
+  items: "data",
+  limitParam: "limit",
+  style: "cursorId",
+}
+`;
+
+snapshot[`createApiHandlers preserves __pagination for url pagination 1`] = `
+{
+  items: "results",
+  nextUrl: "links.next",
+  prevUrl: "links.prev",
+  style: "url",
+}
+`;

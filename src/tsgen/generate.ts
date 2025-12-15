@@ -151,6 +151,11 @@ try {
       }
     }
 
+    // Handle pagination metadata
+    if (def.__pagination) {
+      methodResult.pagination = def.__pagination;
+    }
+
     result[method] = methodResult;
   }
   console.log(JSON.stringify(result));
@@ -207,6 +212,50 @@ async function importWithConfig(
   }
 }
 
+interface BasePaginationMeta {
+  items: string;
+  limitParam?: string;
+}
+
+interface CursorPaginationMeta extends BasePaginationMeta {
+  style: "cursor";
+  cursor: string;
+  cursorParam: string;
+}
+
+interface CursorIdPaginationMeta extends BasePaginationMeta {
+  style: "cursorId";
+  cursorIdParam: string;
+  idField: string;
+}
+
+interface OffsetPaginationMeta extends BasePaginationMeta {
+  style: "offset";
+  total: string;
+  offsetParam: string;
+}
+
+interface PagePaginationMeta extends BasePaginationMeta {
+  style: "page";
+  total?: string;
+  totalPages?: string;
+  pageParam: string;
+  perPageParam?: string;
+}
+
+interface UrlPaginationMeta extends BasePaginationMeta {
+  style: "url";
+  nextUrl: string;
+  prevUrl?: string;
+}
+
+type PaginationMeta =
+  | CursorPaginationMeta
+  | CursorIdPaginationMeta
+  | OffsetPaginationMeta
+  | PagePaginationMeta
+  | UrlPaginationMeta;
+
 interface EndpointType {
   name: string;
   path: string;
@@ -214,6 +263,7 @@ interface EndpointType {
   request?: string;
   response?: string;
   events?: Record<string, string>;
+  pagination?: PaginationMeta;
 }
 
 /**
@@ -328,6 +378,16 @@ export async function generateTypes(
         }
       }
 
+      // Handle pagination metadata
+      const paginationDef = methodDef as { __pagination?: PaginationMeta };
+      if (paginationDef.__pagination) {
+        endpoint.pagination = paginationDef.__pagination;
+      } else if ((def as { pagination?: PaginationMeta }).pagination) {
+        // From subprocess
+        endpoint.pagination = (def as { pagination?: PaginationMeta })
+          .pagination;
+      }
+
       endpoints.push(endpoint);
     }
   }
@@ -424,6 +484,7 @@ interface ResourceMethod {
   body?: string;
   response?: string;
   events?: Record<string, string>;
+  pagination?: PaginationMeta;
 }
 
 interface ResourceNode {
@@ -463,6 +524,7 @@ function generateClientFormat(endpoints: EndpointType[]): string {
           body: endpoint.request,
           response: endpoint.response,
           events: endpoint.events,
+          pagination: endpoint.pagination,
         };
       } else {
         // Intermediate segment - go deeper
@@ -499,6 +561,74 @@ function generateClientFormat(endpoints: EndpointType[]): string {
           lines.push(`${indent}    events: {`);
           for (const [eventName, eventType] of Object.entries(method.events)) {
             lines.push(`${indent}      ${eventName}: ${eventType};`);
+          }
+          lines.push(`${indent}    };`);
+        }
+        if (method.pagination) {
+          lines.push(`${indent}    pagination: {`);
+          lines.push(`${indent}      style: "${method.pagination.style}";`);
+          lines.push(`${indent}      items: "${method.pagination.items}";`);
+          if (method.pagination.limitParam) {
+            lines.push(
+              `${indent}      limitParam: "${method.pagination.limitParam}";`,
+            );
+          }
+          // Output style-specific properties
+          switch (method.pagination.style) {
+            case "cursor":
+              lines.push(
+                `${indent}      cursor: "${method.pagination.cursor}";`,
+              );
+              lines.push(
+                `${indent}      cursorParam: "${method.pagination.cursorParam}";`,
+              );
+              break;
+            case "cursorId":
+              lines.push(
+                `${indent}      cursorIdParam: "${method.pagination.cursorIdParam}";`,
+              );
+              lines.push(
+                `${indent}      idField: "${method.pagination.idField}";`,
+              );
+              break;
+            case "offset":
+              lines.push(
+                `${indent}      total: "${method.pagination.total}";`,
+              );
+              lines.push(
+                `${indent}      offsetParam: "${method.pagination.offsetParam}";`,
+              );
+              break;
+            case "page":
+              lines.push(
+                `${indent}      pageParam: "${method.pagination.pageParam}";`,
+              );
+              if (method.pagination.perPageParam) {
+                lines.push(
+                  `${indent}      perPageParam: "${method.pagination.perPageParam}";`,
+                );
+              }
+              if (method.pagination.total) {
+                lines.push(
+                  `${indent}      total: "${method.pagination.total}";`,
+                );
+              }
+              if (method.pagination.totalPages) {
+                lines.push(
+                  `${indent}      totalPages: "${method.pagination.totalPages}";`,
+                );
+              }
+              break;
+            case "url":
+              lines.push(
+                `${indent}      nextUrl: "${method.pagination.nextUrl}";`,
+              );
+              if (method.pagination.prevUrl) {
+                lines.push(
+                  `${indent}      prevUrl: "${method.pagination.prevUrl}";`,
+                );
+              }
+              break;
           }
           lines.push(`${indent}    };`);
         }

@@ -1,4 +1,16 @@
 import type { z } from "zod";
+import type { AnyPaginationMeta } from "../pagination/types.ts";
+
+// Re-export pagination types for convenience
+export type {
+  AnyPaginationMeta,
+  CursorIdPaginationMeta,
+  CursorPaginationMeta,
+  OffsetPaginationMeta,
+  PagePaginationMeta,
+  PaginationStyle,
+  UrlPaginationMeta,
+} from "../pagination/types.ts";
 
 export type HttpMethod =
   | "GET"
@@ -35,6 +47,8 @@ export interface ApiMethodDef<
   summary?: string;
   description?: string;
   tags?: string[];
+  /** Pagination metadata (set by pagination helpers) */
+  __pagination?: AnyPaginationMeta;
 }
 
 export type ApiDef = {

@@ -7,7 +7,7 @@ snapshot[`generateTypes 1`] = `
 // GET /api/tasks/[id]/events
 
 // GET /api/users
-export type UsersGetResponse = { id: string; name: string; email: string; }[];
+export type UsersGetResponse = { data: { id: string; name: string; email: string; }[]; nextCursor?: string | undefined; };
 
 // POST /api/users
 export type UsersPostRequest = { name: string; email: string; };
@@ -27,7 +27,7 @@ snapshot[`generateTypes with config uses subprocess import 1`] = `
 // GET /api/tasks/[id]/events
 
 // GET /api/users
-export type UsersGetResponse = { id: string; name: string; email: string; }[];
+export type UsersGetResponse = { data: { id: string; name: string; email: string; }[]; nextCursor?: string | undefined; };
 
 // POST /api/users
 export type UsersPostRequest = { name: string; email: string; };
@@ -47,7 +47,7 @@ snapshot[`generateTypes with multiple directories 1`] = `
 // GET /api/tasks/[id]/events
 
 // GET /api/users
-export type UsersGetResponse = { id: string; name: string; email: string; }[];
+export type UsersGetResponse = { data: { id: string; name: string; email: string; }[]; nextCursor?: string | undefined; };
 
 // POST /api/users
 export type UsersPostRequest = { name: string; email: string; };
@@ -65,7 +65,7 @@ export type WebhooksStripeResponse = { received: boolean; };
 `;
 
 snapshot[`generateTypes with client format 1`] = `
-"// Auto-generated API types for use with createClient()
+'// Auto-generated API types for use with createClient()
 // Do not edit manually
 
 export interface Api {
@@ -82,7 +82,14 @@ export interface Api {
   };
   users: {
     list: {
-      response: { id: string; name: string; email: string; }[];
+      response: { data: { id: string; name: string; email: string; }[]; nextCursor?: string | undefined; };
+      pagination: {
+        style: "cursor";
+        items: "data";
+        limitParam: "limit";
+        cursor: "nextCursor";
+        cursorParam: "cursor";
+      };
     };
     create: {
       body: { name: string; email: string; };
@@ -103,5 +110,5 @@ export interface Api {
     };
   };
 }
-"
+'
 `;

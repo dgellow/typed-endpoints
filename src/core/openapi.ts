@@ -6,6 +6,16 @@ import {
 import { toFileUrl } from "@std/path";
 import { z } from "zod";
 import type { ApiDef, ApiMethodDef, HttpMethod } from "./types.ts";
+import type { AnyPaginationMeta } from "../pagination/types.ts";
+
+/** Extended method def that may include pagination metadata */
+interface MethodDefWithPagination extends ApiMethodDef<
+  z.ZodType | undefined,
+  z.ZodType | undefined,
+  z.ZodType | undefined
+> {
+  __pagination?: AnyPaginationMeta;
+}
 
 extendZodWithOpenApi(z);
 
@@ -189,11 +199,7 @@ function registerEndpoint(
   registry: OpenAPIRegistry,
   path: string,
   method: HttpMethod,
-  def: ApiMethodDef<
-    z.ZodType | undefined,
-    z.ZodType | undefined,
-    z.ZodType | undefined
-  >,
+  def: MethodDefWithPagination,
   pathParams: string[],
 ): void {
   const request: Record<string, unknown> = {};
@@ -283,7 +289,9 @@ function registerEndpoint(
     };
   }
 
-  registry.registerPath({
+  // Build the path registration object
+  // deno-lint-ignore no-explicit-any
+  const pathDef: any = {
     method: method.toLowerCase() as Lowercase<HttpMethod>,
     path,
     summary: def.summary,
@@ -291,5 +299,12 @@ function registerEndpoint(
     tags: def.tags,
     request: Object.keys(request).length > 0 ? request : undefined,
     responses,
-  });
+  };
+
+  // Add pagination extension if present
+  if (def.__pagination) {
+    pathDef["x-pagination"] = def.__pagination;
+  }
+
+  registry.registerPath(pathDef);
 }

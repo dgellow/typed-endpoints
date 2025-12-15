@@ -143,6 +143,64 @@ const created = await client.users.create({ name: "Sam" });
 await client.users.delete("123");
 ```
 
+### Pagination
+
+Define paginated endpoints with automatic query/response schema generation:
+
+```typescript
+// routes/api/users.ts
+import { createApiHandlers, endpoint } from "@dgellow/typed-endpoints/fresh";
+import { cursor } from "@dgellow/typed-endpoints";
+import { z } from "zod";
+
+const UserSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  email: z.string().email(),
+});
+
+export const handler = createApiHandlers({
+  GET: endpoint({
+    // cursor.paginated generates both query and response schemas
+    ...cursor.paginated({
+      item: UserSchema,
+      names: { items: "data", cursor: "nextCursor" },
+      defaultLimit: 20,
+      maxLimit: 100,
+    }),
+    public: true,
+    async handler(ctx, { query }) {
+      // query.cursor is string | undefined
+      // query.limit is number (with default 20, max 100)
+      const users = await getUsers(query.cursor, query.limit);
+      return Response.json({
+        data: users,
+        nextCursor: users.length > 0 ? users.at(-1)?.id : undefined,
+      });
+    },
+  }),
+});
+```
+
+Available pagination styles:
+
+- `cursor.paginated()` - Cursor-based pagination (opaque cursor string)
+- `cursorId.paginated()` - Last-item-ID cursor (like "after" parameter)
+- `offset.paginated()` - Offset/limit pagination with total count
+- `page.paginated()` - Page number pagination
+- `url.paginated()` - URL-based pagination (like GitHub API)
+
+Each style generates appropriate query params and response fields. Supports:
+
+- Custom field names (e.g., `items: "data"`, `cursor: "nextCursor"`)
+- Dot-notation for nested response structure: `nextUrl: "links.next"`
+- Extra query/response fields via `extraQuery` and `extraResponse`
+
+Pagination metadata is included in:
+
+- Generated TypeScript types (`pagination: { style: "cursor"; ... }`)
+- OpenAPI spec (`x-pagination` extension)
+
 ### Server-Sent Events (SSE)
 
 Define typed SSE endpoints with `sseEndpoint`:
@@ -238,6 +296,53 @@ Methods:
 - `delete(id, options?)` - DELETE resource
 - `subscribe(id?, options?)` - SSE subscription (returns AsyncIterable)
 
+### Pagination Helpers
+
+All pagination helpers return `{ query, response, __pagination }` to spread into
+`endpoint()`.
+
+#### `cursor.paginated(config)`
+
+Cursor-based pagination with opaque cursor string.
+
+Config:
+
+- `item` - Zod schema for each item (required)
+- `names` - Custom field names: `items`, `cursor`, `cursorParam`, `limitParam`
+- `extraQuery` - Additional query parameters
+- `extraResponse` - Additional response fields
+- `defaultLimit` - Default limit (default: 20)
+- `maxLimit` - Maximum limit (default: 100)
+
+#### `cursorId.paginated(config)`
+
+Last-item-ID pagination (like `after` parameter).
+
+Config: Same as cursor, plus `names.idField` for which item field to use as ID.
+
+#### `offset.paginated(config)`
+
+Offset/limit pagination with total count.
+
+Config: Same as cursor, plus `names.total` and `names.offsetParam`.
+
+#### `page.paginated(config)`
+
+Page number pagination.
+
+Config: Same as cursor, plus `names.total`, `names.totalPages`, `names.pageParam`,
+`names.perPageParam`, `defaultPerPage`, `maxPerPage`.
+
+#### `url.paginated(config)`
+
+URL-based pagination (like GitHub API). Response includes next/prev URLs.
+
+Config:
+
+- `item` - Zod schema for each item (required)
+- `names` - Custom field names: `items`, `nextUrl`, `prevUrl`
+- `extraResponse` - Additional response fields
+
 ### `openApiPlugin(options)`
 
 Vite plugin that generates OpenAPI 3.1 spec at build time.
@@ -281,11 +386,14 @@ src/
 ├── core/
 │   ├── types.ts       # Shared types (including SSE)
 │   ├── validation.ts  # Request validation
-│   └── openapi.ts     # OpenAPI spec generation
+│   └── openapi.ts     # OpenAPI spec generation (x-pagination)
+├── pagination/
+│   ├── types.ts       # Pagination type definitions
+│   └── index.ts       # cursor, cursorId, offset, page, url helpers
 ├── client/
 │   ├── index.ts       # Typed HTTP client
 │   └── types.ts       # Client type definitions
-├── tsgen/             # TypeScript type generation
+├── tsgen/             # TypeScript type generation (pagination metadata)
 ├── adapters/
 │   └── fresh.ts       # Fresh adapter (endpoint, sseEndpoint)
 ├── vite-plugin.ts     # Build-time OpenAPI generation

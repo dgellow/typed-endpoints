@@ -1,6 +1,8 @@
 import { assertEquals } from "@std/assert";
+import { assertSnapshot } from "@std/testing/snapshot";
 import { createApiHandlers, endpoint, sseEndpoint } from "./fresh.ts";
 import { z } from "zod";
+import { cursor, cursorId, offset, page, url } from "../pagination/index.ts";
 
 // Mock Fresh Context
 function createMockContext(options: {
@@ -191,4 +193,321 @@ Deno.test("createApiHandlers mixes REST and SSE endpoints", async () => {
   const postCtx = createMockContext({ method: "POST" });
   const postResponse = await handlers.POST(postCtx);
   assertEquals(postResponse.headers.get("Content-Type"), "text/event-stream");
+});
+
+// =============================================================================
+// Pagination integration tests
+// =============================================================================
+
+const UserSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+});
+
+Deno.test("createApiHandlers preserves __pagination in __apiDef for cursor pagination", async (t) => {
+  const handlers = createApiHandlers({
+    GET: endpoint({
+      ...cursor.paginated({
+        item: UserSchema,
+        names: { items: "data", cursor: "nextCursor" },
+      }),
+      handler: () =>
+        Response.json({
+          data: [],
+          nextCursor: undefined,
+        }),
+    }),
+  });
+
+  const apiDef = handlers.__apiDef;
+  assertEquals(apiDef.GET !== undefined, true);
+
+  // deno-lint-ignore no-explicit-any
+  const pagination = (apiDef.GET as any).__pagination;
+  await assertSnapshot(t, pagination);
+});
+
+Deno.test("createApiHandlers preserves __pagination for offset pagination", async (t) => {
+  const handlers = createApiHandlers({
+    GET: endpoint({
+      ...offset.paginated({
+        item: UserSchema,
+        names: {
+          items: "results",
+          total: "count",
+          offsetParam: "skip",
+          limitParam: "take",
+        },
+      }),
+      handler: () =>
+        Response.json({
+          results: [],
+          count: 0,
+        }),
+    }),
+  });
+
+  const apiDef = handlers.__apiDef;
+  // deno-lint-ignore no-explicit-any
+  const pagination = (apiDef.GET as any).__pagination;
+  await assertSnapshot(t, pagination);
+});
+
+Deno.test("paginated endpoint validates query params", async () => {
+  const handlers = createApiHandlers({
+    GET: endpoint({
+      ...cursor.paginated({
+        item: UserSchema,
+        defaultLimit: 10,
+        maxLimit: 50,
+      }),
+      handler: (_ctx, { query }) => {
+        return Response.json({
+          items: [],
+          cursor: undefined,
+          // Verify query was parsed correctly
+          _debug: { limit: query.limit, cursor: query.cursor },
+        });
+      },
+    }),
+  });
+
+  // Test with defaults
+  const defaultCtx = createMockContext({
+    url: "http://localhost:3000/api/users",
+  });
+  const defaultResponse = await handlers.GET(defaultCtx);
+  assertEquals(defaultResponse.status, 200);
+  const defaultData = await defaultResponse.json();
+  assertEquals(defaultData._debug.limit, 10);
+  assertEquals(defaultData._debug.cursor, undefined);
+
+  // Test with custom limit
+  const customCtx = createMockContext({
+    url: "http://localhost:3000/api/users?limit=25&cursor=abc",
+  });
+  const customResponse = await handlers.GET(customCtx);
+  assertEquals(customResponse.status, 200);
+  const customData = await customResponse.json();
+  assertEquals(customData._debug.limit, 25);
+  assertEquals(customData._debug.cursor, "abc");
+
+  // Test with invalid limit (exceeds max)
+  const invalidCtx = createMockContext({
+    url: "http://localhost:3000/api/users?limit=100",
+  });
+  const invalidResponse = await handlers.GET(invalidCtx);
+  assertEquals(invalidResponse.status, 400);
+});
+
+Deno.test("paginated endpoint with extra query params", async () => {
+  const handlers = createApiHandlers({
+    GET: endpoint({
+      ...cursor.paginated({
+        item: UserSchema,
+        extraQuery: {
+          filter: z.string().optional(),
+          sort: z.enum(["asc", "desc"]).default("asc"),
+        },
+      }),
+      handler: (_ctx, { query }) => {
+        return Response.json({
+          items: [],
+          cursor: undefined,
+          _debug: {
+            filter: query.filter,
+            sort: query.sort,
+          },
+        });
+      },
+    }),
+  });
+
+  const ctx = createMockContext({
+    url: "http://localhost:3000/api/users?filter=active&sort=desc",
+  });
+  const response = await handlers.GET(ctx);
+  assertEquals(response.status, 200);
+  const data = await response.json();
+  assertEquals(data._debug.filter, "active");
+  assertEquals(data._debug.sort, "desc");
+});
+
+Deno.test("createApiHandlers preserves __pagination for page pagination", async (t) => {
+  const handlers = createApiHandlers({
+    GET: endpoint({
+      ...page.paginated({
+        item: UserSchema,
+        names: {
+          items: "users",
+          total: "totalCount",
+          totalPages: "pageCount",
+          pageParam: "p",
+          perPageParam: "size",
+        },
+        defaultPerPage: 25,
+        maxPerPage: 100,
+      }),
+      handler: () =>
+        Response.json({
+          users: [],
+          totalCount: 0,
+          pageCount: 0,
+        }),
+    }),
+  });
+
+  const apiDef = handlers.__apiDef;
+  // deno-lint-ignore no-explicit-any
+  const pagination = (apiDef.GET as any).__pagination;
+  await assertSnapshot(t, pagination);
+});
+
+Deno.test("createApiHandlers preserves __pagination for cursorId pagination", async (t) => {
+  const handlers = createApiHandlers({
+    GET: endpoint({
+      ...cursorId.paginated({
+        item: UserSchema,
+        names: {
+          items: "data",
+          cursorIdParam: "after",
+          idField: "id",
+        },
+      }),
+      handler: () =>
+        Response.json({
+          data: [],
+        }),
+    }),
+  });
+
+  const apiDef = handlers.__apiDef;
+  // deno-lint-ignore no-explicit-any
+  const pagination = (apiDef.GET as any).__pagination;
+  await assertSnapshot(t, pagination);
+});
+
+Deno.test("createApiHandlers preserves __pagination for url pagination", async (t) => {
+  const handlers = createApiHandlers({
+    GET: endpoint({
+      ...url.paginated({
+        item: UserSchema,
+        names: {
+          items: "results",
+          nextUrl: "links.next",
+          prevUrl: "links.prev",
+        },
+      }),
+      handler: () =>
+        Response.json({
+          results: [],
+          links: { next: undefined, prev: undefined },
+        }),
+    }),
+  });
+
+  const apiDef = handlers.__apiDef;
+  // deno-lint-ignore no-explicit-any
+  const pagination = (apiDef.GET as any).__pagination;
+  await assertSnapshot(t, pagination);
+});
+
+Deno.test("page paginated endpoint validates query params", async () => {
+  const handlers = createApiHandlers({
+    GET: endpoint({
+      ...page.paginated({
+        item: UserSchema,
+        defaultPerPage: 10,
+        maxPerPage: 50,
+      }),
+      handler: (_ctx, { query }) => {
+        return Response.json({
+          items: [],
+          total: 0,
+          totalPages: 0,
+          _debug: { page: query.page, perPage: query.perPage },
+        });
+      },
+    }),
+  });
+
+  // Test with defaults
+  const defaultCtx = createMockContext({
+    url: "http://localhost:3000/api/users",
+  });
+  const defaultResponse = await handlers.GET(defaultCtx);
+  assertEquals(defaultResponse.status, 200);
+  const defaultData = await defaultResponse.json();
+  assertEquals(defaultData._debug.page, 1);
+  assertEquals(defaultData._debug.perPage, 10);
+
+  // Test with custom values
+  const customCtx = createMockContext({
+    url: "http://localhost:3000/api/users?page=3&perPage=25",
+  });
+  const customResponse = await handlers.GET(customCtx);
+  assertEquals(customResponse.status, 200);
+  const customData = await customResponse.json();
+  assertEquals(customData._debug.page, 3);
+  assertEquals(customData._debug.perPage, 25);
+
+  // Test with invalid perPage (exceeds max)
+  const invalidCtx = createMockContext({
+    url: "http://localhost:3000/api/users?perPage=100",
+  });
+  const invalidResponse = await handlers.GET(invalidCtx);
+  assertEquals(invalidResponse.status, 400);
+});
+
+Deno.test("cursorId paginated endpoint validates query params", async () => {
+  const handlers = createApiHandlers({
+    GET: endpoint({
+      ...cursorId.paginated({
+        item: UserSchema,
+        names: { cursorIdParam: "after" },
+        defaultLimit: 20,
+      }),
+      handler: (_ctx, { query }) => {
+        return Response.json({
+          items: [],
+          hasMore: false,
+          _debug: { after: query.after, limit: query.limit },
+        });
+      },
+    }),
+  });
+
+  // Test with cursor ID
+  const ctx = createMockContext({
+    url: "http://localhost:3000/api/users?after=user-123&limit=15",
+  });
+  const response = await handlers.GET(ctx);
+  assertEquals(response.status, 200);
+  const data = await response.json();
+  assertEquals(data._debug.after, "user-123");
+  assertEquals(data._debug.limit, 15);
+});
+
+Deno.test("url paginated endpoint has no query validation (url pagination)", async () => {
+  const handlers = createApiHandlers({
+    GET: endpoint({
+      ...url.paginated({
+        item: UserSchema,
+      }),
+      handler: () => {
+        return Response.json({
+          items: [],
+          next: undefined,
+          prev: undefined,
+        });
+      },
+    }),
+  });
+
+  // URL pagination doesn't have query params by default
+  const ctx = createMockContext({
+    url: "http://localhost:3000/api/users",
+  });
+  const response = await handlers.GET(ctx);
+  assertEquals(response.status, 200);
 });
