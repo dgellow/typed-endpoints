@@ -1,16 +1,64 @@
 /**
  * HTTP Executor Tests
+ *
+ * Tests protocol composition from endpoints using fromEndpoint/fromEndpointDependent.
  */
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { z } from "zod";
 
+import { createApiHandlers, endpoint } from "../adapters/fresh.ts";
 import { createHttpExecutor, HttpError } from "./http.ts";
 import { createSession } from "./client.ts";
-import { dependentStep, protocol, step } from "./dsl.ts";
+import { protocol } from "./dsl.ts";
+import { fromEndpoint, fromEndpointDependent } from "./compose.ts";
 
 // =============================================================================
-// Test Protocol
+// Test Endpoint Handlers (simulating route files)
+// =============================================================================
+
+// routes/api/auth/login.ts
+const loginHandler = createApiHandlers({
+  POST: endpoint({
+    operationId: "authLogin",
+    body: z.object({ username: z.string(), password: z.string() }),
+    response: z.object({
+      sessionId: z.string(),
+      accessToken: z.string(),
+    }),
+    handler: () => Response.json({ sessionId: "s", accessToken: "t" }),
+  }),
+});
+
+// routes/api/users/profile.ts
+const profileHandler = createApiHandlers({
+  GET: endpoint({
+    operationId: "usersProfile",
+    response: z.object({ name: z.string(), email: z.string() }),
+    handler: () => Response.json({ name: "Test", email: "test@example.com" }),
+  }),
+});
+
+// routes/api/auth/logout.ts (no operationId - tests fallback to step name)
+const logoutHandler = createApiHandlers({
+  POST: endpoint({
+    response: z.object({ success: z.boolean() }),
+    handler: () => Response.json({ success: true }),
+  }),
+});
+
+// routes/api/users/[userId].ts
+const userHandler = createApiHandlers({
+  GET: endpoint({
+    operationId: "usersRetrieve",
+    params: z.object({ userId: z.string() }),
+    response: z.object({ id: z.string(), name: z.string() }),
+    handler: () => Response.json({ id: "1", name: "User" }),
+  }),
+});
+
+// =============================================================================
+// Test Protocol (composed from endpoints)
 // =============================================================================
 
 const authProtocol = protocol({
@@ -18,43 +66,26 @@ const authProtocol = protocol({
   initial: "login",
   terminal: ["logout"],
   steps: {
-    login: step({
-      name: "login",
-      operationId: "authLogin",
-      request: z.object({ username: z.string(), password: z.string() }),
-      response: z.object({
-        sessionId: z.string(),
-        accessToken: z.string(),
-      }),
-    }),
-    getProfile: dependentStep({
+    login: fromEndpoint(loginHandler, "POST", { name: "login" }),
+    getProfile: fromEndpointDependent(profileHandler, "GET", {
       name: "getProfile",
-      operationId: "usersProfile",
       dependsOn: "login",
       request: () => z.object({}),
-      response: z.object({ name: z.string(), email: z.string() }),
     }),
-    logout: dependentStep({
+    logout: fromEndpointDependent(logoutHandler, "POST", {
       name: "logout",
       dependsOn: "login",
-      // No operationId - should fall back to step name
       request: () => z.object({}),
-      response: z.object({ success: z.boolean() }),
     }),
   },
 });
 
-// Protocol with path parameters
+// Protocol with path parameters (composed from endpoint)
 const usersProtocol = protocol({
   name: "UsersProtocol",
   initial: "getUser",
   steps: {
-    getUser: step({
-      name: "getUser",
-      operationId: "usersRetrieve",
-      request: z.object({ userId: z.string() }),
-      response: z.object({ id: z.string(), name: z.string() }),
-    }),
+    getUser: fromEndpoint(userHandler, "GET", { name: "getUser" }),
   },
 });
 
@@ -405,29 +436,40 @@ Deno.test("createHttpExecutor supports custom auth header name and prefix", asyn
 });
 
 Deno.test("createHttpExecutor supports nested token path", async () => {
-  // Protocol with nested token response
+  // Endpoint handlers with nested token response
+  const nestedLoginHandler = createApiHandlers({
+    POST: endpoint({
+      operationId: "authLogin",
+      body: z.object({ username: z.string(), password: z.string() }),
+      response: z.object({
+        data: z.object({
+          auth: z.object({
+            token: z.string(),
+          }),
+        }),
+      }),
+      handler: () => Response.json({ data: { auth: { token: "t" } } }),
+    }),
+  });
+
+  const nestedProfileHandler = createApiHandlers({
+    GET: endpoint({
+      operationId: "usersProfile",
+      response: z.object({ name: z.string() }),
+      handler: () => Response.json({ name: "Test" }),
+    }),
+  });
+
+  // Protocol composed from endpoints
   const nestedAuthProtocol = protocol({
     name: "NestedAuth",
     initial: "login",
     steps: {
-      login: step({
-        name: "login",
-        operationId: "authLogin",
-        request: z.object({ username: z.string(), password: z.string() }),
-        response: z.object({
-          data: z.object({
-            auth: z.object({
-              token: z.string(),
-            }),
-          }),
-        }),
-      }),
-      getProfile: dependentStep({
+      login: fromEndpoint(nestedLoginHandler, "POST", { name: "login" }),
+      getProfile: fromEndpointDependent(nestedProfileHandler, "GET", {
         name: "getProfile",
-        operationId: "usersProfile",
         dependsOn: "login",
         request: () => z.object({}),
-        response: z.object({ name: z.string() }),
       }),
     },
   });

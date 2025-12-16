@@ -617,6 +617,7 @@ const order = topologicalSort(oauth2Protocol);
 - OAuth 2.0 Authorization Code Flow as reference implementation
 - **Type-safe protocol client** with compile-time step enforcement
 - **HTTP executor** for connecting protocols to real endpoints
+- **Endpoint composition** via `fromEndpoint()` and `fromEndpointDependent()`
 - **OpenAPI x-protocol extension** for spec generation
 
 ### Type-Safe Protocol Client
@@ -732,6 +733,57 @@ Features:
 - **Auth propagation**: Automatically inject tokens from previous step responses
 - **Path parameters**: `{userId}` in paths resolved from request object
 - **Error handling**: `HttpError` class with status, statusText, and body
+
+### Endpoint Composition
+
+Instead of duplicating schemas between endpoints and protocol steps, compose
+protocols directly from your endpoint definitions:
+
+```typescript
+import { handler as loginHandler } from "./routes/api/auth/login.ts";
+import { handler as refreshHandler } from "./routes/api/auth/refresh.ts";
+import {
+  createHttpExecutor,
+  fromEndpoint,
+  fromEndpointDependent,
+  protocol,
+} from "@dgellow/typed-endpoints/protocol";
+
+// Compose protocol from endpoints - schemas extracted automatically
+const authProtocol = protocol({
+  name: "Auth",
+  initial: "login",
+  steps: {
+    // fromEndpoint extracts body + query + params → request schema
+    // and copies response schema directly
+    login: fromEndpoint(loginHandler, "POST", { name: "login" }),
+
+    // fromEndpointDependent creates dependent steps
+    refresh: fromEndpointDependent(refreshHandler, "POST", {
+      name: "refresh",
+      dependsOn: "login",
+      request: (prev: { refreshToken: string }) =>
+        z.object({ refreshToken: z.literal(prev.refreshToken) }),
+    }),
+  },
+});
+
+// Use with HTTP executor as before
+const executor = createHttpExecutor(authProtocol, {
+  baseUrl: "https://api.example.com",
+  routes: apiRoutes,
+});
+```
+
+Benefits:
+
+- **Single source of truth**: Schemas defined once in endpoint, composed into
+  protocol
+- **No duplication**: Change endpoint schema, protocol automatically updates
+- **Type-safe**: TypeScript infers request/response types from endpoint
+  `__apiDef`
+- **Backward compatible**: `step()` and `dependentStep()` still work for manual
+  definitions
 
 ### OpenAPI Protocol Extensions
 
