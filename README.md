@@ -827,6 +827,77 @@ x-protocol:
       description: Revoke access or refresh token
 ```
 
+### Future: API Hierarchy for Composition
+
+The generated client provides a clean hierarchical API: `client.auth.login()`,
+`client.users.list()`. Protocol composition could mirror this structure,
+providing a dual "API hierarchy" for defining protocols from endpoints.
+
+**Current state** - explicit handler imports and method specification:
+
+```typescript
+import { handler as loginHandler } from "./routes/api/auth/login.ts";
+
+const authProtocol = protocol({
+  steps: {
+    login: fromEndpoint(loginHandler, "POST", { name: "login" }),
+  },
+});
+```
+
+**Potential direction** - generated hierarchy that mirrors the client:
+
+```typescript
+// tsgen generates api-steps.ts alongside client types
+import { apiSteps } from "./generated/api-steps.ts";
+
+const authProtocol = protocol({
+  steps: {
+    // Mirrors client.auth.login.create() but for composition
+    login: apiSteps.auth.login.post(),
+    refresh: apiSteps.auth.refresh.post().dependsOn("login", (prev) => ...),
+  },
+});
+```
+
+Or a fluent builder pattern:
+
+```typescript
+steps: {
+  login: fromEndpoint(loginHandler).post().named("login"),
+  refresh: fromEndpoint(refreshHandler).post()
+    .named("refresh")
+    .dependsOn("login", (prev: { token: string }) => z.object({ ... })),
+}
+```
+
+The key insight: endpoints, clients, and protocol steps share the same
+underlying structure. Generation could produce both the client (for calling
+APIs) and a composition API (for defining protocols) from the same route
+definitions.
+
+### Future: Build-Time Protocol Validation
+
+TypeScript can't express Σ (dependent pairs), so the `>>` operator is
+approximated at runtime. But we don't have to rely only on TypeScript - build
+time processes can validate what the type system cannot.
+
+Similar to how tsgen aggregates Fresh routes to generate OpenAPI specs and typed
+clients, a build step could validate protocol *usage*:
+
+1. Parse protocol session code (via TS AST or stored metadata)
+2. Validate step execution order matches dependency graph
+3. Verify request data flows correctly between dependent steps
+4. Catch "wrong step called" or "missing dependency" errors at build time
+
+```
+protocol usage code → build validator → errors before runtime
+```
+
+The user experience stays TypeScript-native. Invalid protocol usage fails at
+build time, not runtime. The Σ complexity is hidden - you just get clear errors
+if you call steps in the wrong order or pass incompatible data between steps.
+
 ### References
 
 - [Container Morphisms for Composable Interactive Systems](https://arxiv.org/abs/2407.16713) -
