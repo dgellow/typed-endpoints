@@ -166,8 +166,8 @@ export interface Protocol<
 // =============================================================================
 
 /** Any step type - uses `any` for variance compatibility */
-// deno-lint-ignore no-explicit-any
 export type AnyStep =
+  // deno-lint-ignore no-explicit-any
   | Step<string, any, any>
   // deno-lint-ignore no-explicit-any
   | DependentStep<string, any, any, any, any>;

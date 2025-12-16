@@ -256,11 +256,10 @@ export function createSession<TSteps extends Record<string, AnyStep>>(
 // =============================================================================
 
 /** Mock response configuration - static value or function */
-// deno-lint-ignore no-explicit-any
 export type MockResponses<TSteps extends Record<string, AnyStep>> = {
-  // deno-lint-ignore no-explicit-any
   [K in keyof TSteps]?:
     | StepResponse<TSteps[K]>
+    // deno-lint-ignore no-explicit-any
     | ((req: any) => StepResponse<TSteps[K]>);
 };
 
@@ -269,12 +268,14 @@ export function createMockExecutor<TSteps extends Record<string, AnyStep>>(
   responses: MockResponses<TSteps>,
 ): StepExecutor {
   return {
-    execute: async <T>(step: string, request: unknown): Promise<T> => {
+    execute: <T>(step: string, request: unknown): Promise<T> => {
       const resp = responses[step as keyof typeof responses];
       if (resp === undefined) {
         throw new Error(`No mock response configured for step: ${step}`);
       }
-      return (typeof resp === "function" ? resp(request) : resp) as T;
+      return Promise.resolve(
+        (typeof resp === "function" ? resp(request) : resp) as T,
+      );
     },
   };
 }

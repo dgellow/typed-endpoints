@@ -62,7 +62,7 @@ const simpleProtocol = protocol({
 
 Deno.test("createSession creates a new session with empty state", () => {
   const mockExecutor: StepExecutor = {
-    execute: async () => ({}),
+    execute: () => Promise.resolve({}),
   };
 
   const session = createSession(simpleProtocol, mockExecutor);
@@ -74,7 +74,7 @@ Deno.test("createSession creates a new session with empty state", () => {
 
 Deno.test("createSession session knows available steps", () => {
   const mockExecutor: StepExecutor = {
-    execute: async () => ({}),
+    execute: () => Promise.resolve({}),
   };
 
   const session = createSession(simpleProtocol, mockExecutor);
@@ -92,7 +92,7 @@ Deno.test("createSession session knows available steps", () => {
 
 Deno.test("execute runs step and returns response with new session", async () => {
   const mockExecutor: StepExecutor = {
-    execute: async () => ({ id: "test-123", value: 42 }),
+    execute: () => Promise.resolve({ id: "test-123", value: 42 }),
   };
 
   const session = createSession(simpleProtocol, mockExecutor);
@@ -107,7 +107,7 @@ Deno.test("execute runs step and returns response with new session", async () =>
 
 Deno.test("execute unlocks dependent steps after completion", async () => {
   const mockExecutor: StepExecutor = {
-    execute: async () => ({ id: "test-123", value: 42 }),
+    execute: () => Promise.resolve({ id: "test-123", value: 42 }),
   };
 
   const session = createSession(simpleProtocol, mockExecutor);
@@ -122,7 +122,7 @@ Deno.test("execute unlocks dependent steps after completion", async () => {
 
 Deno.test("execute validates request against schema", async () => {
   const mockExecutor: StepExecutor = {
-    execute: async () => ({ id: "test", value: 1 }),
+    execute: () => Promise.resolve({ id: "test", value: 1 }),
   };
 
   const session = createSession(simpleProtocol, mockExecutor);
@@ -139,7 +139,7 @@ Deno.test("execute validates request against schema", async () => {
 
 Deno.test("execute throws if dependencies not satisfied", async () => {
   const mockExecutor: StepExecutor = {
-    execute: async () => ({ result: 100 }),
+    execute: () => Promise.resolve({ result: 100 }),
   };
 
   const session = createSession(simpleProtocol, mockExecutor);
@@ -157,15 +157,15 @@ Deno.test("execute throws if dependencies not satisfied", async () => {
 Deno.test("execute chains multiple steps correctly", async () => {
   let stepCount = 0;
   const mockExecutor: StepExecutor = {
-    execute: async (stepName) => {
+    execute: (stepName) => {
       stepCount++;
       switch (stepName) {
         case "start":
-          return { id: "chain-test", value: 10 };
+          return Promise.resolve({ id: "chain-test", value: 10 });
         case "middle":
-          return { result: 100 };
+          return Promise.resolve({ result: 100 });
         case "end":
-          return { success: true };
+          return Promise.resolve({ success: true });
         default:
           throw new Error(`Unknown step: ${stepName}`);
       }
@@ -194,9 +194,11 @@ Deno.test("execute chains multiple steps correctly", async () => {
 
 Deno.test("execute validates dependent step request with literal type", async () => {
   const mockExecutor: StepExecutor = {
-    execute: async (stepName) => {
-      if (stepName === "start") return { id: "correct-id", value: 5 };
-      return { result: 50 };
+    execute: (stepName) => {
+      if (stepName === "start") {
+        return Promise.resolve({ id: "correct-id", value: 5 });
+      }
+      return Promise.resolve({ result: 50 });
     },
   };
 
@@ -222,7 +224,7 @@ Deno.test("execute validates dependent step request with literal type", async ()
 
 Deno.test("isTerminal returns false initially", () => {
   const mockExecutor: StepExecutor = {
-    execute: async () => ({}),
+    execute: () => Promise.resolve({}),
   };
 
   const session = createSession(simpleProtocol, mockExecutor);
@@ -231,16 +233,16 @@ Deno.test("isTerminal returns false initially", () => {
 
 Deno.test("isTerminal returns true after terminal step", async () => {
   const mockExecutor: StepExecutor = {
-    execute: async (stepName) => {
+    execute: (stepName) => {
       switch (stepName) {
         case "start":
-          return { id: "t", value: 1 };
+          return Promise.resolve({ id: "t", value: 1 });
         case "middle":
-          return { result: 1 };
+          return Promise.resolve({ result: 1 });
         case "end":
-          return { success: true };
+          return Promise.resolve({ success: true });
         default:
-          return {};
+          return Promise.resolve({});
       }
     },
   };

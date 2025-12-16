@@ -1,9 +1,15 @@
 {
   "name": "@dgellow/typed-endpoints",
   "version": "0.1.0-alpha.4",
+  "lint": {
+    "rules": {
+      "exclude": ["no-slow-types"]
+    }
+  },
   "exclude": [
     "CHANGELOG.md",
-    "TypeScript"
+    "TypeScript",
+    "aplas-code"
   ],
   "exports": {
     ".": "./src/mod.ts",

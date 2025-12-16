@@ -226,7 +226,7 @@ function createRouter(routes: Record<string, any>) {
       if (url.pathname === path) {
         const handler = handlers[method];
         if (handler) {
-          return handler({ req, params: {} });
+          return await handler({ req, params: {} });
         }
       }
     }

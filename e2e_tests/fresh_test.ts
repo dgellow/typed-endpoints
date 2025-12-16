@@ -117,8 +117,7 @@ const eventsHandlers = createApiHandlers({
 // Simple router for testing
 // deno-lint-ignore no-explicit-any
 function createRouter(routes: Record<string, any>) {
-  // deno-lint-ignore no-explicit-any
-  return async (req: Request): Promise<Response> => {
+  return (req: Request): Promise<Response> => {
     const url = new URL(req.url);
     const method = req.method;
 
@@ -150,7 +149,7 @@ function createRouter(routes: Record<string, any>) {
       }
     }
 
-    return new Response("Not Found", { status: 404 });
+    return Promise.resolve(new Response("Not Found", { status: 404 }));
   };
 }
 

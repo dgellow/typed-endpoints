@@ -148,7 +148,6 @@ export const cursor = {
       Object.assign(responseShape, config.extraResponse);
     }
 
-    // deno-lint-ignore no-explicit-any
     return {
       query: z.object(queryShape),
       response: z.object(responseShape),
@@ -159,6 +158,7 @@ export const cursor = {
         cursorParam,
         limitParam,
       },
+      // deno-lint-ignore no-explicit-any
     } as any;
   },
 };
@@ -234,7 +234,6 @@ export const cursorId = {
       Object.assign(responseShape, config.extraResponse);
     }
 
-    // deno-lint-ignore no-explicit-any
     return {
       query: z.object(queryShape),
       response: z.object(responseShape),
@@ -245,6 +244,7 @@ export const cursorId = {
         idField,
         limitParam,
       },
+      // deno-lint-ignore no-explicit-any
     } as any;
   },
 };
@@ -322,7 +322,6 @@ export const offset = {
       Object.assign(responseShape, config.extraResponse);
     }
 
-    // deno-lint-ignore no-explicit-any
     return {
       query: z.object(queryShape),
       response: z.object(responseShape),
@@ -333,6 +332,7 @@ export const offset = {
         offsetParam,
         limitParam,
       },
+      // deno-lint-ignore no-explicit-any
     } as any;
   },
 };
@@ -425,7 +425,6 @@ export const page = {
       Object.assign(responseShape, config.extraResponse);
     }
 
-    // deno-lint-ignore no-explicit-any
     return {
       query: z.object(queryShape),
       response: z.object(responseShape),
@@ -437,6 +436,7 @@ export const page = {
         pageParam,
         perPageParam,
       },
+      // deno-lint-ignore no-explicit-any
     } as any;
   },
 };
@@ -517,7 +517,6 @@ export const url = {
       Object.assign(responseShape, config.extraResponse);
     }
 
-    // deno-lint-ignore no-explicit-any
     return {
       query: z.object(queryShape),
       response: z.object(responseShape),
@@ -527,6 +526,7 @@ export const url = {
         nextUrl: nextUrlField,
         prevUrl: prevUrlField,
       },
+      // deno-lint-ignore no-explicit-any
     } as any;
   },
 };
