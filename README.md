@@ -898,6 +898,74 @@ The user experience stays TypeScript-native. Invalid protocol usage fails at
 build time, not runtime. The Σ complexity is hidden - you just get clear errors
 if you call steps in the wrong order or pass incompatible data between steps.
 
+### Future: Branded Types for Step Output Provenance
+
+Pulumi's `Output<T>` tracks that a value is deferred. We could extend this to
+track *which step and field* a value came from, letting TypeScript enforce
+data flow constraints at compile time.
+
+**The idea - branded types with provenance:**
+
+```typescript
+// Generated from protocol definition
+type StepOutput<T, TStep extends string, TPath extends string> = T & {
+  readonly __brand: { step: TStep; path: TPath };
+};
+
+type AuthorizeResponse = {
+  code: StepOutput<string, "authorize", "code">;
+  state: StepOutput<string, "authorize", "state">;
+};
+
+type ExchangeRequest = {
+  code: StepOutput<string, "authorize", "code">;  // MUST come from authorize.code
+  client_id: string;  // any string is fine
+};
+```
+
+**TypeScript then enforces provenance:**
+
+```typescript
+const auth = await session.execute("authorize", {...});
+
+await session.execute("exchange", { code: auth.code });   // ✓ correct provenance
+await session.execute("exchange", { code: auth.state });  // ✗ wrong field
+await session.execute("exchange", { code: "hardcoded" }); // ✗ no provenance
+```
+
+**The challenge - how to define the mapping:**
+
+Current syntax uses a runtime function, which is hard to statically analyze:
+
+```typescript
+request: (prev) => z.object({ code: z.literal(prev.code) })
+```
+
+A more declarative syntax would enable generation:
+
+```typescript
+const exchangeStep = dependentStep({
+  dependsOn: "authorize",
+  requestMapping: {
+    code: fromStep("authorize", "code"),  // Statically analyzable
+    state: fromStep("authorize", "state"),
+  },
+  requestSchema: z.object({
+    code: z.string(),
+    state: z.string(),
+    client_id: z.string(),
+  }),
+});
+```
+
+tsgen could then:
+1. Parse `requestMapping` to understand field provenance
+2. Generate `StepOutput<T, TStep, TPath>` branded types
+3. TypeScript enforces correct data flow at compile time
+
+This handles structural constraints ("code must come from authorize.code").
+Computed constraints ("code must be uppercase") still need runtime validation.
+
 ### References
 
 - [Container Morphisms for Composable Interactive Systems](https://arxiv.org/abs/2407.16713) -
