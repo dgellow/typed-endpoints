@@ -468,8 +468,8 @@ approximation:
   authorize)
 - Schema validation via Zod
 
-The `request: (prev) => Schema` function is what André Videla calls a "suspended
-continuation" - it receives the runtime value from the previous step and
+The `request: (prev) => Schema` function is what André Videla calls a
+"continuation" - it receives the runtime value from the previous step and
 constructs a schema with `z.literal(prev.code)`. This gives us the dependent
 behavior, but the type system only knows "exchange is available after authorize"
 
@@ -781,8 +781,8 @@ x-protocol:
   André Videla (APLAS 2024)
 - [Lenses for Composable Servers](https://arxiv.org/abs/2203.15633) - André
   Videla (2022)
-- **Stellar** (TYPES 2025) - Practical Idris library for container-based API
-  architecture
+- [**Stellar**](https://gitlab.com/avidela/stellar) (TYPES 2025) - Practical
+  Idris library for container-based API architecture
 - [RFC 6749: OAuth 2.0 Authorization Framework](https://datatracker.ietf.org/doc/html/rfc6749)
 
 ---
