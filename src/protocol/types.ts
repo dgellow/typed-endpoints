@@ -33,6 +33,8 @@ export interface Step<
   readonly request: TRequest;
   readonly response: TResponse;
   readonly description?: string;
+  /** Operation ID for mapping to HTTP routes */
+  readonly operationId?: string;
 }
 
 /**
@@ -57,6 +59,8 @@ export interface DependentStep<
   readonly response: TResponse;
   readonly dependsOn: TDependsOn;
   readonly description?: string;
+  /** Operation ID for mapping to HTTP routes */
+  readonly operationId?: string;
 }
 
 // =============================================================================

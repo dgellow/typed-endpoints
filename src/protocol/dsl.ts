@@ -41,6 +41,8 @@ export interface StepConfig<
   readonly request: TRequest;
   readonly response: TResponse;
   readonly description?: string;
+  /** Operation ID for mapping to HTTP routes */
+  readonly operationId?: string;
 }
 
 /**
@@ -68,6 +70,7 @@ export function step<
     request: config.request,
     response: config.response,
     description: config.description,
+    operationId: config.operationId,
   };
 }
 
@@ -88,6 +91,8 @@ export interface DependentStepConfig<
   readonly request: (prev: TPrevResponse) => TRequest;
   readonly response: TResponse;
   readonly description?: string;
+  /** Operation ID for mapping to HTTP routes */
+  readonly operationId?: string;
 }
 
 /**
@@ -130,6 +135,7 @@ export function dependentStep<
     request: config.request,
     response: config.response,
     description: config.description,
+    operationId: config.operationId,
   };
 }
 

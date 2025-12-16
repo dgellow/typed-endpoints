@@ -29,8 +29,9 @@ export interface TypeGenOptions {
    * Output format. Defaults to "types" for backwards compatibility.
    * - "types": Flat type exports (UsersGetResponse, etc.)
    * - "client": Resource-based Api interface for use with createClient()
+   * - "routes": Runtime route metadata for use with createHttpExecutor()
    */
-  format?: "types" | "client";
+  format?: "types" | "client" | "routes";
 }
 
 interface RouteModule {
@@ -156,6 +157,11 @@ try {
       methodResult.pagination = def.__pagination;
     }
 
+    // Handle operationId
+    if (def.operationId) {
+      methodResult.operationId = def.operationId;
+    }
+
     result[method] = methodResult;
   }
   console.log(JSON.stringify(result));
@@ -264,6 +270,7 @@ interface EndpointType {
   response?: string;
   events?: Record<string, string>;
   pagination?: PaginationMeta;
+  operationId?: string;
 }
 
 /**
@@ -388,14 +395,31 @@ export async function generateTypes(
           .pagination;
       }
 
+      // Handle operationId
+      const operationIdDef = methodDef as { operationId?: string };
+      if (operationIdDef.operationId) {
+        endpoint.operationId = operationIdDef.operationId;
+      } else if ((def as { operationId?: string }).operationId) {
+        // From subprocess
+        endpoint.operationId = (def as { operationId?: string }).operationId;
+      }
+
       endpoints.push(endpoint);
     }
   }
 
   const format = options.format ?? "types";
-  const content = format === "client"
-    ? generateClientFormat(endpoints)
-    : generateTypesFormat(endpoints);
+  let content: string;
+  switch (format) {
+    case "client":
+      content = generateClientFormat(endpoints);
+      break;
+    case "routes":
+      content = generateRoutesFormat(endpoints);
+      break;
+    default:
+      content = generateTypesFormat(endpoints);
+  }
 
   if (output) {
     await Deno.writeTextFile(output, content);
@@ -429,6 +453,88 @@ function generateTypesFormat(endpoints: EndpointType[]): string {
 
     lines.push("");
   }
+
+  return lines.join("\n");
+}
+
+/**
+ * Derive an operationId from path and method.
+ * E.g., POST /api/auth/login -> authLogin
+ * E.g., GET /api/users/[id] -> usersRetrieve
+ */
+function deriveOperationId(path: string, method: string): string {
+  // Remove /api/ prefix
+  const cleanPath = path.replace(/^\/api\//, "");
+
+  // Split into segments and filter out params
+  const segments = cleanPath
+    .split("/")
+    .filter((seg) => seg && !seg.startsWith("[") && !seg.startsWith(":"));
+
+  // Convert to camelCase
+  const baseName = segments
+    .map((
+      seg,
+      i,
+    ) => (i === 0 ? seg : seg.charAt(0).toUpperCase() + seg.slice(1)))
+    .join("");
+
+  // Add method suffix for non-GET methods or param paths
+  const hasParams = path.includes("[") || path.includes(":");
+  if (method === "GET" && !hasParams) {
+    return baseName + "List";
+  } else if (method === "GET") {
+    return baseName + "Retrieve";
+  } else if (method === "POST") {
+    return baseName + "Create";
+  } else if (method === "PUT" || method === "PATCH") {
+    return baseName + "Update";
+  } else if (method === "DELETE") {
+    return baseName + "Delete";
+  }
+
+  return baseName + method.charAt(0) + method.slice(1).toLowerCase();
+}
+
+/**
+ * Generate runtime route metadata for use with createHttpExecutor().
+ *
+ * Output example:
+ * ```typescript
+ * export const apiRoutes = {
+ *   login: { method: "POST", path: "/api/auth/login" },
+ *   usersRetrieve: { method: "GET", path: "/api/users/[id]" },
+ * } as const;
+ * export type ApiRoutes = typeof apiRoutes;
+ * export type RouteId = keyof ApiRoutes;
+ * ```
+ */
+function generateRoutesFormat(endpoints: EndpointType[]): string {
+  const lines: string[] = [
+    "// Auto-generated route metadata for use with createHttpExecutor()",
+    "// Do not edit manually",
+    "",
+    "export const apiRoutes = {",
+  ];
+
+  for (const endpoint of endpoints) {
+    // Use explicit operationId if available, otherwise derive from path/method
+    const id = endpoint.operationId ??
+      deriveOperationId(endpoint.path, endpoint.method);
+
+    // Convert Fresh-style [param] to {param} for HTTP executor
+    const httpPath = endpoint.path.replace(/\[(\w+)\]/g, "{$1}");
+
+    lines.push(
+      `  ${id}: { method: "${endpoint.method}", path: "${httpPath}" },`,
+    );
+  }
+
+  lines.push("} as const;");
+  lines.push("");
+  lines.push("export type ApiRoutes = typeof apiRoutes;");
+  lines.push("export type RouteId = keyof ApiRoutes;");
+  lines.push("");
 
   return lines.join("\n");
 }

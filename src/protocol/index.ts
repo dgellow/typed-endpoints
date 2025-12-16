@@ -12,6 +12,23 @@
  * - Kleene Star (*): zero or more repetitions
  * - Coproduct (+): choice between alternatives
  *
+ * ## Type System Limitations
+ *
+ * True sequential product (>>) requires Σ (dependent sum) where the type of the
+ * second component depends on the VALUE of the first. TypeScript lacks dependent
+ * types, so our implementation is a pragmatic approximation:
+ *
+ * **Compile-time**: We track which step NAMES have completed via TDone union type.
+ * AvailableSteps<TSteps, TDone> determines which steps can be executed next.
+ *
+ * **Runtime**: The `request: (prev) => Schema` function (a "suspended continuation")
+ * receives the actual response value and constructs a schema with z.literal(prev.code).
+ * Zod validates that the literal matches at runtime.
+ *
+ * The coproduct (+) IS fully expressible since TypeScript unions are structural.
+ * This asymmetry is inherent - we get dependent protocol behavior through runtime
+ * validation, with compile-time enforcement limited to step ordering.
+ *
  * @example
  * ```typescript
  * import { step, dependentStep, protocol } from "./protocol";
@@ -140,3 +157,9 @@ export {
 
 // OpenAPI extension types
 export type { XProtocol, XProtocolStep } from "./openapi.ts";
+
+// HTTP executor
+export { createHttpExecutor, HttpError } from "./http.ts";
+
+// HTTP executor types
+export type { HttpExecutorConfig, RouteConfig } from "./http.ts";

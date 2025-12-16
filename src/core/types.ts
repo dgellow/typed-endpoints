@@ -47,6 +47,8 @@ export interface ApiMethodDef<
   summary?: string;
   description?: string;
   tags?: string[];
+  /** Operation ID for protocol step mapping and route generation */
+  operationId?: string;
   /** Pagination metadata (set by pagination helpers) */
   __pagination?: AnyPaginationMeta;
 }

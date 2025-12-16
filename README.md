@@ -363,6 +363,7 @@ Options:
 - `routesDirs` - Directories to scan (default: ["routes/api"])
 - `output` - Output file path (if provided, writes to file)
 - `config` - Path to deno.json (needed when routes use import map aliases)
+- `format` - Output format: "types", "client", or "routes" (default: "types")
 
 Returns the generated types as a string.
 
@@ -374,9 +375,14 @@ typed-endpoints - Generate TypeScript types from API route Zod schemas
 Options:
   -r, --routes <dir>    Routes directory (can be specified multiple times)
   -o, --output <file>   Output file path (required)
-  -f, --format <type>   Output format: "types" or "client" (default: types)
+  -f, --format <type>   Output format: types, client, or routes (default: types)
   -c, --config <file>   Path to deno.json (auto-detected if not provided)
   -h, --help            Show help
+
+Formats:
+  types   - Flat type exports (UsersGetResponse, etc.)
+  client  - Resource-based Api interface for createClient()
+  routes  - Runtime route metadata for createHttpExecutor()
 ```
 
 ## Architecture
@@ -394,6 +400,7 @@ src/
 │   ├── types.ts       # Step, DependentStep, Sequence, Protocol types
 │   ├── dsl.ts         # Builder functions: step(), dependentStep(), etc.
 │   ├── client.ts      # Type-safe protocol session client
+│   ├── http.ts        # HTTP executor for real endpoint connections
 │   ├── oauth.ts       # OAuth 2.0 reference implementation
 │   └── index.ts       # Module exports
 ├── client/
@@ -436,6 +443,50 @@ step 1.**
 This is the missing primitive that enables type-safe OAuth, multi-step wizards,
 database transactions, and any protocol where later steps depend on earlier
 responses.
+
+### Type System Limitations
+
+True sequential product (`>>`) requires Σ (dependent pair):
+
+```
+A × B           -- normal pair: value of type A and value of type B
+Σ (a : A). B(a) -- dependent pair: value 'a' of type A and value of type B(a)
+                -- where B(a) is a type that changes depending on the VALUE of 'a'
+```
+
+TypeScript doesn't have dependent types, so our implementation is a pragmatic
+approximation:
+
+**What we track at compile time:**
+
+- Which step _names_ have been completed (via union type `TDone`)
+- Which steps are available next (via `AvailableSteps<TSteps, TDone>`)
+
+**What we enforce at runtime:**
+
+- The actual dependent typing (e.g., `code` in exchange must equal `code` from
+  authorize)
+- Schema validation via Zod
+
+The `request: (prev) => Schema` function is what André Videla calls a "suspended
+continuation" - it receives the runtime value from the previous step and
+constructs a schema with `z.literal(prev.code)`. This gives us the dependent
+behavior, but the type system only knows "exchange is available after authorize"
+
+- not "exchange's code field must match authorize's response value."
+
+For comparison, the coproduct (`+`) _is_ fully expressible at the type level
+because TypeScript unions are structural:
+
+```typescript
+type AuthResponse =
+  | { type: "success"; code: string }
+  | { type: "error"; error: string };
+```
+
+This asymmetry is inherent to TypeScript's type system - we get the practical
+benefits of dependent protocols through runtime validation, with compile-time
+enforcement of step ordering.
 
 ### Example: OAuth 2.0 Authorization Code Flow
 
@@ -565,6 +616,7 @@ const order = topologicalSort(oauth2Protocol);
 - Protocol validation and introspection utilities
 - OAuth 2.0 Authorization Code Flow as reference implementation
 - **Type-safe protocol client** with compile-time step enforcement
+- **HTTP executor** for connecting protocols to real endpoints
 - **OpenAPI x-protocol extension** for spec generation
 
 ### Type-Safe Protocol Client
@@ -620,6 +672,66 @@ Key features:
   literal `"authorize"`, not widened to `string`
 - **Accumulating state**: Session responses are typed as they accumulate
 - **Runtime validation**: Request/response schemas are validated at runtime
+
+### HTTP Executor
+
+Connect protocol sessions to real HTTP endpoints using generated route metadata:
+
+```bash
+# Generate route metadata from your API
+deno run -A jsr:@dgellow/typed-endpoints/cli -r routes/api -o src/api-routes.ts --format routes
+```
+
+This generates:
+
+```typescript
+export const apiRoutes = {
+  authLogin: { method: "POST", path: "/api/auth/login" },
+  authExchange: { method: "POST", path: "/api/auth/exchange" },
+} as const;
+```
+
+Use with the HTTP executor:
+
+```typescript
+import {
+  createHttpExecutor,
+  createSession,
+} from "@dgellow/typed-endpoints/protocol";
+import { apiRoutes } from "./api-routes.ts";
+
+// Define steps with operationId matching route keys
+const loginStep = step({
+  name: "login",
+  operationId: "authLogin", // Maps to apiRoutes.authLogin
+  request: z.object({ username: z.string(), password: z.string() }),
+  response: z.object({ accessToken: z.string() }),
+});
+
+// Create HTTP executor
+const executor = createHttpExecutor(authProtocol, {
+  baseUrl: "https://api.example.com",
+  routes: apiRoutes,
+  auth: {
+    fromStep: "login",
+    tokenPath: "accessToken", // Auto-inject token from login response
+  },
+});
+
+const session = createSession(authProtocol, executor);
+const { response } = await session.execute("login", {
+  username: "alice",
+  password: "secret",
+});
+// Makes POST https://api.example.com/api/auth/login
+```
+
+Features:
+
+- **Route mapping**: Steps map to HTTP endpoints via `operationId`
+- **Auth propagation**: Automatically inject tokens from previous step responses
+- **Path parameters**: `{userId}` in paths resolved from request object
+- **Error handling**: `HttpError` class with status, statusText, and body
 
 ### OpenAPI Protocol Extensions
 
