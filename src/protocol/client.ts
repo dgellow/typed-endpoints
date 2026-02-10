@@ -17,21 +17,31 @@ import type { z } from "zod";
 import type {
   AnyStep,
   DependentStep,
+  MappedStep,
   Protocol,
   Step,
   StepResponse,
 } from "./types.ts";
+import {
+  deriveSchemaWithLiterals,
+  getNestedValue,
+  isFieldMapping,
+} from "./mapping.ts";
 
 // =============================================================================
 // Type Utilities
 // =============================================================================
 
 /** Check if step is independent (no dependencies) - checks __kind directly */
-type IsIndependent<T> = T extends { __kind: "step" } ? true : false;
+type IsIndependent<T> = T extends { __kind: "step" } ? true
+  : T extends { __kind: "dependent_step" } ? false
+  : T extends { __kind: "mapped_step" } ? false
+  : false;
 
 /** Get the dependency of a dependent step - accesses property directly */
 type DependencyOf<T> = T extends { __kind: "dependent_step"; dependsOn: string }
   ? T["dependsOn"]
+  : T extends { __kind: "mapped_step"; dependsOn: string } ? T["dependsOn"]
   : never;
 
 /** Steps available when state has certain completed steps */
@@ -140,6 +150,28 @@ export class ProtocolSession<
     let requestSchema: z.ZodType;
     if (step.__kind === "step") {
       requestSchema = step.request;
+    } else if (step.__kind === "mapped_step") {
+      // Mapped step - derive schema with literal replacements
+      const mappedStep = step as MappedStep;
+      // Build literal overrides from mappings, validating sources exist
+      const overrides: Record<string, unknown> = {};
+      for (const [field, mapping] of Object.entries(mappedStep.requestMapping)) {
+        if (!isFieldMapping(mapping)) continue;
+        const sourceResponse = this.responses[
+          mapping.step as keyof typeof this.responses
+        ];
+        if (sourceResponse === undefined) {
+          throw new Error(
+            `Cannot execute "${stepName}": mapping source "${mapping.step}" for field "${field}" not satisfied`,
+          );
+        }
+        overrides[field] = getNestedValue(sourceResponse, mapping.path);
+      }
+      requestSchema = deriveSchemaWithLiterals(
+        // deno-lint-ignore no-explicit-any
+        mappedStep.requestSchema as z.ZodObject<any>,
+        overrides,
+      );
     } else {
       // Dependent step - get previous response and derive schema
       const depStep = step as DependentStep;
@@ -208,6 +240,18 @@ export class ProtocolSession<
     const step = this.protocol.steps[stepName];
     if (!step) return false;
     if (step.__kind === "step") return true;
+    if (step.__kind === "mapped_step") {
+      const mappedStep = step as MappedStep;
+      // Check primary dependency
+      if (!(mappedStep.dependsOn in this.responses)) return false;
+      // Check all mapping source steps have responses
+      for (const mapping of Object.values(mappedStep.requestMapping)) {
+        if (isFieldMapping(mapping) && !(mapping.step in this.responses)) {
+          return false;
+        }
+      }
+      return true;
+    }
     const depStep = step as DependentStep;
     return depStep.dependsOn in this.responses;
   }

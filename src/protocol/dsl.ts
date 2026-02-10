@@ -18,12 +18,15 @@ import type {
   Branch,
   Choice,
   DependentStep,
+  MappedStep,
   Parallel,
   Protocol,
   Repeat,
   Sequence,
   Step,
 } from "./types.ts";
+import type { FieldMapping } from "./mapping.ts";
+import { isFieldMapping } from "./mapping.ts";
 
 // =============================================================================
 // Step Builders
@@ -133,6 +136,73 @@ export function dependentStep<
     name: config.name,
     dependsOn: config.dependsOn,
     request: config.request,
+    response: config.response,
+    description: config.description,
+    operationId: config.operationId,
+  };
+}
+
+/**
+ * Configuration for a mapped step.
+ */
+export interface MappedStepConfig<
+  TName extends string,
+  TRequest extends z.ZodType,
+  TResponse extends z.ZodType,
+  TDependsOn extends string,
+  TMapping extends Record<string, FieldMapping>,
+> {
+  readonly name: TName;
+  /** Primary dependency */
+  readonly dependsOn: TDependsOn;
+  /** Declarative field-to-step mappings */
+  readonly requestMapping: TMapping;
+  /** Static request schema (before literal replacement) */
+  readonly requestSchema: TRequest;
+  readonly response: TResponse;
+  readonly description?: string;
+  /** Operation ID for mapping to HTTP routes */
+  readonly operationId?: string;
+}
+
+/**
+ * Create a mapped step with declarative field mappings.
+ *
+ * The declarative form handles literal field forwarding — the most common
+ * pattern in dependent steps. For conditional schemas or derived constraints,
+ * use dependentStep() instead.
+ *
+ * @example
+ * ```typescript
+ * const exchangeStep = mappedStep({
+ *   name: "exchange",
+ *   dependsOn: "authorize",
+ *   requestMapping: {
+ *     code: fromStep("authorize", "code"),
+ *   },
+ *   requestSchema: z.object({
+ *     code: z.string(),
+ *     grant_type: z.literal("authorization_code"),
+ *   }),
+ *   response: ExchangeResponseSchema,
+ * });
+ * ```
+ */
+export function mappedStep<
+  TName extends string,
+  TRequest extends z.ZodType,
+  TResponse extends z.ZodType,
+  TDependsOn extends string,
+  const TMapping extends Record<string, FieldMapping>,
+>(
+  config: MappedStepConfig<TName, TRequest, TResponse, TDependsOn, TMapping>,
+): MappedStep<TName, TRequest, TResponse, TDependsOn, TMapping> {
+  return {
+    __kind: "mapped_step",
+    name: config.name,
+    dependsOn: config.dependsOn,
+    requestMapping: config.requestMapping,
+    requestSchema: config.requestSchema,
     response: config.response,
     description: config.description,
     operationId: config.operationId,
@@ -342,10 +412,22 @@ export function getStepNames<T extends ProtocolLike>(
 
 /**
  * Get dependencies for a step.
+ *
+ * For mapped steps, returns the primary dependsOn plus any additional steps
+ * referenced in requestMapping.
  */
 export function getStepDependencies(step: AnyStep): string[] {
   if (step.__kind === "dependent_step") {
     return [step.dependsOn];
+  }
+  if (step.__kind === "mapped_step") {
+    const deps = new Set<string>([step.dependsOn]);
+    for (const value of Object.values(step.requestMapping)) {
+      if (isFieldMapping(value)) {
+        deps.add(value.step);
+      }
+    }
+    return [...deps];
   }
   return [];
 }
@@ -428,6 +510,15 @@ export function validateProtocol<T extends ProtocolLike>(proto: T): {
         errors.push(
           `Step "${name}" depends on "${anyStep.dependsOn}" which doesn't exist`,
         );
+      }
+    } else if (anyStep.__kind === "mapped_step") {
+      const deps = getStepDependencies(anyStep);
+      for (const dep of deps) {
+        if (!(dep in proto.steps)) {
+          errors.push(
+            `Step "${name}" depends on "${dep}" which doesn't exist`,
+          );
+        }
       }
     }
   }

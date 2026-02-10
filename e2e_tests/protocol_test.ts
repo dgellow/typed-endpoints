@@ -16,6 +16,8 @@ import {
   createMockExecutor,
   createSession,
   dependentStep,
+  fromStep,
+  mappedStep,
   oauth2AuthCodeProtocol,
   protocol,
   protocolToOpenApi,
@@ -442,4 +444,216 @@ Deno.test("E2E: Session responses are typed and accumulated", async () => {
   // Both responses are available and typed
   assertEquals(s2.responses.initiate.uploadId, testUploadId);
   assertEquals(s2.responses.upload.etag, "etag-1");
+});
+
+// =============================================================================
+// Mapped Step E2E Tests
+// =============================================================================
+
+/**
+ * File upload protocol rewritten with mappedStep for the complete step.
+ * Upload still uses dependentStep (needs .max(prev.totalParts) — Pattern 2).
+ */
+const fileUploadMappedProtocol = protocol({
+  name: "FileUploadMapped",
+  description: "Multi-part file upload protocol using mapped steps",
+  initial: "initiate",
+  terminal: ["complete", "abort"],
+  steps: {
+    initiate: step({
+      name: "initiate",
+      description: "Initialize file upload",
+      request: z.object({
+        filename: z.string(),
+        size: z.number().int().positive(),
+        contentType: z.string(),
+      }),
+      response: z.object({
+        uploadId: z.string().uuid(),
+        partSize: z.number(),
+        totalParts: z.number(),
+      }),
+    }),
+    // dependentStep: needs .max(prev.totalParts) — can't be declarative
+    upload: dependentStep({
+      name: "upload",
+      dependsOn: "initiate",
+      description: "Upload a file part",
+      request: (prev: { uploadId: string; totalParts: number }) =>
+        z.object({
+          uploadId: z.literal(prev.uploadId),
+          partNumber: z.number().int().min(1).max(prev.totalParts),
+          data: z.string(),
+        }),
+      response: z.object({
+        partNumber: z.number(),
+        etag: z.string(),
+      }),
+    }),
+    // mappedStep: only literal forwarding
+    complete: mappedStep({
+      name: "complete",
+      dependsOn: "initiate",
+      description: "Complete the upload",
+      requestMapping: {
+        uploadId: fromStep("initiate", "uploadId"),
+      },
+      requestSchema: z.object({
+        uploadId: z.string(),
+        parts: z.array(
+          z.object({
+            partNumber: z.number(),
+            etag: z.string(),
+          }),
+        ),
+      }),
+      response: z.object({
+        fileId: z.string(),
+        url: z.string().url(),
+      }),
+    }),
+    // mappedStep: only literal forwarding
+    abort: mappedStep({
+      name: "abort",
+      dependsOn: "initiate",
+      description: "Abort the upload",
+      requestMapping: {
+        uploadId: fromStep("initiate", "uploadId"),
+      },
+      requestSchema: z.object({
+        uploadId: z.string(),
+      }),
+      response: z.object({
+        aborted: z.literal(true),
+      }),
+    }),
+  },
+});
+
+Deno.test("E2E: Mapped file upload protocol - complete flow", async () => {
+  const executor = createMockExecutor(fileUploadMappedProtocol, {
+    initiate: {
+      uploadId: "550e8400-e29b-41d4-a716-446655440000",
+      partSize: 5 * 1024 * 1024,
+      totalParts: 2,
+    },
+    upload: (req: { partNumber: number }) => ({
+      partNumber: req.partNumber,
+      etag: `etag-${req.partNumber}`,
+    }),
+    complete: {
+      fileId: "file-mapped",
+      url: "https://cdn.example.com/files/file-mapped",
+    },
+  });
+
+  const session = createSession(fileUploadMappedProtocol, executor);
+
+  const { response: initResponse, session: s1 } = await session.execute(
+    "initiate",
+    {
+      filename: "mapped.zip",
+      size: 10 * 1024 * 1024,
+      contentType: "application/zip",
+    },
+  );
+
+  assertEquals(initResponse.uploadId, "550e8400-e29b-41d4-a716-446655440000");
+
+  // Upload parts (dependentStep)
+  const { response: part1, session: s2 } = await s1.execute("upload", {
+    uploadId: initResponse.uploadId,
+    partNumber: 1,
+    data: "part-1-data",
+  });
+
+  const { response: part2, session: s3 } = await s2.execute("upload", {
+    uploadId: initResponse.uploadId,
+    partNumber: 2,
+    data: "part-2-data",
+  });
+
+  // Complete (mappedStep) — uploadId enforced via literal
+  const { response: completeResponse, session: finalSession } = await s3
+    .execute("complete", {
+      uploadId: initResponse.uploadId,
+      parts: [
+        { partNumber: 1, etag: part1.etag },
+        { partNumber: 2, etag: part2.etag },
+      ],
+    });
+
+  assertEquals(completeResponse.fileId, "file-mapped");
+  assertEquals(finalSession.isTerminal(), true);
+});
+
+Deno.test("E2E: Mapped file upload - wrong uploadId rejected", async () => {
+  const executor = createMockExecutor(fileUploadMappedProtocol, {
+    initiate: {
+      uploadId: "550e8400-e29b-41d4-a716-446655440000",
+      partSize: 1024,
+      totalParts: 1,
+    },
+  });
+
+  const session = createSession(fileUploadMappedProtocol, executor);
+  const { session: s1 } = await session.execute("initiate", {
+    filename: "test.txt",
+    size: 1024,
+    contentType: "text/plain",
+  });
+
+  await assertRejects(
+    async () => {
+      await s1.execute("complete", {
+        uploadId: "wrong-uuid",
+        parts: [],
+      });
+    },
+    Error,
+    "Invalid request",
+  );
+});
+
+Deno.test("E2E: Mapped file upload - abort with literal enforcement", async () => {
+  const executor = createMockExecutor(fileUploadMappedProtocol, {
+    initiate: {
+      uploadId: "550e8400-e29b-41d4-a716-446655440000",
+      partSize: 1024,
+      totalParts: 1,
+    },
+    abort: { aborted: true },
+  });
+
+  const session = createSession(fileUploadMappedProtocol, executor);
+  const { response: initResponse, session: s1 } = await session.execute(
+    "initiate",
+    {
+      filename: "abort.txt",
+      size: 1024,
+      contentType: "text/plain",
+    },
+  );
+
+  const { response: abortResponse, session: finalSession } = await s1.execute(
+    "abort",
+    { uploadId: initResponse.uploadId },
+  );
+
+  assertEquals(abortResponse.aborted, true);
+  assertEquals(finalSession.isTerminal(), true);
+});
+
+Deno.test("E2E: Mapped protocol OpenAPI generation", () => {
+  const xProtocol = protocolToOpenApi(fileUploadMappedProtocol);
+
+  assertEquals(xProtocol.name, "FileUploadMapped");
+  assertEquals(xProtocol.initial, "initiate");
+  assertEquals(xProtocol.terminal, ["complete", "abort"]);
+
+  const completeStep = xProtocol.steps.find((s) => s.name === "complete");
+  assertEquals(completeStep?.dependsOn, "initiate");
+
+  const abortStep = xProtocol.steps.find((s) => s.name === "abort");
+  assertEquals(abortStep?.dependsOn, "initiate");
 });

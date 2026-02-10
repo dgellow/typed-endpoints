@@ -67,6 +67,7 @@ export type {
   Branch,
   Choice,
   DependentStep,
+  MappedStep,
   Parallel,
   Protocol,
   ProtocolMorphism,
@@ -90,6 +91,7 @@ export {
   dependentStep,
   getStepDependencies,
   getStepNames,
+  mappedStep,
   parallel,
   protocol,
   repeat,
@@ -101,7 +103,18 @@ export {
 } from "./dsl.ts";
 
 // DSL config types
-export type { DependentStepConfig, ProtocolConfig, StepConfig } from "./dsl.ts";
+export type {
+  DependentStepConfig,
+  MappedStepConfig,
+  ProtocolConfig,
+  StepConfig,
+} from "./dsl.ts";
+
+// Field mapping
+export { fromStep, isFieldMapping } from "./mapping.ts";
+
+// Field mapping types
+export type { FieldMapping } from "./mapping.ts";
 
 // OAuth 2.0 example (for reference)
 export {

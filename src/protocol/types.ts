@@ -11,6 +11,7 @@
  */
 
 import type { z } from "zod";
+import type { FieldMapping } from "./mapping.ts";
 
 // =============================================================================
 // Core Step Types
@@ -57,6 +58,37 @@ export interface DependentStep<
   /** Request schema is derived from previous step's response */
   readonly request: (prev: TPrevResponse) => TRequest;
   readonly response: TResponse;
+  readonly dependsOn: TDependsOn;
+  readonly description?: string;
+  /** Operation ID for mapping to HTTP routes */
+  readonly operationId?: string;
+}
+
+/**
+ * A mapped step with declarative field mappings.
+ *
+ * Like DependentStep, but the dependency on previous responses is expressed
+ * as plain data (requestMapping) rather than a function. This enables static
+ * analysis while preserving runtime literal enforcement.
+ *
+ * At runtime, mapped fields are replaced with z.literal(actualValue) in the
+ * request schema, giving identical behavior to dependentStep with z.literal().
+ */
+export interface MappedStep<
+  TName extends string = string,
+  TRequest extends z.ZodType = z.ZodType,
+  TResponse extends z.ZodType = z.ZodType,
+  TDependsOn extends string = string,
+  TMapping extends Record<string, FieldMapping> = Record<string, FieldMapping>,
+> {
+  readonly __kind: "mapped_step";
+  readonly name: TName;
+  /** Static Zod schema for the request (before literal replacement) */
+  readonly requestSchema: TRequest;
+  /** Declarative field-to-step mappings */
+  readonly requestMapping: TMapping;
+  readonly response: TResponse;
+  /** Primary dependency */
   readonly dependsOn: TDependsOn;
   readonly description?: string;
   /** Operation ID for mapping to HTTP routes */
@@ -174,7 +206,9 @@ export type AnyStep =
   // deno-lint-ignore no-explicit-any
   | Step<string, any, any>
   // deno-lint-ignore no-explicit-any
-  | DependentStep<string, any, any, any, any>;
+  | DependentStep<string, any, any, any, any>
+  // deno-lint-ignore no-explicit-any
+  | MappedStep<string, any, any, any, any>;
 
 /** Any composition type */
 export type AnyComposition = Sequence | Repeat | Choice | Branch | Parallel;
@@ -194,6 +228,9 @@ export type StepRequest<T extends AnyStep> = T extends Step<
 > ? z.infer<Req>
   : T extends DependentStep<string, unknown, infer Req, z.ZodType>
     ? z.infer<Req>
+  // deno-lint-ignore no-explicit-any
+  : T extends MappedStep<string, infer Req, any, any, any>
+    ? z.infer<Req>
   : never;
 
 /** Extract the response type from a step */
@@ -202,12 +239,16 @@ export type StepResponse<T> = T extends Step<string, any, infer Res>
   ? z.infer<Res>
   // deno-lint-ignore no-explicit-any
   : T extends DependentStep<string, any, any, infer Res> ? z.infer<Res>
+  // deno-lint-ignore no-explicit-any
+  : T extends MappedStep<string, any, infer Res, any, any> ? z.infer<Res>
   : never;
 
 /** Extract step name */
 export type StepName<T extends AnyStep> = T extends
   Step<infer N, z.ZodType, z.ZodType> ? N
   : T extends DependentStep<infer N, unknown, z.ZodType, z.ZodType> ? N
+  // deno-lint-ignore no-explicit-any
+  : T extends MappedStep<infer N, any, any, any, any> ? N
   : never;
 
 /**

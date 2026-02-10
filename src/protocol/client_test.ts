@@ -13,7 +13,8 @@ import {
   createSession,
   type StepExecutor,
 } from "./client.ts";
-import { dependentStep, protocol, step } from "./dsl.ts";
+import { dependentStep, mappedStep, protocol, step } from "./dsl.ts";
+import { fromStep } from "./mapping.ts";
 import {
   type AuthorizeResponse,
   type ExchangeResponse,
@@ -494,3 +495,242 @@ Deno.test("session state types accumulate correctly", async () => {
   assertEquals(s2.responses.start.value, 42);
   assertEquals(s2.responses.middle.result, 100);
 });
+
+// =============================================================================
+// Mapped Step Tests
+// =============================================================================
+
+const mappedProtocol = protocol({
+  name: "MappedProtocol",
+  initial: "start",
+  terminal: ["finish"],
+  steps: {
+    start: step({
+      name: "start",
+      request: z.object({ input: z.string() }),
+      response: z.object({ id: z.string(), token: z.string() }),
+    }),
+    process: mappedStep({
+      name: "process",
+      dependsOn: "start",
+      requestMapping: {
+        id: fromStep("start", "id"),
+      },
+      requestSchema: z.object({
+        id: z.string(),
+        action: z.string(),
+      }),
+      response: z.object({ result: z.string() }),
+    }),
+    finish: mappedStep({
+      name: "finish",
+      dependsOn: "process",
+      requestMapping: {
+        token: fromStep("start", "token"),
+      },
+      requestSchema: z.object({
+        token: z.string(),
+        confirm: z.boolean(),
+      }),
+      response: z.object({ done: z.boolean() }),
+    }),
+  },
+});
+
+Deno.test("mappedStep: execute with correct literal value succeeds", async () => {
+  const executor = createMockExecutor(mappedProtocol, {
+    start: { id: "abc-123", token: "tok-xyz" },
+    process: { result: "ok" },
+  });
+
+  const session = createSession(mappedProtocol, executor);
+  const { session: s1 } = await session.execute("start", { input: "go" });
+  const { response } = await s1.execute("process", {
+    id: "abc-123",
+    action: "do-it",
+  });
+
+  assertEquals(response.result, "ok");
+});
+
+Deno.test("mappedStep: execute with wrong literal value rejects", async () => {
+  const executor = createMockExecutor(mappedProtocol, {
+    start: { id: "abc-123", token: "tok-xyz" },
+    process: { result: "ok" },
+  });
+
+  const session = createSession(mappedProtocol, executor);
+  const { session: s1 } = await session.execute("start", { input: "go" });
+
+  await assertRejects(
+    async () => {
+      await s1.execute("process", {
+        id: "wrong-id",
+        action: "do-it",
+      });
+    },
+    Error,
+    "Invalid request",
+  );
+});
+
+Deno.test("mappedStep: canExecute returns false before dependency", () => {
+  const executor = createMockExecutor(mappedProtocol, {});
+  const session = createSession(mappedProtocol, executor);
+
+  assertEquals(session.canExecute("start"), true);
+  assertEquals(session.canExecute("process"), false);
+  assertEquals(session.canExecute("finish"), false);
+});
+
+Deno.test("mappedStep: canExecute returns true after dependency", async () => {
+  const executor = createMockExecutor(mappedProtocol, {
+    start: { id: "x", token: "t" },
+  });
+
+  const session = createSession(mappedProtocol, executor);
+  const { session: s1 } = await session.execute("start", { input: "x" });
+
+  assertEquals(s1.canExecute("process"), true);
+  // finish depends on "process" AND maps from "start" — "process" not done yet
+  assertEquals(s1.canExecute("finish"), false);
+});
+
+Deno.test("mappedStep: throws if mapping source not satisfied", async () => {
+  const executor = createMockExecutor(mappedProtocol, {
+    start: { id: "x", token: "t" },
+  });
+
+  const session = createSession(mappedProtocol, executor);
+
+  await assertRejects(
+    async () => {
+      // @ts-expect-error - process depends on start
+      await session.execute("process", { id: "x", action: "a" });
+    },
+    Error,
+    "not satisfied",
+  );
+});
+
+Deno.test("mappedStep: cross-step mapping (finish reads from start)", async () => {
+  const executor = createMockExecutor(mappedProtocol, {
+    start: { id: "abc", token: "my-token" },
+    process: { result: "ok" },
+    finish: { done: true },
+  });
+
+  const session = createSession(mappedProtocol, executor);
+  const { session: s1 } = await session.execute("start", { input: "go" });
+  const { session: s2 } = await s1.execute("process", {
+    id: "abc",
+    action: "do",
+  });
+
+  // finish maps token from "start", depends on "process"
+  const { response } = await s2.execute("finish", {
+    token: "my-token",
+    confirm: true,
+  });
+  assertEquals(response.done, true);
+
+  // Wrong token should fail
+  await assertRejects(
+    async () => {
+      await s2.execute("finish", {
+        token: "wrong-token",
+        confirm: true,
+      });
+    },
+    Error,
+    "Invalid request",
+  );
+});
+
+// =============================================================================
+// Mixed Protocol (dependentStep + mappedStep)
+// =============================================================================
+
+const mixedProtocol = protocol({
+  name: "MixedProtocol",
+  initial: "init",
+  terminal: ["done"],
+  steps: {
+    init: step({
+      name: "init",
+      request: z.object({ name: z.string() }),
+      response: z.object({ sessionId: z.string(), code: z.string() }),
+    }),
+    // dependentStep — uses function-based request
+    verify: dependentStep({
+      name: "verify",
+      dependsOn: "init",
+      request: (prev: { sessionId: string; code: string }) =>
+        z.object({
+          sessionId: z.literal(prev.sessionId),
+          code: z.literal(prev.code),
+        }),
+      response: z.object({ verified: z.boolean() }),
+    }),
+    // mappedStep — uses declarative mapping
+    done: mappedStep({
+      name: "done",
+      dependsOn: "verify",
+      requestMapping: {
+        sessionId: fromStep("init", "sessionId"),
+      },
+      requestSchema: z.object({
+        sessionId: z.string(),
+        confirm: z.boolean(),
+      }),
+      response: z.object({ success: z.boolean() }),
+    }),
+  },
+});
+
+Deno.test("mixed protocol: dependentStep and mappedStep in same session", async () => {
+  const executor = createMockExecutor(mixedProtocol, {
+    init: { sessionId: "sess-1", code: "code-2" },
+    verify: { verified: true },
+    done: { success: true },
+  });
+
+  const session = createSession(mixedProtocol, executor);
+  const { session: s1 } = await session.execute("init", { name: "test" });
+
+  // dependentStep
+  const { session: s2 } = await s1.execute("verify", {
+    sessionId: "sess-1",
+    code: "code-2",
+  });
+
+  // mappedStep
+  const { response } = await s2.execute("done", {
+    sessionId: "sess-1",
+    confirm: true,
+  });
+
+  assertEquals(response.success, true);
+});
+
+// =============================================================================
+// Mapped Step Type-Level Tests
+// =============================================================================
+
+type MappedSteps = (typeof mappedProtocol)["steps"];
+
+// mapped_step is not independent
+type ProcessIsNotIndependent = MappedSteps["process"] extends
+  { __kind: "step" } ? true : false;
+const _checkProcessNotIndep: ProcessIsNotIndependent = false;
+
+// AvailableSteps works with mapped steps
+type MappedStepsAfterStart = AvailableSteps<MappedSteps, "start">;
+const _checkProcessAvailable: "process" extends MappedStepsAfterStart ? true
+  : false = true;
+
+type MappedStepsInitial = AvailableSteps<MappedSteps, never>;
+const _checkOnlyStartInitial: "start" extends MappedStepsInitial ? true
+  : false = true;
+const _checkProcessNotInitial: "process" extends MappedStepsInitial ? true
+  : false = false;

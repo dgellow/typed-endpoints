@@ -147,9 +147,15 @@ export function protocolToOpenApi<
     const next = nextMap.get(name as string);
 
     // Build step definition with optional properties
+    const dependsOn = step.__kind === "dependent_step"
+      ? step.dependsOn
+      : step.__kind === "mapped_step"
+        ? step.dependsOn
+        : undefined;
+
     const stepDef: XProtocolStep = {
       name: name as string,
-      ...(step.__kind === "dependent_step" && { dependsOn: step.dependsOn }),
+      ...(dependsOn && { dependsOn }),
       ...(next && next.length > 0 && { next }),
       ...(step.description && { description: step.description }),
     };

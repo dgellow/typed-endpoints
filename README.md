@@ -397,8 +397,9 @@ src/
 │   ├── types.ts       # Pagination type definitions
 │   └── index.ts       # cursor, cursorId, offset, page, url helpers
 ├── protocol/          # Protocol schemas (experimental)
-│   ├── types.ts       # Step, DependentStep, Sequence, Protocol types
-│   ├── dsl.ts         # Builder functions: step(), dependentStep(), etc.
+│   ├── types.ts       # Step, DependentStep, MappedStep, Sequence, Protocol types
+│   ├── dsl.ts         # Builder functions: step(), dependentStep(), mappedStep(), etc.
+│   ├── mapping.ts     # Declarative field mappings: fromStep(), deriveSchemaWithLiterals()
 │   ├── client.ts      # Type-safe protocol session client
 │   ├── http.ts        # HTTP executor for real endpoint connections
 │   ├── oauth.ts       # OAuth 2.0 reference implementation
@@ -577,6 +578,8 @@ The DSL maps category theory concepts from André's research to TypeScript:
 | ----------------- | ----------------------- | --------------------------------------------- |
 | `step()`          | Container               | Independent request/response pair             |
 | `dependentStep()` | Sequential Product (>>) | Request schema derived from previous response |
+| `mappedStep()`    | Sequential Product (>>) | Declarative field mappings (static analysis)  |
+| `fromStep()`      | Field reference          | Maps a field to a previous step's response    |
 | `sequence()`      | Sequential composition  | Chain of steps executed in order              |
 | `repeat()`        | Kleene Star (*)         | Zero-or-more repetitions                      |
 | `repeat1()`       | Kleene Plus (+)         | One-or-more repetitions                       |
@@ -609,10 +612,12 @@ const order = topologicalSort(oauth2Protocol);
 
 ### What's Implemented
 
-- Core type definitions (`Step`, `DependentStep`, `Sequence`, `Repeat`,
-  `Choice`, etc.)
-- DSL builder functions (`step()`, `dependentStep()`, `sequence()`, `repeat()`,
-  etc.)
+- Core type definitions (`Step`, `DependentStep`, `MappedStep`, `Sequence`,
+  `Repeat`, `Choice`, etc.)
+- DSL builder functions (`step()`, `dependentStep()`, `mappedStep()`,
+  `sequence()`, `repeat()`, etc.)
+- **Declarative field mappings** via `mappedStep()` and `fromStep()` — static,
+  inspectable alternative to `dependentStep()` for literal field forwarding
 - Protocol validation and introspection utilities
 - OAuth 2.0 Authorization Code Flow as reference implementation
 - **Type-safe protocol client** with compile-time step enforcement
@@ -898,6 +903,67 @@ The user experience stays TypeScript-native. Invalid protocol usage fails at
 build time, not runtime. The Σ complexity is hidden - you just get clear errors
 if you call steps in the wrong order or pass incompatible data between steps.
 
+### Declarative Field Mappings
+
+The most common pattern in `dependentStep()` is literal field forwarding:
+`code: z.literal(prev.code)`. The `mappedStep()` builder expresses this as
+plain data, enabling static analysis while preserving runtime literal
+enforcement:
+
+```typescript
+import { fromStep, mappedStep } from "@dgellow/typed-endpoints/protocol";
+
+const exchangeStep = mappedStep({
+  name: "exchange",
+  dependsOn: "authorize",
+  requestMapping: {
+    code: fromStep("authorize", "code"),  // Statically analyzable
+  },
+  requestSchema: z.object({
+    code: z.string(),
+    grant_type: z.literal("authorization_code"),
+    client_id: z.string(),
+    client_secret: z.string(),
+  }),
+  response: ExchangeResponseSchema,
+});
+```
+
+At runtime, mapped fields are replaced with `z.literal(actualValue)` — identical
+enforcement to `dependentStep()` with `z.literal()`. The mapping is plain data
+that tooling (tsgen, OpenAPI, build-time validation) can inspect without
+executing code.
+
+**When to use each:**
+
+- `mappedStep()` — literal field forwarding (the common case)
+- `dependentStep()` — conditional schemas (`if (prev.type !== "success") return z.never()`),
+  derived constraints (`.max(prev.totalParts)`), or any logic beyond simple forwarding
+
+**Multi-step references:** `requestMapping` can reference steps other than
+`dependsOn`. All referenced steps become implicit dependencies:
+
+```typescript
+const finalizeStep = mappedStep({
+  name: "finalize",
+  dependsOn: "process",
+  requestMapping: {
+    token: fromStep("auth", "token"),        // from auth step
+    sessionId: fromStep("process", "id"),    // from process step
+  },
+  requestSchema: z.object({ token: z.string(), sessionId: z.string() }),
+  response: z.object({ success: z.boolean() }),
+});
+```
+
+**Dot-notation paths** for nested response fields:
+
+```typescript
+requestMapping: {
+  token: fromStep("exchange", "data.access_token"),
+}
+```
+
 ### Future: Branded Types for Step Output Provenance
 
 Pulumi's `Output<T>` tracks that a value is deferred. We could extend this to
@@ -933,38 +999,16 @@ await session.execute("exchange", { code: auth.state });  // ✗ wrong field
 await session.execute("exchange", { code: "hardcoded" }); // ✗ no provenance
 ```
 
-**The challenge - how to define the mapping:**
+The declarative `fromStep()` / `requestMapping` syntax (now implemented via
+`mappedStep()`) provides the foundation for this. tsgen could:
 
-Current syntax uses a runtime function, which is hard to statically analyze:
-
-```typescript
-request: (prev) => z.object({ code: z.literal(prev.code) })
-```
-
-A more declarative syntax would enable generation:
-
-```typescript
-const exchangeStep = dependentStep({
-  dependsOn: "authorize",
-  requestMapping: {
-    code: fromStep("authorize", "code"),  // Statically analyzable
-    state: fromStep("authorize", "state"),
-  },
-  requestSchema: z.object({
-    code: z.string(),
-    state: z.string(),
-    client_id: z.string(),
-  }),
-});
-```
-
-tsgen could then:
 1. Parse `requestMapping` to understand field provenance
 2. Generate `StepOutput<T, TStep, TPath>` branded types
 3. TypeScript enforces correct data flow at compile time
 
 This handles structural constraints ("code must come from authorize.code").
-Computed constraints ("code must be uppercase") still need runtime validation.
+Computed constraints ("code must be uppercase") still need runtime validation
+via `dependentStep()`.
 
 ### References
 
