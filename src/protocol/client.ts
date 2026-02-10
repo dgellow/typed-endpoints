@@ -155,7 +155,9 @@ export class ProtocolSession<
       const mappedStep = step as MappedStep;
       // Build literal overrides from mappings, validating sources exist
       const overrides: Record<string, unknown> = {};
-      for (const [field, mapping] of Object.entries(mappedStep.requestMapping)) {
+      for (
+        const [field, mapping] of Object.entries(mappedStep.requestMapping)
+      ) {
         if (!isFieldMapping(mapping)) continue;
         const sourceResponse = this.responses[
           mapping.step as keyof typeof this.responses

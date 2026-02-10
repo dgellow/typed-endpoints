@@ -10,9 +10,9 @@ import {
 import {
   getStepDependencies,
   mappedStep,
+  protocol,
   step,
   validateProtocol,
-  protocol,
 } from "./dsl.ts";
 
 // =============================================================================

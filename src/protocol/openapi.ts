@@ -150,8 +150,8 @@ export function protocolToOpenApi<
     const dependsOn = step.__kind === "dependent_step"
       ? step.dependsOn
       : step.__kind === "mapped_step"
-        ? step.dependsOn
-        : undefined;
+      ? step.dependsOn
+      : undefined;
 
     const stepDef: XProtocolStep = {
       name: name as string,

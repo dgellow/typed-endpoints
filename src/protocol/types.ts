@@ -229,8 +229,7 @@ export type StepRequest<T extends AnyStep> = T extends Step<
   : T extends DependentStep<string, unknown, infer Req, z.ZodType>
     ? z.infer<Req>
   // deno-lint-ignore no-explicit-any
-  : T extends MappedStep<string, infer Req, any, any, any>
-    ? z.infer<Req>
+  : T extends MappedStep<string, infer Req, any, any, any> ? z.infer<Req>
   : never;
 
 /** Extract the response type from a step */

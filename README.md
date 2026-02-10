@@ -579,7 +579,7 @@ The DSL maps category theory concepts from André's research to TypeScript:
 | `step()`          | Container               | Independent request/response pair             |
 | `dependentStep()` | Sequential Product (>>) | Request schema derived from previous response |
 | `mappedStep()`    | Sequential Product (>>) | Declarative field mappings (static analysis)  |
-| `fromStep()`      | Field reference          | Maps a field to a previous step's response    |
+| `fromStep()`      | Field reference         | Maps a field to a previous step's response    |
 | `sequence()`      | Sequential composition  | Chain of steps executed in order              |
 | `repeat()`        | Kleene Star (*)         | Zero-or-more repetitions                      |
 | `repeat1()`       | Kleene Plus (+)         | One-or-more repetitions                       |
@@ -888,7 +888,7 @@ approximated at runtime. But we don't have to rely only on TypeScript - build
 time processes can validate what the type system cannot.
 
 Similar to how tsgen aggregates Fresh routes to generate OpenAPI specs and typed
-clients, a build step could validate protocol *usage*:
+clients, a build step could validate protocol _usage_:
 
 1. Parse protocol session code (via TS AST or stored metadata)
 2. Validate step execution order matches dependency graph
@@ -906,9 +906,8 @@ if you call steps in the wrong order or pass incompatible data between steps.
 ### Declarative Field Mappings
 
 The most common pattern in `dependentStep()` is literal field forwarding:
-`code: z.literal(prev.code)`. The `mappedStep()` builder expresses this as
-plain data, enabling static analysis while preserving runtime literal
-enforcement:
+`code: z.literal(prev.code)`. The `mappedStep()` builder expresses this as plain
+data, enabling static analysis while preserving runtime literal enforcement:
 
 ```typescript
 import { fromStep, mappedStep } from "@dgellow/typed-endpoints/protocol";
@@ -917,7 +916,7 @@ const exchangeStep = mappedStep({
   name: "exchange",
   dependsOn: "authorize",
   requestMapping: {
-    code: fromStep("authorize", "code"),  // Statically analyzable
+    code: fromStep("authorize", "code"), // Statically analyzable
   },
   requestSchema: z.object({
     code: z.string(),
@@ -937,8 +936,9 @@ executing code.
 **When to use each:**
 
 - `mappedStep()` — literal field forwarding (the common case)
-- `dependentStep()` — conditional schemas (`if (prev.type !== "success") return z.never()`),
-  derived constraints (`.max(prev.totalParts)`), or any logic beyond simple forwarding
+- `dependentStep()` — conditional schemas
+  (`if (prev.type !== "success") return z.never()`), derived constraints
+  (`.max(prev.totalParts)`), or any logic beyond simple forwarding
 
 **Multi-step references:** `requestMapping` can reference steps other than
 `dependsOn`. All referenced steps become implicit dependencies:
@@ -948,8 +948,8 @@ const finalizeStep = mappedStep({
   name: "finalize",
   dependsOn: "process",
   requestMapping: {
-    token: fromStep("auth", "token"),        // from auth step
-    sessionId: fromStep("process", "id"),    // from process step
+    token: fromStep("auth", "token"), // from auth step
+    sessionId: fromStep("process", "id"), // from process step
   },
   requestSchema: z.object({ token: z.string(), sessionId: z.string() }),
   response: z.object({ success: z.boolean() }),
@@ -967,8 +967,8 @@ requestMapping: {
 ### Future: Branded Types for Step Output Provenance
 
 Pulumi's `Output<T>` tracks that a value is deferred. We could extend this to
-track *which step and field* a value came from, letting TypeScript enforce
-data flow constraints at compile time.
+track _which step and field_ a value came from, letting TypeScript enforce data
+flow constraints at compile time.
 
 **The idea - branded types with provenance:**
 
@@ -984,8 +984,8 @@ type AuthorizeResponse = {
 };
 
 type ExchangeRequest = {
-  code: StepOutput<string, "authorize", "code">;  // MUST come from authorize.code
-  client_id: string;  // any string is fine
+  code: StepOutput<string, "authorize", "code">; // MUST come from authorize.code
+  client_id: string; // any string is fine
 };
 ```
 

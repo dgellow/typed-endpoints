@@ -298,7 +298,10 @@ Deno.test("fromEndpoint and fromEndpointDependent work together in protocol", as
   assertEquals(loginReq.success, true);
 
   // Simulate login response
-  const loginResponse = { accessToken: "access-123", refreshToken: "refresh-456" };
+  const loginResponse = {
+    accessToken: "access-123",
+    refreshToken: "refresh-456",
+  };
 
   // Verify refresh step with login response
   assertEquals(refreshStep.name, "refresh");

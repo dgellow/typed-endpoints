@@ -720,8 +720,9 @@ Deno.test("mixed protocol: dependentStep and mappedStep in same session", async 
 type MappedSteps = (typeof mappedProtocol)["steps"];
 
 // mapped_step is not independent
-type ProcessIsNotIndependent = MappedSteps["process"] extends
-  { __kind: "step" } ? true : false;
+type ProcessIsNotIndependent = MappedSteps["process"] extends { __kind: "step" }
+  ? true
+  : false;
 const _checkProcessNotIndep: ProcessIsNotIndependent = false;
 
 // AvailableSteps works with mapped steps
