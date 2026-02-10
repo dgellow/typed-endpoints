@@ -1,7 +1,12 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { z } from "zod";
 import { createApiHandlers, endpoint } from "../adapters/fresh.ts";
-import { fromEndpoint, fromEndpointDependent } from "./compose.ts";
+import { fromStep } from "./mapping.ts";
+import {
+  fromEndpoint,
+  fromEndpointDependent,
+  fromEndpointMapped,
+} from "./compose.ts";
 
 // =============================================================================
 // fromEndpoint Tests
@@ -251,7 +256,7 @@ Deno.test("fromEndpointDependent throws for missing method", () => {
 // Integration Test
 // =============================================================================
 
-Deno.test("fromEndpoint and fromEndpointDependent work together in protocol", async () => {
+Deno.test("fromEndpoint and fromEndpointDependent work together in protocol", () => {
   // Simulate login endpoint
   const loginHandler = createApiHandlers({
     POST: endpoint({
@@ -314,4 +319,191 @@ Deno.test("fromEndpoint and fromEndpointDependent work together in protocol", as
   // Wrong refresh token should fail
   const wrongRefresh = refreshSchema.safeParse({ refreshToken: "wrong" });
   assertEquals(wrongRefresh.success, false);
+});
+
+// =============================================================================
+// fromEndpointMapped Tests
+// =============================================================================
+
+Deno.test("fromEndpointMapped creates mapped step", () => {
+  const handler = createApiHandlers({
+    GET: endpoint({
+      query: z.object({ token: z.string() }),
+      response: z.object({ name: z.string(), email: z.string() }),
+      handler: () => Response.json({ name: "alice", email: "a@b.c" }),
+    }),
+  });
+
+  const step = fromEndpointMapped(handler, "GET", {
+    name: "getProfile",
+    dependsOn: "login",
+    requestMapping: {
+      token: fromStep("login", "accessToken"),
+    },
+  });
+
+  assertEquals(step.__kind, "mapped_step");
+  assertEquals(step.name, "getProfile");
+  assertEquals(step.dependsOn, "login");
+  assertEquals(step.operationId, "getProfile");
+
+  // requestMapping preserved
+  assertEquals(step.requestMapping.token.__kind, "field_mapping");
+  assertEquals(step.requestMapping.token.step, "login");
+  assertEquals(step.requestMapping.token.path, "accessToken");
+
+  // requestSchema extracted from handler
+  const validResult = step.requestSchema.safeParse({ token: "abc" });
+  assertEquals(validResult.success, true);
+
+  const invalidResult = step.requestSchema.safeParse({});
+  assertEquals(invalidResult.success, false);
+
+  // response schema extracted from handler
+  const responseResult = step.response.safeParse({
+    name: "alice",
+    email: "a@b.c",
+  });
+  assertEquals(responseResult.success, true);
+});
+
+Deno.test("fromEndpointMapped merges body + params + query", () => {
+  const handler = createApiHandlers({
+    POST: endpoint({
+      params: z.object({ userId: z.string() }),
+      body: z.object({ message: z.string() }),
+      query: z.object({ priority: z.number().optional() }),
+      response: z.object({ sent: z.boolean() }),
+      handler: () => Response.json({ sent: true }),
+    }),
+  });
+
+  const step = fromEndpointMapped(handler, "POST", {
+    name: "sendMessage",
+    dependsOn: "login",
+    requestMapping: {
+      userId: fromStep("login", "userId"),
+    },
+  });
+
+  const result = step.requestSchema.safeParse({
+    userId: "123",
+    message: "hello",
+    priority: 1,
+  });
+  assertEquals(result.success, true);
+
+  const withoutOptional = step.requestSchema.safeParse({
+    userId: "123",
+    message: "hello",
+  });
+  assertEquals(withoutOptional.success, true);
+});
+
+Deno.test("fromEndpointMapped inherits operationId from endpoint", () => {
+  const handler = createApiHandlers({
+    GET: endpoint({
+      operationId: "getUserProfile",
+      response: z.object({ name: z.string() }),
+      handler: () => Response.json({ name: "test" }),
+    }),
+  });
+
+  const step = fromEndpointMapped(handler, "GET", {
+    name: "profile",
+    dependsOn: "login",
+    requestMapping: {},
+  });
+
+  assertEquals(step.operationId, "getUserProfile");
+});
+
+Deno.test("fromEndpointMapped allows operationId override", () => {
+  const handler = createApiHandlers({
+    GET: endpoint({
+      operationId: "originalOp",
+      response: z.object({ data: z.string() }),
+      handler: () => Response.json({ data: "test" }),
+    }),
+  });
+
+  const step = fromEndpointMapped(handler, "GET", {
+    name: "fetch",
+    dependsOn: "auth",
+    requestMapping: {},
+    operationId: "customOp",
+  });
+
+  assertEquals(step.operationId, "customOp");
+});
+
+Deno.test("fromEndpointMapped throws for missing method", () => {
+  const handler = createApiHandlers({
+    GET: endpoint({
+      response: z.object({ status: z.string() }),
+      handler: () => Response.json({ status: "ok" }),
+    }),
+  });
+
+  assertThrows(
+    () =>
+      fromEndpointMapped(handler, "POST", {
+        name: "test",
+        dependsOn: "prev",
+        requestMapping: {},
+      }),
+    Error,
+    "No POST definition found in handler",
+  );
+});
+
+Deno.test("fromEndpointMapped works with fromEndpoint in a protocol", () => {
+  const loginHandler = createApiHandlers({
+    POST: endpoint({
+      operationId: "login",
+      body: z.object({ username: z.string(), password: z.string() }),
+      response: z.object({
+        accessToken: z.string(),
+        refreshToken: z.string(),
+      }),
+      handler: () =>
+        Response.json({ accessToken: "access", refreshToken: "refresh" }),
+    }),
+  });
+
+  const profileHandler = createApiHandlers({
+    GET: endpoint({
+      operationId: "getProfile",
+      query: z.object({ token: z.string() }),
+      response: z.object({ name: z.string(), email: z.string() }),
+      handler: () => Response.json({ name: "alice", email: "a@b.c" }),
+    }),
+  });
+
+  const loginStep = fromEndpoint(loginHandler, "POST", { name: "login" });
+  const profileStep = fromEndpointMapped(profileHandler, "GET", {
+    name: "profile",
+    dependsOn: "login",
+    requestMapping: {
+      token: fromStep("login", "accessToken"),
+    },
+  });
+
+  // Verify composition
+  assertEquals(loginStep.__kind, "step");
+  assertEquals(profileStep.__kind, "mapped_step");
+  assertEquals(profileStep.dependsOn, "login");
+  assertEquals(profileStep.requestMapping.token.step, "login");
+  assertEquals(profileStep.requestMapping.token.path, "accessToken");
+
+  // Request schema from profile handler
+  const profileReq = profileStep.requestSchema.safeParse({ token: "abc" });
+  assertEquals(profileReq.success, true);
+
+  // Response schema from profile handler
+  const profileRes = profileStep.response.safeParse({
+    name: "alice",
+    email: "a@b.c",
+  });
+  assertEquals(profileRes.success, true);
 });

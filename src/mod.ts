@@ -42,6 +42,9 @@ export {
   type FreshApiMethodDef,
 } from "./adapters/fresh.ts";
 
+// Protocol type generation
+export { generateProtocolTypes } from "./protocol/typegen.ts";
+
 // Pagination helpers
 export {
   type AnyPaginationMeta,

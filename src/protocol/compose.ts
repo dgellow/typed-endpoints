@@ -22,7 +22,8 @@
 
 import { z } from "zod";
 import type { ApiDef, HttpMethod } from "../core/types.ts";
-import type { DependentStep, Step } from "./types.ts";
+import type { FieldMapping } from "./mapping.ts";
+import type { DependentStep, MappedStep, Step } from "./types.ts";
 
 // =============================================================================
 // Types
@@ -59,6 +60,24 @@ export interface FromEndpointDependentOptions<
   /** Request schema derived from previous step's response */
   // deno-lint-ignore no-explicit-any
   request: (prev: any) => z.ZodType;
+}
+
+/** Options for fromEndpointMapped */
+export interface FromEndpointMappedOptions<
+  TName extends string = string,
+  TDependsOn extends string = string,
+  TMapping extends Record<string, FieldMapping> = Record<string, FieldMapping>,
+> {
+  /** Step name */
+  name: TName;
+  /** Override operationId (defaults to endpoint's operationId or name) */
+  operationId?: string;
+  /** Step description */
+  description?: string;
+  /** Name of the step this depends on */
+  dependsOn: TDependsOn;
+  /** Declarative field-to-step mappings */
+  requestMapping: TMapping;
 }
 
 // =============================================================================
@@ -185,6 +204,50 @@ export function fromEndpointDependent<
     name: options.name,
     dependsOn: options.dependsOn,
     request: options.request,
+    response: def.response ?? z.unknown(),
+    operationId: options.operationId ?? def.operationId ?? options.name,
+    description: options.description ?? def.description,
+  };
+}
+
+/**
+ * Create a mapped protocol step from a Fresh endpoint definition.
+ *
+ * Like fromEndpoint, but creates a MappedStep with declarative field mappings.
+ * The request schema is extracted from the endpoint's body/query/params and
+ * the mapping specifies which fields come from previous steps.
+ *
+ * @example
+ * ```typescript
+ * const profileStep = fromEndpointMapped(profileHandler, "GET", {
+ *   name: "getProfile",
+ *   dependsOn: "login",
+ *   requestMapping: {
+ *     token: fromStep("login", "accessToken"),
+ *   },
+ * });
+ * ```
+ */
+export function fromEndpointMapped<
+  TName extends string,
+  TDependsOn extends string,
+  const TMapping extends Record<string, FieldMapping>,
+>(
+  handler: HandlerWithApiDef,
+  method: HttpMethod,
+  options: FromEndpointMappedOptions<TName, TDependsOn, TMapping>,
+): MappedStep<TName, z.ZodType, z.ZodType, TDependsOn, TMapping> {
+  const def = handler.__apiDef[method] as MethodDefLike | undefined;
+  if (!def) {
+    throw new Error(`No ${method} definition found in handler`);
+  }
+
+  return {
+    __kind: "mapped_step",
+    name: options.name,
+    dependsOn: options.dependsOn,
+    requestMapping: options.requestMapping,
+    requestSchema: mergeRequestSchemas(def),
     response: def.response ?? z.unknown(),
     operationId: options.operationId ?? def.operationId ?? options.name,
     description: options.description ?? def.description,

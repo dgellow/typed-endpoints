@@ -177,12 +177,20 @@ export { createHttpExecutor, HttpError } from "./http.ts";
 // HTTP executor types
 export type { HttpExecutorConfig, RouteConfig } from "./http.ts";
 
+// Type generation
+export { generateProtocolTypes } from "./typegen.ts";
+
 // Endpoint composition
-export { fromEndpoint, fromEndpointDependent } from "./compose.ts";
+export {
+  fromEndpoint,
+  fromEndpointDependent,
+  fromEndpointMapped,
+} from "./compose.ts";
 
 // Composition types
 export type {
   FromEndpointDependentOptions,
+  FromEndpointMappedOptions,
   FromEndpointOptions,
   HandlerWithApiDef,
 } from "./compose.ts";
