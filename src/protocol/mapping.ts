@@ -107,7 +107,6 @@ export function getNestedValue(obj: unknown, path: string): unknown {
  * // z.object({ code: z.literal("abc123"), grant_type: z.literal("authorization_code") })
  * ```
  */
-// deno-lint-ignore no-explicit-any
 export function deriveSchemaWithLiterals(
   // deno-lint-ignore no-explicit-any
   baseSchema: z.ZodObject<any>,
