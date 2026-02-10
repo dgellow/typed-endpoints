@@ -38,7 +38,8 @@ src/
 │   ├── client.ts   # Type-safe session execution
 │   ├── http.ts     # HTTP executor for real endpoints
 │   ├── openapi.ts  # x-protocol OpenAPI extension
-│   ├── compose.ts  # Endpoint composition (fromEndpoint)
+│   ├── compose.ts  # Endpoint composition (fromEndpoint, fromEndpointMapped)
+│   ├── typegen.ts  # Branded type generation from protocols
 │   └── oauth.ts    # OAuth 2.0 reference implementation
 ├── pagination/     # Cursor, offset, page, URL pagination helpers
 ├── tsgen/          # TypeScript type generation from routes
