@@ -1,5 +1,94 @@
 # Changelog
 
+## 0.1.0-alpha.6
+
+### Features
+
+- add protocol type generation CLI, Vite plugin, and subprocess helper <details><summary>Details</summary>
+  Add --format protocol to the CLI and protocolTypesPlugin() for Vite,
+  both backed by generateProtocolTypesFromModule() which spawns a subprocess
+  to resolve the user's import map. Supports both default and named 'protocol'
+  exports. Includes E2E tests for CLI, Vite plugin, and named-export path.
+</details>
+
+- add fromEndpointMapped() for composing MappedSteps from Fresh handlers <details><summary>Details</summary>
+  Completes the composition API: fromEndpoint (Step), fromEndpointDependent
+  (DependentStep), and now fromEndpointMapped (MappedStep). Extracts schemas
+  from handler __apiDef so there's zero duplication between endpoint
+  definitions and protocol steps. Also exports generateProtocolTypes from
+  the main module.
+</details>
+
+- add branded type generation from protocol definitions <details><summary>Details</summary>
+  generateProtocolTypes() reads requestMapping from MappedSteps and
+  produces TypeScript with StepOutput&lt;T, Step, Field&gt; brands that
+  enforce field provenance at compile time.
+</details>
+
+- add declarative field mappings with mappedStep() and fromStep() <details><summary>Details</summary>
+  Introduces a static, inspectable alternative to dependentStep() for the
+  common case of literal field forwarding. The mapping is plain data that
+  tooling can analyze without executing code, while preserving identical
+  runtime literal enforcement via z.literal().
+</details>
+
+- add endpoint composition for protocols <details><summary>Details</summary>
+  Add fromEndpoint() and fromEndpointDependent() helpers that create
+  protocol steps by extracting schemas from endpoint definitions.
+  This eliminates schema duplication between endpoints and protocols.<br>
+  - fromEndpoint(): creates Step from endpoint's __apiDef
+  - fromEndpointDependent(): creates DependentStep with request function
+  - Merges body + query + params into single request schema
+  - Inherits operationId from endpoint<br>
+  Updated http_test.ts to demonstrate the composition pattern.
+</details>
+
+
+### Code Refactoring
+
+- rename adapters/ to integrations/ and move vite plugin <details><summary>Details</summary>
+  Groups all framework-specific code under src/integrations/ with
+  clear header comments: Fresh v2 (runtime adapter) and Vite
+  (build-time plugin). Adds vite plugin tests with snapshots and
+  converts fresh unit tests to use snapshots throughout. Updates
+  all import paths, deno.json exports, and documentation.
+</details>
+
+
+### Documentation
+
+- add branded types exploration for protocol provenance <details><summary>Details</summary>
+  Explores Pulumi-inspired approach using StepOutput&lt;T, TStep, TPath&gt;
+  branded types to enforce data flow constraints at compile time.
+</details>
+
+- add future exploration for protocol composition DX <details><summary>Details</summary>
+  - API hierarchy that mirrors generated client structure
+  - Build-time protocol validation to overcome TypeScript Σ limitations
+</details>
+
+- update README per André's feedback <details><summary>Details</summary>
+  - Change "suspended continuation" to "continuation"
+  - Add link to Stellar Idris library
+</details>
+
+
+### Tests
+
+- e2e integration proving full loop from Fresh handlers to branded types <details><summary>Details</summary>
+  Fresh handlers → fromEndpoint/fromEndpointMapped → protocol →
+  generateProtocolTypes → compile-time provenance safety, plus runtime
+  HTTP execution with a test server. Also updates CLAUDE.md project
+  structure with typegen.ts.
+</details>
+
+
+### Chores
+
+- add dev skill for project workflow reference
+- add claude.md
+- formatting
+
 ## 0.1.0-alpha.5
 
 ### Features
@@ -50,7 +139,7 @@
 - add protocol schema DSL inspired by container morphisms <details><summary>Details</summary>
   Implements a type-safe DSL for defining multi-step protocols where each
   step's request type can depend on the previous step's response. This is
-  a direct implementation of André Videla's Sequential Product (&gt;&gt;) from
+  a direct implementation of AndrÃ© Videla's Sequential Product (&gt;&gt;) from
   his container morphisms research (APLAS 2024).<br>
   Core primitives:
   - step() - independent request/response (Container)
@@ -59,7 +148,7 @@
   - repeat()/repeat1() - Kleene star/plus (*)
   - choice() - coproduct (+)
   - branch() - conditional
-  - parallel() - tensor (⊗)<br>
+  - parallel() - tensor (â)<br>
   Includes OAuth 2.0 Authorization Code Flow as reference implementation
   demonstrating how dependentStep() enforces that exchange.code must be
   the exact value from authorize.response.code at compile time.<br>
@@ -157,8 +246,8 @@
 
 ### Documentation
 
-- add André Videla's container morphisms research <details><summary>Details</summary>
-  Add section on André Videla's theoretical work that provides the
+- add AndrÃ© Videla's container morphisms research <details><summary>Details</summary>
+  Add section on AndrÃ© Videla's theoretical work that provides the
   categorical foundation for type-safe client-server communication:<br>
   - Container Morphisms for Composable Interactive Systems (2024)
   - Lenses for Composable Servers (2022)
