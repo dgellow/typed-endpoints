@@ -33,14 +33,17 @@ export {
 export { generateTypes, type TypeGenOptions } from "./tsgen/mod.ts";
 
 // Vite plugin
-export { openApiPlugin, type OpenApiPluginOptions } from "./vite-plugin.ts";
+export {
+  openApiPlugin,
+  type OpenApiPluginOptions,
+} from "./integrations/vite.ts";
 
 // Fresh adapter
 export {
   createApiHandlers,
   endpoint,
   type FreshApiMethodDef,
-} from "./adapters/fresh.ts";
+} from "./integrations/fresh.ts";
 
 // Protocol type generation
 export { generateProtocolTypes } from "./protocol/typegen.ts";

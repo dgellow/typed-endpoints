@@ -1,0 +1,200 @@
+export const snapshot = {};
+
+snapshot[`createApiHandlers with sseEndpoint returns SSE response 1`] = `
+{
+  body: 'event: ping
+data: {"n":1}
+
+event: ping
+data: {"n":2}
+
+',
+  headers: {
+    "Cache-Control": "no-cache",
+    "Content-Type": "text/event-stream",
+  },
+}
+`;
+
+snapshot[`createApiHandlers with sseEndpoint validates params 1`] = `
+{
+  validStatus: 200,
+}
+`;
+
+snapshot[`createApiHandlers with sseEndpoint validates params 2`] = `
+{
+  invalidStatus: 400,
+}
+`;
+
+snapshot[`createApiHandlers with sseEndpoint validates query 1`] = `
+{
+  body: 'event: item
+data: {"id":0}
+
+event: item
+data: {"id":1}
+
+',
+  status: 200,
+}
+`;
+
+snapshot[`createApiHandlers with sseEndpoint includes event ID 1`] = `
+'event: msg
+id: msg-001
+data: {"text":"hello"}
+
+'
+`;
+
+snapshot[`createApiHandlers with sseEndpoint includes retry 1`] = `
+"event: heartbeat
+retry: 5000
+data: {}
+
+"
+`;
+
+snapshot[`createApiHandlers attaches __apiDef with events 1`] = `
+{
+  handlerStripped: true,
+  hasEvents: true,
+  hasGetDef: true,
+}
+`;
+
+snapshot[`createApiHandlers mixes REST and SSE endpoints 1`] = `
+{
+  GET: "application/json",
+  POST: "text/event-stream",
+}
+`;
+
+snapshot[`createApiHandlers preserves __pagination in __apiDef for cursor pagination 1`] = `
+{
+  cursor: "nextCursor",
+  cursorParam: "cursor",
+  items: "data",
+  limitParam: "limit",
+  style: "cursor",
+}
+`;
+
+snapshot[`createApiHandlers preserves __pagination for offset pagination 1`] = `
+{
+  items: "results",
+  limitParam: "take",
+  offsetParam: "skip",
+  style: "offset",
+  total: "count",
+}
+`;
+
+snapshot[`paginated endpoint validates query params 1`] = `
+{
+  debug: {
+    limit: 10,
+  },
+  status: 200,
+}
+`;
+
+snapshot[`paginated endpoint validates query params 2`] = `
+{
+  debug: {
+    cursor: "abc",
+    limit: 25,
+  },
+  status: 200,
+}
+`;
+
+snapshot[`paginated endpoint validates query params 3`] = `
+{
+  status: 400,
+}
+`;
+
+snapshot[`paginated endpoint with extra query params 1`] = `
+{
+  debug: {
+    filter: "active",
+    sort: "desc",
+  },
+  status: 200,
+}
+`;
+
+snapshot[`createApiHandlers preserves __pagination for page pagination 1`] = `
+{
+  items: "users",
+  pageParam: "p",
+  perPageParam: "size",
+  style: "page",
+  total: "totalCount",
+  totalPages: "pageCount",
+}
+`;
+
+snapshot[`createApiHandlers preserves __pagination for cursorId pagination 1`] = `
+{
+  cursorIdParam: "after",
+  idField: "id",
+  items: "data",
+  limitParam: "limit",
+  style: "cursorId",
+}
+`;
+
+snapshot[`createApiHandlers preserves __pagination for url pagination 1`] = `
+{
+  items: "results",
+  nextUrl: "links.next",
+  prevUrl: "links.prev",
+  style: "url",
+}
+`;
+
+snapshot[`page paginated endpoint validates query params 1`] = `
+{
+  debug: {
+    page: 1,
+    perPage: 10,
+  },
+  status: 200,
+}
+`;
+
+snapshot[`page paginated endpoint validates query params 2`] = `
+{
+  debug: {
+    page: 3,
+    perPage: 25,
+  },
+  status: 200,
+}
+`;
+
+snapshot[`page paginated endpoint validates query params 3`] = `
+{
+  status: 400,
+}
+`;
+
+snapshot[`cursorId paginated endpoint validates query params 1`] = `
+{
+  debug: {
+    after: "user-123",
+    limit: 15,
+  },
+  status: 200,
+}
+`;
+
+snapshot[`url paginated endpoint has no query validation (url pagination) 1`] = `
+{
+  status: 200,
+}
+`;

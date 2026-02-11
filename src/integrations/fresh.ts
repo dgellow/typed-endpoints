@@ -1,3 +1,15 @@
+/**
+ * Fresh v2 Integration
+ *
+ * Runtime adapter for Deno Fresh v2. Provides endpoint definition helpers
+ * and request handler creation with automatic Zod validation.
+ *
+ * - endpoint() / sseEndpoint() — define typed API methods
+ * - createApiHandlers() — wrap methods into Fresh route handlers with validation
+ *
+ * @module
+ */
+
 import type { Context } from "@fresh/core";
 import type { z } from "zod";
 import type {

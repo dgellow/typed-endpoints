@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createApiHandlers, endpoint } from "@/adapters/fresh.ts";
+import { createApiHandlers, endpoint } from "@/integrations/fresh.ts";
 
 export const handler = createApiHandlers({
   POST: endpoint({

@@ -1,5 +1,15 @@
+/**
+ * Vite Integration
+ *
+ * Build-time plugin for Vite. Generates OpenAPI spec files during `vite build`.
+ *
+ * - openApiPlugin() — Vite plugin that runs at build time (closeBundle hook)
+ *
+ * @module
+ */
+
 import type { Plugin } from "vite";
-import { generateOpenApiSpec, type GeneratorOptions } from "./core/openapi.ts";
+import { generateOpenApiSpec, type GeneratorOptions } from "../core/openapi.ts";
 
 export interface OpenApiPluginOptions extends GeneratorOptions {
   /** Output path for the spec file. Default: static/openapi.json */

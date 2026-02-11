@@ -1,6 +1,6 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { z } from "zod";
-import { createApiHandlers, endpoint } from "../adapters/fresh.ts";
+import { createApiHandlers, endpoint } from "../integrations/fresh.ts";
 import { fromStep } from "./mapping.ts";
 import {
   fromEndpoint,

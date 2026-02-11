@@ -1,4 +1,3 @@
-import { assertEquals } from "@std/assert";
 import { assertSnapshot } from "@std/testing/snapshot";
 import { createApiHandlers, endpoint, sseEndpoint } from "./fresh.ts";
 import { z } from "zod";
@@ -25,7 +24,7 @@ function createMockContext(options: {
   };
 }
 
-Deno.test("createApiHandlers with sseEndpoint returns SSE response", async () => {
+Deno.test("createApiHandlers with sseEndpoint returns SSE response", async (t) => {
   const handlers = createApiHandlers({
     GET: sseEndpoint({
       events: {
@@ -41,17 +40,16 @@ Deno.test("createApiHandlers with sseEndpoint returns SSE response", async () =>
   const ctx = createMockContext({});
   const response = await handlers.GET(ctx);
 
-  assertEquals(response.headers.get("Content-Type"), "text/event-stream");
-  assertEquals(response.headers.get("Cache-Control"), "no-cache");
-
-  const text = await response.text();
-  assertEquals(
-    text,
-    'event: ping\ndata: {"n":1}\n\nevent: ping\ndata: {"n":2}\n\n',
-  );
+  await assertSnapshot(t, {
+    headers: {
+      "Content-Type": response.headers.get("Content-Type"),
+      "Cache-Control": response.headers.get("Cache-Control"),
+    },
+    body: await response.text(),
+  });
 });
 
-Deno.test("createApiHandlers with sseEndpoint validates params", async () => {
+Deno.test("createApiHandlers with sseEndpoint validates params", async (t) => {
   const handlers = createApiHandlers({
     GET: sseEndpoint({
       params: z.object({ id: z.string().min(3) }),
@@ -67,15 +65,15 @@ Deno.test("createApiHandlers with sseEndpoint validates params", async () => {
   // Valid params
   const validCtx = createMockContext({ params: { id: "abc" } });
   const validResponse = await handlers.GET(validCtx);
-  assertEquals(validResponse.status, 200);
+  await assertSnapshot(t, { validStatus: validResponse.status });
 
   // Invalid params (too short)
   const invalidCtx = createMockContext({ params: { id: "ab" } });
   const invalidResponse = await handlers.GET(invalidCtx);
-  assertEquals(invalidResponse.status, 400);
+  await assertSnapshot(t, { invalidStatus: invalidResponse.status });
 });
 
-Deno.test("createApiHandlers with sseEndpoint validates query", async () => {
+Deno.test("createApiHandlers with sseEndpoint validates query", async (t) => {
   const handlers = createApiHandlers({
     GET: sseEndpoint({
       query: z.object({ limit: z.coerce.number().min(1) }),
@@ -95,16 +93,14 @@ Deno.test("createApiHandlers with sseEndpoint validates query", async () => {
     url: "http://localhost:3000/api/test?limit=2",
   });
   const validResponse = await handlers.GET(validCtx);
-  assertEquals(validResponse.status, 200);
 
-  const text = await validResponse.text();
-  assertEquals(
-    text,
-    'event: item\ndata: {"id":0}\n\nevent: item\ndata: {"id":1}\n\n',
-  );
+  await assertSnapshot(t, {
+    status: validResponse.status,
+    body: await validResponse.text(),
+  });
 });
 
-Deno.test("createApiHandlers with sseEndpoint includes event ID", async () => {
+Deno.test("createApiHandlers with sseEndpoint includes event ID", async (t) => {
   const handlers = createApiHandlers({
     GET: sseEndpoint({
       events: {
@@ -118,15 +114,11 @@ Deno.test("createApiHandlers with sseEndpoint includes event ID", async () => {
 
   const ctx = createMockContext({});
   const response = await handlers.GET(ctx);
-  const text = await response.text();
 
-  assertEquals(
-    text,
-    'event: msg\nid: msg-001\ndata: {"text":"hello"}\n\n',
-  );
+  await assertSnapshot(t, await response.text());
 });
 
-Deno.test("createApiHandlers with sseEndpoint includes retry", async () => {
+Deno.test("createApiHandlers with sseEndpoint includes retry", async (t) => {
   const handlers = createApiHandlers({
     GET: sseEndpoint({
       events: {
@@ -140,12 +132,11 @@ Deno.test("createApiHandlers with sseEndpoint includes retry", async () => {
 
   const ctx = createMockContext({});
   const response = await handlers.GET(ctx);
-  const text = await response.text();
 
-  assertEquals(text, "event: heartbeat\nretry: 5000\ndata: {}\n\n");
+  await assertSnapshot(t, await response.text());
 });
 
-Deno.test("createApiHandlers attaches __apiDef with events", () => {
+Deno.test("createApiHandlers attaches __apiDef with events", async (t) => {
   const handlers = createApiHandlers({
     GET: sseEndpoint({
       params: z.object({ id: z.string() }),
@@ -159,16 +150,17 @@ Deno.test("createApiHandlers attaches __apiDef with events", () => {
     }),
   });
 
-  // __apiDef should have the SSE definition (without handler)
   const apiDef = handlers.__apiDef;
-  assertEquals(apiDef.GET !== undefined, true);
-
   const getDef = apiDef.GET!;
-  assertEquals("events" in getDef, true);
-  assertEquals("handler" in getDef, false);
+
+  await assertSnapshot(t, {
+    hasGetDef: apiDef.GET !== undefined,
+    hasEvents: "events" in getDef,
+    handlerStripped: !("handler" in getDef),
+  });
 });
 
-Deno.test("createApiHandlers mixes REST and SSE endpoints", async () => {
+Deno.test("createApiHandlers mixes REST and SSE endpoints", async (t) => {
   const handlers = createApiHandlers({
     GET: endpoint({
       response: z.object({ items: z.array(z.string()) }),
@@ -184,15 +176,16 @@ Deno.test("createApiHandlers mixes REST and SSE endpoints", async () => {
     }),
   });
 
-  // GET should be REST
   const getCtx = createMockContext({ method: "GET" });
   const getResponse = await handlers.GET(getCtx);
-  assertEquals(getResponse.headers.get("Content-Type"), "application/json");
 
-  // POST should be SSE
   const postCtx = createMockContext({ method: "POST" });
   const postResponse = await handlers.POST(postCtx);
-  assertEquals(postResponse.headers.get("Content-Type"), "text/event-stream");
+
+  await assertSnapshot(t, {
+    GET: getResponse.headers.get("Content-Type"),
+    POST: postResponse.headers.get("Content-Type"),
+  });
 });
 
 // =============================================================================
@@ -220,7 +213,6 @@ Deno.test("createApiHandlers preserves __pagination in __apiDef for cursor pagin
   });
 
   const apiDef = handlers.__apiDef;
-  assertEquals(apiDef.GET !== undefined, true);
 
   // deno-lint-ignore no-explicit-any
   const pagination = (apiDef.GET as any).__pagination;
@@ -253,7 +245,7 @@ Deno.test("createApiHandlers preserves __pagination for offset pagination", asyn
   await assertSnapshot(t, pagination);
 });
 
-Deno.test("paginated endpoint validates query params", async () => {
+Deno.test("paginated endpoint validates query params", async (t) => {
   const handlers = createApiHandlers({
     GET: endpoint({
       ...cursor.paginated({
@@ -265,7 +257,6 @@ Deno.test("paginated endpoint validates query params", async () => {
         return Response.json({
           items: [],
           cursor: undefined,
-          // Verify query was parsed correctly
           _debug: { limit: query.limit, cursor: query.cursor },
         });
       },
@@ -277,30 +268,32 @@ Deno.test("paginated endpoint validates query params", async () => {
     url: "http://localhost:3000/api/users",
   });
   const defaultResponse = await handlers.GET(defaultCtx);
-  assertEquals(defaultResponse.status, 200);
   const defaultData = await defaultResponse.json();
-  assertEquals(defaultData._debug.limit, 10);
-  assertEquals(defaultData._debug.cursor, undefined);
+  await assertSnapshot(t, {
+    status: defaultResponse.status,
+    debug: defaultData._debug,
+  });
 
   // Test with custom limit
   const customCtx = createMockContext({
     url: "http://localhost:3000/api/users?limit=25&cursor=abc",
   });
   const customResponse = await handlers.GET(customCtx);
-  assertEquals(customResponse.status, 200);
   const customData = await customResponse.json();
-  assertEquals(customData._debug.limit, 25);
-  assertEquals(customData._debug.cursor, "abc");
+  await assertSnapshot(t, {
+    status: customResponse.status,
+    debug: customData._debug,
+  });
 
   // Test with invalid limit (exceeds max)
   const invalidCtx = createMockContext({
     url: "http://localhost:3000/api/users?limit=100",
   });
   const invalidResponse = await handlers.GET(invalidCtx);
-  assertEquals(invalidResponse.status, 400);
+  await assertSnapshot(t, { status: invalidResponse.status });
 });
 
-Deno.test("paginated endpoint with extra query params", async () => {
+Deno.test("paginated endpoint with extra query params", async (t) => {
   const handlers = createApiHandlers({
     GET: endpoint({
       ...cursor.paginated({
@@ -327,10 +320,12 @@ Deno.test("paginated endpoint with extra query params", async () => {
     url: "http://localhost:3000/api/users?filter=active&sort=desc",
   });
   const response = await handlers.GET(ctx);
-  assertEquals(response.status, 200);
   const data = await response.json();
-  assertEquals(data._debug.filter, "active");
-  assertEquals(data._debug.sort, "desc");
+
+  await assertSnapshot(t, {
+    status: response.status,
+    debug: data._debug,
+  });
 });
 
 Deno.test("createApiHandlers preserves __pagination for page pagination", async (t) => {
@@ -412,7 +407,7 @@ Deno.test("createApiHandlers preserves __pagination for url pagination", async (
   await assertSnapshot(t, pagination);
 });
 
-Deno.test("page paginated endpoint validates query params", async () => {
+Deno.test("page paginated endpoint validates query params", async (t) => {
   const handlers = createApiHandlers({
     GET: endpoint({
       ...page.paginated({
@@ -436,30 +431,32 @@ Deno.test("page paginated endpoint validates query params", async () => {
     url: "http://localhost:3000/api/users",
   });
   const defaultResponse = await handlers.GET(defaultCtx);
-  assertEquals(defaultResponse.status, 200);
   const defaultData = await defaultResponse.json();
-  assertEquals(defaultData._debug.page, 1);
-  assertEquals(defaultData._debug.perPage, 10);
+  await assertSnapshot(t, {
+    status: defaultResponse.status,
+    debug: defaultData._debug,
+  });
 
   // Test with custom values
   const customCtx = createMockContext({
     url: "http://localhost:3000/api/users?page=3&perPage=25",
   });
   const customResponse = await handlers.GET(customCtx);
-  assertEquals(customResponse.status, 200);
   const customData = await customResponse.json();
-  assertEquals(customData._debug.page, 3);
-  assertEquals(customData._debug.perPage, 25);
+  await assertSnapshot(t, {
+    status: customResponse.status,
+    debug: customData._debug,
+  });
 
   // Test with invalid perPage (exceeds max)
   const invalidCtx = createMockContext({
     url: "http://localhost:3000/api/users?perPage=100",
   });
   const invalidResponse = await handlers.GET(invalidCtx);
-  assertEquals(invalidResponse.status, 400);
+  await assertSnapshot(t, { status: invalidResponse.status });
 });
 
-Deno.test("cursorId paginated endpoint validates query params", async () => {
+Deno.test("cursorId paginated endpoint validates query params", async (t) => {
   const handlers = createApiHandlers({
     GET: endpoint({
       ...cursorId.paginated({
@@ -477,18 +474,19 @@ Deno.test("cursorId paginated endpoint validates query params", async () => {
     }),
   });
 
-  // Test with cursor ID
   const ctx = createMockContext({
     url: "http://localhost:3000/api/users?after=user-123&limit=15",
   });
   const response = await handlers.GET(ctx);
-  assertEquals(response.status, 200);
   const data = await response.json();
-  assertEquals(data._debug.after, "user-123");
-  assertEquals(data._debug.limit, 15);
+
+  await assertSnapshot(t, {
+    status: response.status,
+    debug: data._debug,
+  });
 });
 
-Deno.test("url paginated endpoint has no query validation (url pagination)", async () => {
+Deno.test("url paginated endpoint has no query validation (url pagination)", async (t) => {
   const handlers = createApiHandlers({
     GET: endpoint({
       ...url.paginated({
@@ -504,10 +502,10 @@ Deno.test("url paginated endpoint has no query validation (url pagination)", asy
     }),
   });
 
-  // URL pagination doesn't have query params by default
   const ctx = createMockContext({
     url: "http://localhost:3000/api/users",
   });
   const response = await handlers.GET(ctx);
-  assertEquals(response.status, 200);
+
+  await assertSnapshot(t, { status: response.status });
 });

@@ -29,7 +29,7 @@ permissions):
 ```
 src/
 ├── core/           # Shared types, request validation, OpenAPI generation
-├── adapters/       # Fresh framework adapter (endpoint, sseEndpoint)
+├── integrations/   # Framework integrations (Fresh v2 runtime, Vite build-time)
 ├── client/         # Typed HTTP client
 ├── protocol/       # Multi-step protocol DSL (experimental)
 │   ├── types.ts    # Step, DependentStep, MappedStep, composition types
@@ -44,8 +44,7 @@ src/
 ├── pagination/     # Cursor, offset, page, URL pagination helpers
 ├── tsgen/          # TypeScript type generation from routes
 ├── cli.ts          # CLI entry point
-├── mod.ts          # Main module exports
-└── vite-plugin.ts  # Build-time OpenAPI generation
+└── mod.ts          # Main module exports
 e2e_tests/          # End-to-end tests (protocol flows, Fresh server)
 ```
 

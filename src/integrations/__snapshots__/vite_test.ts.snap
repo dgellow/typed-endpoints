@@ -1,0 +1,47 @@
+export const snapshot = {};
+
+snapshot[`openApiPlugin returns plugin with correct metadata 1`] = `
+{
+  apply: "build",
+  name: "typed-endpoints-openapi",
+}
+`;
+
+snapshot[`openApiPlugin closeBundle generates spec file 1`] = `
+{
+  components: {
+    parameters: {},
+    schemas: {},
+  },
+  info: {
+    title: "Test API",
+    version: "1.0.0",
+  },
+  openapi: "3.1.0",
+  paths: {},
+  webhooks: {},
+}
+`;
+
+snapshot[`openApiPlugin closeBundle passes generator options through 1`] = `
+{
+  components: {
+    parameters: {},
+    schemas: {},
+  },
+  info: {
+    description: "Custom description",
+    title: "Custom Title",
+    version: "2.0.0",
+  },
+  openapi: "3.1.0",
+  paths: {},
+  servers: [
+    {
+      description: "Production",
+      url: "https://api.example.com",
+    },
+  ],
+  webhooks: {},
+}
+`;

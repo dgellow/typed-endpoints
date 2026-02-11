@@ -402,15 +402,17 @@ src/
 │   ├── mapping.ts     # Declarative field mappings: fromStep(), deriveSchemaWithLiterals()
 │   ├── client.ts      # Type-safe protocol session client
 │   ├── http.ts        # HTTP executor for real endpoint connections
+│   ├── compose.ts     # Endpoint composition (fromEndpoint, fromEndpointMapped)
+│   ├── typegen.ts     # Branded type generation from protocols
 │   ├── oauth.ts       # OAuth 2.0 reference implementation
 │   └── index.ts       # Module exports
 ├── client/
 │   ├── index.ts       # Typed HTTP client
 │   └── types.ts       # Client type definitions
 ├── tsgen/             # TypeScript type generation (pagination metadata)
-├── adapters/
-│   └── fresh.ts       # Fresh adapter (endpoint, sseEndpoint)
-├── vite-plugin.ts     # Build-time OpenAPI generation
+├── integrations/
+│   ├── fresh.ts       # Fresh v2 runtime adapter (endpoint, sseEndpoint)
+│   └── vite.ts        # Vite build-time plugin (OpenAPI generation)
 └── cli.ts             # CLI for type generation
 ```
 
@@ -622,7 +624,10 @@ const order = topologicalSort(oauth2Protocol);
 - OAuth 2.0 Authorization Code Flow as reference implementation
 - **Type-safe protocol client** with compile-time step enforcement
 - **HTTP executor** for connecting protocols to real endpoints
-- **Endpoint composition** via `fromEndpoint()` and `fromEndpointDependent()`
+- **Endpoint composition** via `fromEndpoint()`, `fromEndpointDependent()`, and
+  `fromEndpointMapped()`
+- **Branded type generation** via `generateProtocolTypes()` — compile-time
+  provenance enforcement from `mappedStep()` definitions
 - **OpenAPI x-protocol extension** for spec generation
 
 ### Type-Safe Protocol Client
@@ -747,10 +752,13 @@ protocols directly from your endpoint definitions:
 ```typescript
 import { handler as loginHandler } from "./routes/api/auth/login.ts";
 import { handler as refreshHandler } from "./routes/api/auth/refresh.ts";
+import { handler as profileHandler } from "./routes/api/auth/profile.ts";
 import {
   createHttpExecutor,
   fromEndpoint,
   fromEndpointDependent,
+  fromEndpointMapped,
+  fromStep,
   protocol,
 } from "@dgellow/typed-endpoints/protocol";
 
@@ -763,7 +771,16 @@ const authProtocol = protocol({
     // and copies response schema directly
     login: fromEndpoint(loginHandler, "POST", { name: "login" }),
 
-    // fromEndpointDependent creates dependent steps
+    // fromEndpointMapped creates mapped steps with declarative field mappings
+    profile: fromEndpointMapped(profileHandler, "GET", {
+      name: "profile",
+      dependsOn: "login",
+      requestMapping: {
+        token: fromStep("login", "accessToken"),
+      },
+    }),
+
+    // fromEndpointDependent creates dependent steps with dynamic schemas
     refresh: fromEndpointDependent(refreshHandler, "POST", {
       name: "refresh",
       dependsOn: "login",
@@ -964,18 +981,25 @@ requestMapping: {
 }
 ```
 
-### Future: Branded Types for Step Output Provenance
+### Branded Types for Step Output Provenance
 
-Pulumi's `Output<T>` tracks that a value is deferred. We could extend this to
-track _which step and field_ a value came from, letting TypeScript enforce data
-flow constraints at compile time.
-
-**The idea - branded types with provenance:**
+`generateProtocolTypes()` reads `requestMapping` from `mappedStep()` definitions
+and produces TypeScript with branded `StepOutput<T, Step, Field>` types that
+enforce field provenance at compile time:
 
 ```typescript
-// Generated from protocol definition
-type StepOutput<T, TStep extends string, TPath extends string> = T & {
-  readonly __brand: { step: TStep; path: TPath };
+import { generateProtocolTypes } from "@dgellow/typed-endpoints";
+
+const types = generateProtocolTypes(oauthProtocol);
+// Writes to file or use as string
+```
+
+Generated types look like:
+
+```typescript
+declare const __brand: unique symbol;
+type StepOutput<T, Step extends string, Field extends string> = T & {
+  readonly [__brand]: [Step, Field];
 };
 
 type AuthorizeResponse = {
@@ -989,22 +1013,15 @@ type ExchangeRequest = {
 };
 ```
 
-**TypeScript then enforces provenance:**
+TypeScript then enforces provenance:
 
 ```typescript
-const auth = await session.execute("authorize", {...});
+declare const auth: AuthorizeResponse;
 
-await session.execute("exchange", { code: auth.code });   // ✓ correct provenance
-await session.execute("exchange", { code: auth.state });  // ✗ wrong field
-await session.execute("exchange", { code: "hardcoded" }); // ✗ no provenance
+const good: ExchangeRequest = { code: auth.code, ... };   // ✓ correct provenance
+const bad1: ExchangeRequest = { code: auth.state, ... };   // ✗ wrong field
+const bad2: ExchangeRequest = { code: "hardcoded", ... };  // ✗ no provenance
 ```
-
-The declarative `fromStep()` / `requestMapping` syntax (now implemented via
-`mappedStep()`) provides the foundation for this. tsgen could:
-
-1. Parse `requestMapping` to understand field provenance
-2. Generate `StepOutput<T, TStep, TPath>` branded types
-3. TypeScript enforces correct data flow at compile time
 
 This handles structural constraints ("code must come from authorize.code").
 Computed constraints ("code must be uppercase") still need runtime validation

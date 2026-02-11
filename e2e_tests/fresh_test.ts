@@ -10,7 +10,7 @@ import {
   createApiHandlers,
   endpoint,
   sseEndpoint,
-} from "../src/adapters/fresh.ts";
+} from "../src/integrations/fresh.ts";
 import { z } from "zod";
 import { cursor } from "../src/pagination/index.ts";
 

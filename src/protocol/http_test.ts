@@ -7,7 +7,7 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { z } from "zod";
 
-import { createApiHandlers, endpoint } from "../adapters/fresh.ts";
+import { createApiHandlers, endpoint } from "../integrations/fresh.ts";
 import { createHttpExecutor, HttpError } from "./http.ts";
 import { createSession } from "./client.ts";
 import { protocol } from "./dsl.ts";

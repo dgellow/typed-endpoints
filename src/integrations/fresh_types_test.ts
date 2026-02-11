@@ -1,5 +1,5 @@
 // Type-level test to verify handler inference works correctly
-// Run with: deno check src/adapters/fresh_types_test.ts
+// Run with: deno check src/integrations/fresh_types_test.ts
 
 import {
   createApiHandlers,

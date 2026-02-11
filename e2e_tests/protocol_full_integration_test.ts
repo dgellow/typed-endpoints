@@ -10,7 +10,7 @@
 import { assertEquals, assertExists } from "@std/assert";
 import { z } from "zod";
 
-import { createApiHandlers, endpoint } from "../src/adapters/fresh.ts";
+import { createApiHandlers, endpoint } from "../src/integrations/fresh.ts";
 import {
   createSession,
   fromEndpoint,

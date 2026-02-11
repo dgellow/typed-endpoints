@@ -15,7 +15,7 @@
   ],
   "exports": {
     ".": "./src/mod.ts",
-    "./fresh": "./src/adapters/fresh.ts",
+    "./fresh": "./src/integrations/fresh.ts",
     "./client": "./src/client/index.ts",
     "./protocol": "./src/protocol/index.ts",
     "./cli": "./src/cli.ts"

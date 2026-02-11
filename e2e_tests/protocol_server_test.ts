@@ -13,7 +13,7 @@ import { assertEquals, assertExists } from "@std/assert";
 import { assertSnapshot } from "@std/testing/snapshot";
 import { z } from "zod";
 
-import { createApiHandlers, endpoint } from "../src/adapters/fresh.ts";
+import { createApiHandlers, endpoint } from "../src/integrations/fresh.ts";
 import { createClient } from "../src/client/index.ts";
 import {
   addProtocolToSpec,
