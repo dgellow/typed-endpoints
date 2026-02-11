@@ -36,6 +36,8 @@ export { generateTypes, type TypeGenOptions } from "./tsgen/mod.ts";
 export {
   openApiPlugin,
   type OpenApiPluginOptions,
+  protocolTypesPlugin,
+  type ProtocolTypesPluginOptions,
 } from "./integrations/vite.ts";
 
 // Fresh adapter
@@ -46,7 +48,10 @@ export {
 } from "./integrations/fresh.ts";
 
 // Protocol type generation
-export { generateProtocolTypes } from "./protocol/typegen.ts";
+export {
+  generateProtocolTypes,
+  generateProtocolTypesFromModule,
+} from "./protocol/typegen.ts";
 
 // Pagination helpers
 export {

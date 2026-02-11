@@ -354,6 +354,16 @@ Options:
 - `info` - OpenAPI info object (title, version, description)
 - `servers` - OpenAPI servers array
 
+### `protocolTypesPlugin(options)`
+
+Vite plugin that generates branded protocol types at build time.
+
+Options:
+
+- `protocolModule` - Path to the protocol module file (required)
+- `outputPath` - Output file path (default: "src/protocol-types.ts")
+- `config` - Path to deno.json (for import map resolution)
+
 ### `generateTypes(options)`
 
 Generates TypeScript types from route Zod schemas.
@@ -367,6 +377,31 @@ Options:
 
 Returns the generated types as a string.
 
+### Protocol Type Generation
+
+Generate branded TypeScript types from a protocol module:
+
+```bash
+deno run -A jsr:@dgellow/typed-endpoints/cli --format protocol --protocol ./my-protocol.ts -o src/protocol-types.ts
+```
+
+Or use the Vite plugin for build-time generation:
+
+```typescript
+// vite.config.ts
+import { protocolTypesPlugin } from "@dgellow/typed-endpoints";
+
+export default defineConfig({
+  plugins: [
+    fresh(),
+    protocolTypesPlugin({
+      protocolModule: "./src/my-protocol.ts",
+      outputPath: "src/protocol-types.ts",
+    }),
+  ],
+});
+```
+
 ### CLI
 
 ```
@@ -375,14 +410,16 @@ typed-endpoints - Generate TypeScript types from API route Zod schemas
 Options:
   -r, --routes <dir>    Routes directory (can be specified multiple times)
   -o, --output <file>   Output file path (required)
-  -f, --format <type>   Output format: types, client, or routes (default: types)
+  -f, --format <type>   Output format: types, client, routes, or protocol (default: types)
+  -p, --protocol <file> Protocol module path (required when --format protocol)
   -c, --config <file>   Path to deno.json (auto-detected if not provided)
   -h, --help            Show help
 
 Formats:
-  types   - Flat type exports (UsersGetResponse, etc.)
-  client  - Resource-based Api interface for createClient()
-  routes  - Runtime route metadata for createHttpExecutor()
+  types    - Flat type exports (UsersGetResponse, etc.)
+  client   - Resource-based Api interface for createClient()
+  routes   - Runtime route metadata for createHttpExecutor()
+  protocol - Branded types from a protocol module
 ```
 
 ## Architecture

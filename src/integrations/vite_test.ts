@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
 import { assertSnapshot } from "@std/testing/snapshot";
-import { openApiPlugin } from "./vite.ts";
+import { openApiPlugin, protocolTypesPlugin } from "./vite.ts";
 
 // =============================================================================
 // Plugin Structure
@@ -94,4 +94,74 @@ Deno.test("openApiPlugin closeBundle passes generator options through", async (t
   await assertSnapshot(t, spec);
 
   await Deno.remove(tmpDir, { recursive: true });
+});
+
+// =============================================================================
+// protocolTypesPlugin
+// =============================================================================
+
+Deno.test("protocolTypesPlugin returns plugin with correct metadata", async (t) => {
+  const plugin = protocolTypesPlugin({
+    protocolModule: "e2e_tests/fixtures/test-protocol.ts",
+  });
+
+  await assertSnapshot(t, {
+    name: plugin.name,
+    apply: plugin.apply,
+  });
+});
+
+Deno.test("protocolTypesPlugin closeBundle generates types file", async (t) => {
+  const tmpDir = await Deno.makeTempDir();
+  const outputPath = `${tmpDir}/protocol-types.ts`;
+
+  const plugin = protocolTypesPlugin({
+    protocolModule: "e2e_tests/fixtures/test-protocol.ts",
+    outputPath,
+    config: "deno.json",
+  });
+
+  // deno-lint-ignore no-explicit-any
+  const closeBundle = (plugin as any).closeBundle as () => Promise<void>;
+  await closeBundle();
+
+  const output = await Deno.readTextFile(outputPath);
+  assertEquals(output.includes("StepOutput"), true);
+  assertEquals(output.includes("LoginRequest"), true);
+  await assertSnapshot(t, output);
+
+  await Deno.remove(tmpDir, { recursive: true });
+});
+
+Deno.test("protocolTypesPlugin closeBundle creates nested directories", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const outputPath = `${tmpDir}/deep/nested/types.ts`;
+
+  const plugin = protocolTypesPlugin({
+    protocolModule: "e2e_tests/fixtures/test-protocol.ts",
+    outputPath,
+    config: "deno.json",
+  });
+
+  // deno-lint-ignore no-explicit-any
+  const closeBundle = (plugin as any).closeBundle as () => Promise<void>;
+  await closeBundle();
+
+  const output = await Deno.readTextFile(outputPath);
+  assertEquals(output.includes("StepOutput"), true);
+
+  await Deno.remove(tmpDir, { recursive: true });
+});
+
+Deno.test("protocolTypesPlugin closeBundle does not throw on bad module", async () => {
+  const plugin = protocolTypesPlugin({
+    protocolModule: "nonexistent/protocol.ts",
+    outputPath: "/tmp/typed-endpoints-test-never-written.ts",
+  });
+
+  // deno-lint-ignore no-explicit-any
+  const closeBundle = (plugin as any).closeBundle as () => Promise<void>;
+
+  // Should not throw — errors are caught and logged
+  await closeBundle();
 });

@@ -39,13 +39,13 @@ src/
 │   ├── http.ts     # HTTP executor for real endpoints
 │   ├── openapi.ts  # x-protocol OpenAPI extension
 │   ├── compose.ts  # Endpoint composition (fromEndpoint, fromEndpointMapped)
-│   ├── typegen.ts  # Branded type generation from protocols
+│   ├── typegen.ts  # Branded type generation from protocols (+ subprocess helper)
 │   └── oauth.ts    # OAuth 2.0 reference implementation
 ├── pagination/     # Cursor, offset, page, URL pagination helpers
 ├── tsgen/          # TypeScript type generation from routes
 ├── cli.ts          # CLI entry point
 └── mod.ts          # Main module exports
-e2e_tests/          # End-to-end tests (protocol flows, Fresh server)
+e2e_tests/          # End-to-end tests (protocol flows, Fresh server, CLI, Vite)
 ```
 
 ## Testing

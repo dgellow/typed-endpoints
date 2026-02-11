@@ -45,3 +45,29 @@ snapshot[`openApiPlugin closeBundle passes generator options through 1`] = `
   webhooks: {},
 }
 `;
+
+snapshot[`protocolTypesPlugin returns plugin with correct metadata 1`] = `
+{
+  apply: "build",
+  name: "typed-endpoints-protocol-types",
+}
+`;
+
+snapshot[`protocolTypesPlugin closeBundle generates types file 1`] = `
+'// Generated types for protocol: TestAuth
+
+declare const __brand: unique symbol;
+type StepOutput<T, Step extends string, Field extends string> = T & {
+  readonly [__brand]: [Step, Field];
+};
+
+// Step: login
+export type LoginRequest = { username: string; password: string; };
+export type LoginResponse = { token: StepOutput<string, "login", "token">; userId: string; };
+
+// Step: profile
+export type ProfileRequest = { token: StepOutput<string, "login", "token">; fields: string[]; };
+export type ProfileResponse = { name: string; email: string; };
+
+'
+`;

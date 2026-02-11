@@ -178,7 +178,10 @@ export { createHttpExecutor, HttpError } from "./http.ts";
 export type { HttpExecutorConfig, RouteConfig } from "./http.ts";
 
 // Type generation
-export { generateProtocolTypes } from "./typegen.ts";
+export {
+  generateProtocolTypes,
+  generateProtocolTypesFromModule,
+} from "./typegen.ts";
 
 // Endpoint composition
 export {
