@@ -1,5 +1,7 @@
 # Changelog
 
+Version changed from 0.1.0-alpha.5 to 0.1.0
+
 ## 0.1.0-alpha.5
 
 ### Features
@@ -50,7 +52,7 @@
 - add protocol schema DSL inspired by container morphisms <details><summary>Details</summary>
   Implements a type-safe DSL for defining multi-step protocols where each
   step's request type can depend on the previous step's response. This is
-  a direct implementation of André Videla's Sequential Product (&gt;&gt;) from
+  a direct implementation of AndrÃ© Videla's Sequential Product (&gt;&gt;) from
   his container morphisms research (APLAS 2024).<br>
   Core primitives:
   - step() - independent request/response (Container)
@@ -59,7 +61,7 @@
   - repeat()/repeat1() - Kleene star/plus (*)
   - choice() - coproduct (+)
   - branch() - conditional
-  - parallel() - tensor (⊗)<br>
+  - parallel() - tensor (â)<br>
   Includes OAuth 2.0 Authorization Code Flow as reference implementation
   demonstrating how dependentStep() enforces that exchange.code must be
   the exact value from authorize.response.code at compile time.<br>
@@ -157,8 +159,8 @@
 
 ### Documentation
 
-- add André Videla's container morphisms research <details><summary>Details</summary>
-  Add section on André Videla's theoretical work that provides the
+- add AndrÃ© Videla's container morphisms research <details><summary>Details</summary>
+  Add section on AndrÃ© Videla's theoretical work that provides the
   categorical foundation for type-safe client-server communication:<br>
   - Container Morphisms for Composable Interactive Systems (2024)
   - Lenses for Composable Servers (2022)
