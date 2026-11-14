@@ -132,6 +132,39 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for MaybeAbsent<T> {
 }
 `.trim();
 
+/** `InternalError`: what a handler fails with outside the contract. */
+export const INTERNAL_ERROR = String.raw`
+/// A failure that is not part of the contract: answered as a 500 that
+/// says nothing about the cause, and reported through the tracing crate
+/// with the operation it happened in.
+///
+/// Any error converts into it, and so does a message, so the question
+/// mark works in a handler on whatever it calls. It is not an error type
+/// itself: one that were could not be made from every error.
+#[derive(Debug)]
+pub struct InternalError(Box<dyn std::error::Error + Send + Sync>);
+
+impl InternalError {
+    /// The error it was made from.
+    #[must_use]
+    pub fn into_inner(self) -> Box<dyn std::error::Error + Send + Sync> {
+        self.0
+    }
+}
+
+impl<E: Into<Box<dyn std::error::Error + Send + Sync>>> From<E> for InternalError {
+    fn from(error: E) -> Self {
+        Self(error.into())
+    }
+}
+
+impl fmt::Display for InternalError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+`.trim();
+
 /** The private module that checks requests and responses. */
 export const RUNTIME = String.raw`
 /// Checks requests and responses against the contract. The module's API is
@@ -1128,6 +1161,14 @@ mod runtime {
         /// What a handler returned, as the response.
         pub(super) fn respond<T: Serialize>(&self, value: &T) -> Response {
             self.answer(StatusCode::OK, self.response, value)
+        }
+
+        /// A failure outside the contract: logged here, answered as a 500
+        /// that says nothing about it.
+        pub(super) fn internal(&self, error: &super::InternalError) -> Response {
+            let operation = self.name;
+            tracing::error!(operation, %error, "a handler failed");
+            internal_error()
         }
 
         /// An error a handler returned, as the response of that status.

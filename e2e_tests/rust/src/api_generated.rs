@@ -516,11 +516,48 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for MaybeAbsent<T> {
 // Handlers
 // -----------------------------------------------------------------------------
 
-/// The errors `POST /api/notes` declares.
-#[derive(Debug, Clone, PartialEq)]
+/// A failure that is not part of the contract: answered as a 500 that
+/// says nothing about the cause, and reported through the tracing crate
+/// with the operation it happened in.
+///
+/// Any error converts into it, and so does a message, so the question
+/// mark works in a handler on whatever it calls. It is not an error type
+/// itself: one that were could not be made from every error.
+#[derive(Debug)]
+pub struct InternalError(Box<dyn std::error::Error + Send + Sync>);
+
+impl InternalError {
+    /// The error it was made from.
+    #[must_use]
+    pub fn into_inner(self) -> Box<dyn std::error::Error + Send + Sync> {
+        self.0
+    }
+}
+
+impl<E: Into<Box<dyn std::error::Error + Send + Sync>>> From<E> for InternalError {
+    fn from(error: E) -> Self {
+        Self(error.into())
+    }
+}
+
+impl fmt::Display for InternalError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// How `POST /api/notes` fails: the errors it declares, or outside the
+/// contract.
+///
+/// A declared body converts into its variant and any error into
+/// `Internal`, so the question mark works on both. For that the type is
+/// not an error type itself.
+#[derive(Debug)]
 pub enum NotesCreateError {
     /// 409, with its body.
     Conflict(NotesCreateError409),
+    /// Not part of the contract: a 500.
+    Internal(InternalError),
 }
 
 impl NotesCreateError {
@@ -529,23 +566,17 @@ impl NotesCreateError {
     pub fn status(&self) -> StatusCode {
         match self {
             Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
     fn respond(&self, operation: &runtime::Operation) -> Response {
         match self {
             Self::Conflict(body) => operation.fail(self.status(), body),
+            Self::Internal(error) => operation.internal(error),
         }
     }
 }
-
-impl fmt::Display for NotesCreateError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "POST /api/notes answered {}", self.status())
-    }
-}
-
-impl std::error::Error for NotesCreateError {}
 
 impl From<NotesCreateError409> for NotesCreateError {
     fn from(body: NotesCreateError409) -> Self {
@@ -553,11 +584,24 @@ impl From<NotesCreateError409> for NotesCreateError {
     }
 }
 
-/// The errors `DELETE /api/notes/{id}` declares.
-#[derive(Debug, Clone, PartialEq)]
+impl<E: Into<Box<dyn std::error::Error + Send + Sync>>> From<E> for NotesCreateError {
+    fn from(error: E) -> Self {
+        Self::Internal(InternalError::from(error))
+    }
+}
+
+/// How `DELETE /api/notes/{id}` fails: the errors it declares, or outside the
+/// contract.
+///
+/// A declared body converts into its variant and any error into
+/// `Internal`, so the question mark works on both. For that the type is
+/// not an error type itself.
+#[derive(Debug)]
 pub enum NotesDeleteError {
     /// 404, with its body.
     NotFound(NotFound),
+    /// Not part of the contract: a 500.
+    Internal(InternalError),
 }
 
 impl NotesDeleteError {
@@ -566,23 +610,17 @@ impl NotesDeleteError {
     pub fn status(&self) -> StatusCode {
         match self {
             Self::NotFound(_) => StatusCode::NOT_FOUND,
+            Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
     fn respond(&self, operation: &runtime::Operation) -> Response {
         match self {
             Self::NotFound(body) => operation.fail(self.status(), body),
+            Self::Internal(error) => operation.internal(error),
         }
     }
 }
-
-impl fmt::Display for NotesDeleteError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "DELETE /api/notes/{{id}} answered {}", self.status())
-    }
-}
-
-impl std::error::Error for NotesDeleteError {}
 
 impl From<NotFound> for NotesDeleteError {
     fn from(body: NotFound) -> Self {
@@ -590,11 +628,24 @@ impl From<NotFound> for NotesDeleteError {
     }
 }
 
-/// The errors `GET /api/notes/{id}` declares.
-#[derive(Debug, Clone, PartialEq)]
+impl<E: Into<Box<dyn std::error::Error + Send + Sync>>> From<E> for NotesDeleteError {
+    fn from(error: E) -> Self {
+        Self::Internal(InternalError::from(error))
+    }
+}
+
+/// How `GET /api/notes/{id}` fails: the errors it declares, or outside the
+/// contract.
+///
+/// A declared body converts into its variant and any error into
+/// `Internal`, so the question mark works on both. For that the type is
+/// not an error type itself.
+#[derive(Debug)]
 pub enum NotesRetrieveError {
     /// 404, with its body.
     NotFound(NotFound),
+    /// Not part of the contract: a 500.
+    Internal(InternalError),
 }
 
 impl NotesRetrieveError {
@@ -603,23 +654,17 @@ impl NotesRetrieveError {
     pub fn status(&self) -> StatusCode {
         match self {
             Self::NotFound(_) => StatusCode::NOT_FOUND,
+            Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
     fn respond(&self, operation: &runtime::Operation) -> Response {
         match self {
             Self::NotFound(body) => operation.fail(self.status(), body),
+            Self::Internal(error) => operation.internal(error),
         }
     }
 }
-
-impl fmt::Display for NotesRetrieveError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "GET /api/notes/{{id}} answered {}", self.status())
-    }
-}
-
-impl std::error::Error for NotesRetrieveError {}
 
 impl From<NotFound> for NotesRetrieveError {
     fn from(body: NotFound) -> Self {
@@ -627,25 +672,35 @@ impl From<NotFound> for NotesRetrieveError {
     }
 }
 
+impl<E: Into<Box<dyn std::error::Error + Send + Sync>>> From<E> for NotesRetrieveError {
+    fn from(error: E) -> Self {
+        Self::Internal(InternalError::from(error))
+    }
+}
+
 /// The operations of the API, one method each.
 ///
-/// A method returns the response. For an operation that declares errors
-/// it returns a `Result`, and the error names the status.
+/// A method returns the response, or fails. What an operation declares as
+/// an error is a variant of its error type, named as the status is; any
+/// other failure is an [`InternalError`], which every error converts into.
 pub trait Handlers: Send + Sync + 'static {
     /// `GET /api/echo/{+path}`
     fn echo_retrieve(
         &self,
         params: EchoRetrieveParams,
-    ) -> impl Future<Output = EchoRetrieveResponse> + Send;
+    ) -> impl Future<Output = Result<EchoRetrieveResponse, InternalError>> + Send;
 
     /// `POST /api/edges`
     fn edges_create(
         &self,
         body: EdgesCreateBody,
-    ) -> impl Future<Output = EdgesCreateResponse> + Send;
+    ) -> impl Future<Output = Result<EdgesCreateResponse, InternalError>> + Send;
 
     /// `GET /api/notes`
-    fn notes_list(&self, query: NotesListQuery) -> impl Future<Output = NotesListResponse> + Send;
+    fn notes_list(
+        &self,
+        query: NotesListQuery,
+    ) -> impl Future<Output = Result<NotesListResponse, InternalError>> + Send;
 
     /// `POST /api/notes`
     fn notes_create(
@@ -671,22 +726,25 @@ pub trait Handlers: Send + Sync + 'static {
         &self,
         params: NotesUpdateParams,
         body: NotesUpdateBody,
-    ) -> impl Future<Output = NotesUpdateResponse> + Send;
+    ) -> impl Future<Output = Result<NotesUpdateResponse, InternalError>> + Send;
 
     /// `POST /api/odd`
-    fn odd_create(&self, body: OddCreateBody) -> impl Future<Output = OddCreateResponse> + Send;
+    fn odd_create(
+        &self,
+        body: OddCreateBody,
+    ) -> impl Future<Output = Result<OddCreateResponse, InternalError>> + Send;
 
     /// `POST /api/shapes`
     fn shapes_create(
         &self,
         body: ShapesCreateBody,
-    ) -> impl Future<Output = ShapesCreateResponse> + Send;
+    ) -> impl Future<Output = Result<ShapesCreateResponse, InternalError>> + Send;
 
     /// `POST /api/trees`
     fn trees_create(
         &self,
         body: TreesCreateBody,
-    ) -> impl Future<Output = TreesCreateResponse> + Send;
+    ) -> impl Future<Output = Result<TreesCreateResponse, InternalError>> + Send;
 }
 
 // Not generated: server-sent event streams.
@@ -721,7 +779,10 @@ async fn echo_retrieve<H: Handlers>(
         Ok(params) => params,
         Err(response) => return *response,
     };
-    operation.respond(&handlers.echo_retrieve(params).await)
+    match handlers.echo_retrieve(params).await {
+        Ok(response) => operation.respond(&response),
+        Err(error) => operation.internal(&error),
+    }
 }
 
 async fn edges_create<H: Handlers>(
@@ -734,7 +795,10 @@ async fn edges_create<H: Handlers>(
         Ok(body) => body,
         Err(response) => return *response,
     };
-    operation.respond(&handlers.edges_create(body).await)
+    match handlers.edges_create(body).await {
+        Ok(response) => operation.respond(&response),
+        Err(error) => operation.internal(&error),
+    }
 }
 
 async fn notes_list<H: Handlers>(
@@ -746,7 +810,10 @@ async fn notes_list<H: Handlers>(
         Ok(query) => query,
         Err(response) => return *response,
     };
-    operation.respond(&handlers.notes_list(query).await)
+    match handlers.notes_list(query).await {
+        Ok(response) => operation.respond(&response),
+        Err(error) => operation.internal(&error),
+    }
 }
 
 async fn notes_create<H: Handlers>(
@@ -816,7 +883,10 @@ async fn notes_update<H: Handlers>(
         Ok(params) => params,
         Err(response) => return *response,
     };
-    operation.respond(&handlers.notes_update(params, body).await)
+    match handlers.notes_update(params, body).await {
+        Ok(response) => operation.respond(&response),
+        Err(error) => operation.internal(&error),
+    }
 }
 
 async fn odd_create<H: Handlers>(
@@ -829,7 +899,10 @@ async fn odd_create<H: Handlers>(
         Ok(body) => body,
         Err(response) => return *response,
     };
-    operation.respond(&handlers.odd_create(body).await)
+    match handlers.odd_create(body).await {
+        Ok(response) => operation.respond(&response),
+        Err(error) => operation.internal(&error),
+    }
 }
 
 async fn shapes_create<H: Handlers>(
@@ -842,7 +915,10 @@ async fn shapes_create<H: Handlers>(
         Ok(body) => body,
         Err(response) => return *response,
     };
-    operation.respond(&handlers.shapes_create(body).await)
+    match handlers.shapes_create(body).await {
+        Ok(response) => operation.respond(&response),
+        Err(error) => operation.internal(&error),
+    }
 }
 
 async fn trees_create<H: Handlers>(
@@ -855,7 +931,10 @@ async fn trees_create<H: Handlers>(
         Ok(body) => body,
         Err(response) => return *response,
     };
-    operation.respond(&handlers.trees_create(body).await)
+    match handlers.trees_create(body).await {
+        Ok(response) => operation.respond(&response),
+        Err(error) => operation.internal(&error),
+    }
 }
 
 /// The contract as data: the operations, and the schemas the runtime
@@ -2633,6 +2712,14 @@ mod runtime {
         /// What a handler returned, as the response.
         pub(super) fn respond<T: Serialize>(&self, value: &T) -> Response {
             self.answer(StatusCode::OK, self.response, value)
+        }
+
+        /// A failure outside the contract: logged here, answered as a 500
+        /// that says nothing about it.
+        pub(super) fn internal(&self, error: &super::InternalError) -> Response {
+            let operation = self.name;
+            tracing::error!(operation, %error, "a handler failed");
+            internal_error()
         }
 
         /// An error a handler returned, as the response of that status.

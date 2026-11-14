@@ -48,7 +48,10 @@ impl Notes {
 }
 
 impl api::Handlers for Notes {
-    async fn notes_list(&self, query: api::NotesListQuery) -> api::NotesListResponse {
+    async fn notes_list(
+        &self,
+        query: api::NotesListQuery,
+    ) -> Result<api::NotesListResponse, api::InternalError> {
         let wanted = query.tag.unwrap_or_default();
         let after = query.cursor.unwrap_or_default();
         let limit = usize::try_from(query.limit).unwrap_or(usize::MAX);
@@ -63,10 +66,10 @@ impl api::Handlers for Notes {
         // The last page has no cursor: the member is left out.
         let more = matching.len() > limit;
         matching.truncate(limit);
-        api::NotesListResponse {
+        Ok(api::NotesListResponse {
             cursor: matching.last().filter(|_| more).map(|note| note.id.clone()),
             items: matching,
-        }
+        })
     }
 
     async fn notes_create(
@@ -93,15 +96,15 @@ impl api::Handlers for Notes {
     ) -> Result<Note, api::NotesRetrieveError> {
         let found = self.notes().get(&params.id).cloned();
         // A declared error body converts into the operation's error.
-        Ok(found.ok_or_else(|| Self::not_found(params.id))?)
+        found.ok_or_else(|| Self::not_found(params.id).into())
     }
 
     async fn notes_update(
         &self,
         params: api::NotesUpdateParams,
         body: api::NotesUpdateBody,
-    ) -> api::NotesUpdateResponse {
-        self.store(params.id, body)
+    ) -> Result<api::NotesUpdateResponse, api::InternalError> {
+        Ok(self.store(params.id, body))
     }
 
     async fn notes_delete(
@@ -118,14 +121,24 @@ impl api::Handlers for Notes {
         }
     }
 
-    async fn echo_retrieve(&self, params: api::EchoRetrieveParams) -> api::EchoRetrieveResponse {
-        api::EchoRetrieveResponse {
+    async fn echo_retrieve(
+        &self,
+        params: api::EchoRetrieveParams,
+    ) -> Result<api::EchoRetrieveResponse, api::InternalError> {
+        // A failure that is not part of the contract.
+        if params.path == "fail" {
+            return Err("the backend is down".into());
+        }
+        Ok(api::EchoRetrieveResponse {
             segments: params.path.split('/').map(str::to_owned).collect(),
             path: params.path,
-        }
+        })
     }
 
-    async fn shapes_create(&self, body: api::ShapesCreateBody) -> api::ShapesCreateResponse {
+    async fn shapes_create(
+        &self,
+        body: api::ShapesCreateBody,
+    ) -> Result<api::ShapesCreateResponse, api::InternalError> {
         use api::ShapesCreateBodyShape as Shape;
         use api::ShapesCreateResponseKind as Kind;
 
@@ -133,17 +146,20 @@ impl api::Handlers for Notes {
             Shape::Circle(circle) => (3.0 * circle.radius * circle.radius, Kind::Circle),
             Shape::Rect(rect) => (rect.width * rect.height, Kind::Rect),
         };
-        api::ShapesCreateResponse {
+        Ok(api::ShapesCreateResponse {
             area,
             kind,
             from: body.from,
             meta: body.meta,
             unit: body.unit,
             note: body.note,
-        }
+        })
     }
 
-    async fn edges_create(&self, body: api::EdgesCreateBody) -> api::EdgesCreateResponse {
+    async fn edges_create(
+        &self,
+        body: api::EdgesCreateBody,
+    ) -> Result<api::EdgesCreateResponse, api::InternalError> {
         // Which members arrived; `maybe` and `count` given back.
         let arrived = [
             ("count", body.count.is_some()),
@@ -159,7 +175,7 @@ impl api::Handlers for Notes {
             ("when", body.when.is_some()),
             ("word", body.word.is_some()),
         ];
-        api::EdgesCreateResponse {
+        Ok(api::EdgesCreateResponse {
             received: arrived
                 .iter()
                 .filter(|(_, there)| *there)
@@ -167,23 +183,30 @@ impl api::Handlers for Notes {
                 .collect(),
             maybe: body.maybe,
             count: body.count,
-        }
+        })
     }
 
-    async fn odd_create(&self, body: api::OddCreateBody) -> api::OddCreateResponse {
+    async fn odd_create(
+        &self,
+        body: api::OddCreateBody,
+    ) -> Result<api::OddCreateResponse, api::InternalError> {
         // The response is the body's type: what it was sent.
-        body
+        Ok(body)
     }
 
-    async fn trees_create(&self, body: api::TreesCreateBody) -> api::TreesCreateResponse {
+    async fn trees_create(
+        &self,
+        body: api::TreesCreateBody,
+    ) -> Result<api::TreesCreateResponse, api::InternalError> {
         fn depth(tree: &api::TreesCreateBody) -> u64 {
             1 + tree.children.iter().map(depth).max().unwrap_or(0)
         }
 
-        api::TreesCreateResponse {
-            depth: i64::try_from(depth(&body)).unwrap_or(i64::MAX),
+        Ok(api::TreesCreateResponse {
+            // Any error converts into `InternalError`: a 500, and logged.
+            depth: i64::try_from(depth(&body))?,
             root: body,
-        }
+        })
     }
 }
 
