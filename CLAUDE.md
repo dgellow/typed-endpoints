@@ -29,7 +29,9 @@ permissions):
 src/
 ├── core/           # Shared types, request validation, OpenAPI generation
 │   ├── routes.ts   # Route discovery, path conversion, operationId derivation
-│   └── zod_internals.ts # The only reader of schema._zod (def, type, unwrap, optionality)
+│   ├── zod_internals.ts # The only reader of schema._zod (def, type, unwrap, optionality)
+│   ├── dependent.ts # projection(), expansion(): response type depends on the request
+│   └── dependent_types.ts # Type-level functions (ResponseFamily, Apply, Resolve); no imports
 ├── integrations/   # Framework integrations (Fresh v2 runtime, Vite build-time)
 ├── client/         # Typed HTTP client
 │   └── sse.ts      # Incremental text/event-stream parser
@@ -78,6 +80,17 @@ e2e_tests/          # End-to-end tests (protocol flows, Fresh server, CLI, Vite)
   and states the responses it can follow with `when`, not with `z.never()`
 - Type-level guarantees are tested with `@ts-expect-error`; an unused directive
   fails the type-check
+
+## Key Concepts (Request-Dependent Responses)
+
+A response type can be a function of the request (`?fields=`, `?expand=`).
+TypeScript has no type-level lambda, so the function is an interface whose
+`response` member refers to `this["request"]` (`ResponseFamily`), applied by
+intersection (`Apply`). A schema built by `projection()` / `expansion()` is the
+type that holds for every request and carries the rule; the client generator
+emits `Dependent<Family, Fallback>` and client methods resolve it against the
+`const`-captured options of each call. A claim about a response type is tested
+against a live server in `e2e_tests/dependent_response_test.ts`.
 
 ## Key Concepts (Protocol Module)
 
