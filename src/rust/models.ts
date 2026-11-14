@@ -14,12 +14,18 @@
  * | a union told apart by a member       | an enum tagged by that member              |
  * | any other union                      | an untagged enum                           |
  * | a union that refers to itself        | an enum of its own name, `Null` a variant  |
+ * | a union that is JSON itself          | `serde_json::Value`                        |
  * | a member that may be absent          | `Option<T>`                                |
  * | a member that may be null            | `Option<T>`                                |
  * | a member that may be absent or null  | `MaybeAbsent<T>`: three states             |
  * | a member with a default              | `T`, and the default when it is absent     |
  * | an integer that is not negative      | `u64`                                      |
  * | a type inside itself                 | `Box<T>`, unless a `Vec` or a map holds it |
+ *
+ * A field's documentation says what the type leaves out: the lengths,
+ * bounds, pattern and format the contract requires, the default, and
+ * that a `None` is written `null` where the member is always there. A
+ * definition without a description says which operations use it, as what.
  *
  * The source is written as rustfmt writes it.
  *
@@ -29,6 +35,7 @@
 import {
   type Definition,
   type FieldNode,
+  isJson,
   type NamedDefinition,
   type ObjectDefinition,
   pascalCase,
@@ -239,15 +246,175 @@ export function wrapped(
   ];
 }
 
-/** A literal value as documentation shows it. */
-function quoted(value: Scalar): string {
+/** A value as documentation shows it. */
+function quoted(value: unknown): string {
   return `\`${JSON.stringify(value)}\``;
 }
 
-/** A doc comment, one line of source per line of text. */
+/**
+ * The expressions that are the default of their type, with the way a
+ * `Default` implementation writes them.
+ */
+const OWN_DEFAULTS: ReadonlyMap<string, string> = new Map([
+  ["None", "None"],
+  ["Vec::new()", "Vec::new()"],
+  ["false", "false"],
+  ["0", "0"],
+  ["0.0", "0.0"],
+  ['String::from("")', "String::new()"],
+]);
+
+/** The widest line of a comment, as rustfmt's `comment_width` has it. */
+const COMMENT_WIDTH = 80;
+
+/**
+ * A line of text as lines no wider than `width`, broken between words and
+ * never inside a code span.
+ */
+function wrapText(line: string, width: number): string[] {
+  if (line.length <= width) return [line];
+  const words = line.match(/(?:`[^`]*`|\S)+/g) ?? [];
+  const lines: string[] = [];
+  let current = "";
+  for (const word of words) {
+    if (current !== "" && current.length + 1 + word.length > width) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = current === "" ? word : `${current} ${word}`;
+    }
+  }
+  if (current !== "") lines.push(current);
+  return lines;
+}
+
+/**
+ * A doc comment: a line of source per line of text, and a line that is
+ * too wide broken between words.
+ */
 export function documentation(text: string, indent = 0): string[] {
   const pad = " ".repeat(indent);
-  return text.split("\n").map((line) => `${pad}/// ${line}`.trimEnd());
+  const width = COMMENT_WIDTH - indent - 4;
+  return text.split("\n").flatMap((line) => wrapText(line, width)).map((
+    line,
+  ) => `${pad}/// ${line}`.trimEnd());
+}
+
+/** `a`, `a and b`, `a, b and c`. */
+function listed(items: readonly string[]): string {
+  return items.length <= 1
+    ? items.join("")
+    : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+}
+
+/** `1 item`, `2 items`. */
+function counted(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+/** A range of counts: `1 to 40 characters`, `at most 4 items`. */
+function range(
+  minimum: number | undefined,
+  maximum: number | undefined,
+  noun: string,
+): string[] {
+  if (minimum !== undefined && maximum !== undefined) {
+    return minimum === maximum
+      ? [`exactly ${counted(minimum, noun)}`]
+      : [`${minimum} to ${counted(maximum, noun)}`];
+  }
+  if (minimum !== undefined && minimum > 0) {
+    return [`at least ${counted(minimum, noun)}`];
+  }
+  if (maximum !== undefined) return [`at most ${counted(maximum, noun)}`];
+  return [];
+}
+
+/** What a string format is called. */
+const FORMATS: Readonly<Record<string, string>> = {
+  "date-time": "an ISO 8601 date and time",
+  date: "an ISO 8601 date",
+  time: "an ISO 8601 time",
+  duration: "an ISO 8601 duration",
+  email: "an email address",
+  uuid: "a UUID",
+  uri: "a URI",
+  ipv4: "an IPv4 address",
+  ipv6: "an IPv6 address",
+};
+
+/**
+ * What the contract requires of a value and its Rust type does not say,
+ * in words: the runtime checks it, and a reader of the type should know.
+ *
+ * @param unsigned Whether the type already says the number is not negative.
+ */
+function constraints(node: TypeNode, unsigned = false): string[] {
+  const { type } = withoutNull(node);
+  switch (type.kind) {
+    case "string":
+      return [
+        ...(type.format
+          ? [FORMATS[type.format] ?? `in the format \`${type.format}\``]
+          : []),
+        ...range(type.minLength, type.maxLength, "character"),
+        // A format says what its pattern spells out. A pattern is shown
+        // when it can be read: short, and without a backtick.
+        ...(type.pattern && !type.format
+          ? [
+            type.pattern.length <= 40 && !type.pattern.includes("`")
+              ? `matches \`${type.pattern}\``
+              : "matches a pattern",
+          ]
+          : []),
+      ];
+    case "integer":
+    case "number": {
+      // The bounds of a safe integer are how the contract says "integer".
+      const bound = (value: number | undefined) =>
+        value !== undefined && Math.abs(value) < Number.MAX_SAFE_INTEGER
+          ? value
+          : undefined;
+      const minimum = bound(type.minimum);
+      const maximum = bound(type.maximum);
+      const above = bound(type.exclusiveMinimum);
+      const below = bound(type.exclusiveMaximum);
+      const least = unsigned && (minimum ?? 0) <= 0 ? undefined : minimum;
+      const more = unsigned && (above ?? 0) < 0 ? undefined : above;
+      return [
+        ...(least !== undefined && maximum !== undefined
+          ? [`${least} to ${maximum}`]
+          : [
+            ...(least !== undefined ? [`at least ${least}`] : []),
+            ...(maximum !== undefined ? [`at most ${maximum}`] : []),
+          ]),
+        ...(more !== undefined ? [`greater than ${more}`] : []),
+        ...(below !== undefined ? [`less than ${below}`] : []),
+        ...(type.multipleOf !== undefined
+          ? [`a multiple of ${type.multipleOf}`]
+          : []),
+      ];
+    }
+    case "array": {
+      const each = constraints(type.items);
+      return [
+        ...range(type.minItems, type.maxItems, "item"),
+        ...(each.length > 0 ? [`each ${each.join(", ")}`] : []),
+      ];
+    }
+    case "map": {
+      const each = constraints(type.values);
+      return each.length > 0 ? [`each value ${each.join(", ")}`] : [];
+    }
+    default:
+      return [];
+  }
+}
+
+/** A sentence from phrases: a capital first, a full stop last. */
+function sentence(phrases: readonly string[]): string {
+  const text = phrases.join(", ");
+  return text === "" ? "" : `${text[0].toUpperCase()}${text.slice(1)}.`;
 }
 
 type UnionNode = TypeNode & { readonly kind: "union" };
@@ -268,8 +435,8 @@ export class RustModels {
   private readonly enumsByKey = new Map<string, EnumInfo>();
   private readonly enumsByName = new Map<string, EnumInfo>();
   private readonly taken = new Set<string>();
-  /** Documentation for definitions that have none of their own. */
-  private readonly described = new Map<string, string>();
+  /** Where each definition is used: as what, by which operations. */
+  private readonly uses = new Map<string, Map<string, string[]>>();
   /** Types the module's API refers to directly. */
   private readonly roots: TypeNode[] = [];
   /** How often each definition is referred to. */
@@ -299,9 +466,39 @@ export class RustModels {
     return this.typeOf(node);
   }
 
-  /** Documentation for a definition that has no description. */
-  describe(name: string, text: string): void {
-    if (!this.described.has(name)) this.described.set(name, text);
+  /**
+   * Notes where a type is used, for the documentation of a definition
+   * that has no description: "The response of `GET /notes/{id}`".
+   *
+   * @param type A type as `type()` gave it.
+   * @param role What it is there: "response", "404 body".
+   * @param operation The operation, as documentation names it.
+   */
+  describe(type: string, role: string, operation: string): void {
+    // Under the name of the definition, whichever name led to it.
+    const name = this.graph.object(type)?.name ??
+      this.enumsByName.get(type)?.name ?? type;
+    let roles = this.uses.get(name);
+    if (!roles) this.uses.set(name, roles = new Map());
+    const operations = roles.get(role) ?? [];
+    roles.set(role, [...operations, operation]);
+  }
+
+  /** "The response of `GET /a` and `PUT /a`; the body of `POST /b`." */
+  private described(name: string): string | undefined {
+    const roles = this.uses.get(name);
+    if (!roles) return undefined;
+    // Roles the same operations give it are said together: "the body
+    // and response of".
+    const groups = new Map<string, string[]>();
+    for (const [role, operations] of roles) {
+      const of = listed(operations.map((label) => `\`${label}\``));
+      groups.set(of, [...(groups.get(of) ?? []), role]);
+    }
+    const parts = [...groups].map(([of, named]) =>
+      `the ${listed(named)} of ${of}`
+    );
+    return sentence([parts.join("; ")]);
   }
 
   /** The source of every definition, then of the enums they use. */
@@ -309,6 +506,8 @@ export class RustModels {
     this.plan();
     const lines: string[] = [];
     for (const definition of this.graph.definitions) {
+      // JSON itself has a type already.
+      if (isJson(definition)) continue;
       lines.push(...this.definition(definition), "");
     }
     // Writing an enum can define another.
@@ -359,8 +558,18 @@ export class RustModels {
         return this.union(node);
       }
       case "ref":
+        if (this.isJson(node.name)) {
+          this.usesValue = true;
+          return "Value";
+        }
         return node.cyclic && !indirect ? `Box<${node.name}>` : node.name;
     }
+  }
+
+  /** Whether a definition is JSON itself: `serde_json::Value` is that. */
+  private isJson(name: string): boolean {
+    const definition = this.graph.definitions.find((d) => d.name === name);
+    return definition !== undefined && isJson(definition);
   }
 
   private unique(name: string): string {
@@ -527,7 +736,7 @@ export class RustModels {
       : ["untagged"];
     return [
       ...documentation(
-        this.described.get(name) ??
+        this.described(name) ??
           `One of ${node.variants.length} alternatives${
             tag ? `, told apart by \`${tag}\`` : ""
           }.`,
@@ -746,7 +955,7 @@ export class RustModels {
       return this.enumOf(definition.name, type, types);
     }
     return [
-      ...documentation(this.described.get(definition.name) ?? ""),
+      ...documentation(this.described(definition.name) ?? ""),
       this.derives(definition.name),
       "#[serde(transparent)]",
       `pub struct ${definition.name}(pub ${this.typeOf(type, true)});`,
@@ -790,9 +999,10 @@ export class RustModels {
       )
     );
     // With no member that has to be given, the type has a default: every
-    // member absent, or at the default the contract gives it.
+    // member absent, or at the default the contract gives it. `Default`
+    // is derived when those are the defaults of the members' types.
     const optional = fields.every((field) => !field.required);
-    const plain = fields.every((field) => !field.default);
+    const plain = rendered.every((field) => field.own);
     // Not `deny_unknown_fields`: the runtime refuses members a closed
     // object does not name, and reports them with every other issue.
     const attributes = [
@@ -806,7 +1016,7 @@ export class RustModels {
     ];
 
     const described = definition.description ??
-      this.described.get(definition.name);
+      this.described(definition.name);
     const lines = [
       ...(described ? documentation(described) : []),
       this.derives(definition.name, optional && plain ? ["Default"] : []),
@@ -873,29 +1083,44 @@ export class RustModels {
     snake: string,
     rename: boolean,
     defaults: string[],
-  ): { name: string; initial: string; lines: string[] } {
+  ): { name: string; initial: string; own: boolean; lines: string[] } {
     const name = identifier(snake);
     const { type: inner, nullable } = withoutNull(field.type);
     const base = this.typeOf(inner);
     const attributes: string[] = [];
     if (rename) attributes.push(`rename = ${rustString(field.name)}`);
+    // What the type does not say, for whoever reads it.
+    const notes = constraints(field.type, base === "u64");
 
     let type: string;
     let initial = "None";
+    // Whether a member that is left out has the default of its type.
+    let own = true;
     if (field.default) {
       // A missing member takes the contract's default.
       type = nullable ? `Option<${base}>` : base;
-      const fn = `default_${snakeCase(owner.name)}_${snake}`;
-      attributes.push(`default = "${fn}"`);
-      initial = `${fn}()`;
-      defaults.push(
-        ...(defaults.length > 0 ? [""] : []),
-        `fn ${fn}() -> ${type} {`,
-        `    ${this.expression(field.type, field.default.value)}`,
-        "}",
-      );
+      const value = this.expression(field.type, field.default.value);
+      notes.push(`${quoted(field.default.value)} when left out`);
+      if (OWN_DEFAULTS.has(value)) {
+        // The default of the type: serde knows it.
+        attributes.push("default");
+        initial = OWN_DEFAULTS.get(value)!;
+      } else {
+        own = false;
+        const fn = `default_${snakeCase(owner.name)}_${snake}`;
+        attributes.push(`default = "${fn}"`);
+        initial = `${fn}()`;
+        defaults.push(
+          ...(defaults.length > 0 ? [""] : []),
+          `fn ${fn}() -> ${type} {`,
+          `    ${value}`,
+          "}",
+        );
+      }
     } else if (field.required) {
       type = nullable ? `Option<${base}>` : base;
+      // An `Option` is left out when it is `None`, except here.
+      if (nullable) notes.push("always there: `None` is written `null`");
     } else if (nullable) {
       // Absent, null and a value are three different things.
       this.usesMaybeAbsent = true;
@@ -919,11 +1144,16 @@ export class RustModels {
       attributes.push("default", 'skip_serializing_if = "Option::is_none"');
     }
 
+    const noted = sentence(notes);
+    const text = [field.description, noted].filter((part) => part).join(
+      "\n\n",
+    );
     return {
       name,
       initial,
+      own,
       lines: [
-        ...(field.description ? documentation(field.description, 4) : []),
+        ...(text ? documentation(text, 4) : []),
         ...(attributes.length > 0
           ? wrapped(4, "#[serde(", attributes, ")]", false)
           : []),

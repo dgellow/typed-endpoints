@@ -160,13 +160,13 @@ export function renderAxum(
     const constant = constantCase(operation.operationId);
     const part = (
       suffix: string,
-      what: string,
+      role: string,
       schema: JsonSchema | undefined,
       text: boolean,
     ): { type: string; schema: string } | undefined => {
       if (!schema) return undefined;
       const type = models.type(graph.define(`${base}${suffix}`, schema, text));
-      models.describe(type, `${what} \`${label}\`.`);
+      models.describe(type, role, label);
       return {
         type,
         schema: data.define(`${constant}_${constantCase(suffix)}`, schema),
@@ -185,21 +185,16 @@ export function renderAxum(
         }
         : undefined);
 
-    const params = part("Params", "The path parameters of", paramsSchema, true);
-    const query = part("Query", "The query of", operation.query, true);
-    const body = part("Body", "The body of", operation.body, false);
-    const response = part(
-      "Response",
-      "The response of",
-      operation.response,
-      false,
-    );
+    const params = part("Params", "path parameters", paramsSchema, true);
+    const query = part("Query", "query", operation.query, true);
+    const body = part("Body", "body", operation.body, false);
+    const response = part("Response", "response", operation.response, false);
     const errors = Object.entries(operation.errors ?? {}).map(
       ([status, schema]) => {
         const name = STATUS_NAMES[status];
         return {
           status,
-          ...part(`Error${status}`, `The ${status} body of`, schema, false)!,
+          ...part(`Error${status}`, `${status} body`, schema, false)!,
           variant: name ? pascalCase(name.toLowerCase()) : `Status${status}`,
           code: name ? `StatusCode::${name}` : `status(${status})`,
         };

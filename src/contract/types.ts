@@ -155,6 +155,43 @@ export function withoutNull(
   };
 }
 
+/**
+ * Whether a definition is JSON itself: a string, a number, a boolean,
+ * null, a list of itself or a map of itself, each without a constraint.
+ * Most languages have a type for that already.
+ */
+export function isJson(definition: Definition): boolean {
+  if (definition.kind !== "named" || definition.type.kind !== "union") {
+    return false;
+  }
+  const { variants } = definition.type;
+  const self = (node: TypeNode) =>
+    node.kind === "ref" && node.name === definition.name;
+  // Nothing but the kind: a bound or a pattern makes it another type.
+  const bare = (node: TypeNode) => Object.keys(node).length === 1;
+  const shapes = variants.map((variant) => {
+    switch (variant.kind) {
+      case "string":
+      case "number":
+      case "boolean":
+      case "null":
+        return bare(variant) ? variant.kind : undefined;
+      case "array":
+        return Object.keys(variant).length === 2 && self(variant.items)
+          ? "array"
+          : undefined;
+      case "map":
+        return self(variant.values) ? "map" : undefined;
+      default:
+        return undefined;
+    }
+  });
+  return variants.length === 6 &&
+    (["string", "number", "boolean", "null", "array", "map"] as const).every(
+      (shape) => shapes.includes(shape),
+    );
+}
+
 type Schema = Readonly<Record<string, unknown>>;
 
 interface Document {

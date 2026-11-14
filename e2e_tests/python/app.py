@@ -13,7 +13,7 @@ from fastapi.responses import Response
 
 import api_generated as api
 
-Note = api.NotesRetrieveResponse
+Note = api.Note
 
 
 class Notes:
@@ -45,7 +45,7 @@ class Notes:
     async def notes_create(
         self, body: api.NotesCreateBody
     ) -> (
-        api.NotesCreateResponse
+        api.Note
         | api.Fail[Literal[409], api.NotesCreateError409]
         | Response
     ):
@@ -59,7 +59,7 @@ class Notes:
 
     async def notes_retrieve(
         self, params: api.NotesRetrieveParams
-    ) -> api.NotesRetrieveResponse | api.Fail[Literal[404], api.NotFound] | Response:
+    ) -> api.Note | api.Fail[Literal[404], api.NotFound] | Response:
         note = self.notes.get(params.id)
         if note is None:
             return api.Fail(404, api.NotFound(error="not_found", id=params.id))
@@ -67,7 +67,7 @@ class Notes:
 
     async def notes_update(
         self, params: api.NotesUpdateParams, body: api.NotesUpdateBody
-    ) -> api.NotesUpdateResponse | Response:
+    ) -> api.Note | Response:
         current = self.notes.get(params.id)
         return self._store(params.id, current.likes if current else 0, body)
 

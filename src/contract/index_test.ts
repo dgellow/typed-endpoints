@@ -82,7 +82,13 @@ Deno.test("contract: request parts are the input side, responses the output side
   // A body is open (Zod strips what it does not know); a response is
   // closed.
   const body = notesUpdate.body as Record<string, unknown>;
-  const response = notesUpdate.response as Record<string, unknown>;
+  // The note has an id: the response refers to it.
+  const document = notesUpdate.response as {
+    $ref: string;
+    $defs: Record<string, Record<string, unknown>>;
+  };
+  assertEquals(document.$ref, "#/$defs/Note");
+  const response = document.$defs.Note;
   assertEquals("additionalProperties" in body, false);
   assertEquals(response.additionalProperties, false);
   assertEquals(

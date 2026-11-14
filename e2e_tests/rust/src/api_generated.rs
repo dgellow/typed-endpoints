@@ -40,26 +40,34 @@ pub struct EchoRetrieveResponse {
 /// The body of `POST /api/edges`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct EdgesCreateBody {
+    /// At most 4 characters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub short: Option<String>,
+    /// Matches `^\d+$`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digits: Option<String>,
+    /// Matches `^[\D]+$`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plain: Option<String>,
+    /// Matches `^(?!admin)\w+$`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub word: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<i64>,
+    /// A multiple of 0.1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flag: Option<bool>,
     #[serde(default, skip_serializing_if = "MaybeAbsent::is_absent")]
     pub maybe: MaybeAbsent<String>,
+    /// An ISO 8601 date and time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<String>,
+    /// A UUID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// An email address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
 }
@@ -79,6 +87,7 @@ pub struct EdgesCreateResponse {
 pub struct NotesListQuery {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+    /// 1 to 100, `2` when left out.
     #[serde(default = "default_notes_list_query_limit")]
     pub limit: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -99,9 +108,12 @@ fn default_notes_list_query_limit() -> u64 {
     2
 }
 
+/// A note as the server shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct NotesListResponseItem {
+pub struct Note {
+    /// 1 to 40 characters.
     pub title: String,
+    /// At most 4 items, each at least 1 character.
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned: Option<bool>,
@@ -112,22 +124,21 @@ pub struct NotesListResponseItem {
 /// The response of `GET /api/notes`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NotesListResponse {
-    pub items: Vec<NotesListResponseItem>,
+    pub items: Vec<Note>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
 }
 
-/// The body of `POST /api/notes`.
+/// The body of `POST /api/notes` and `PUT /api/notes/{id}`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NotesCreateBody {
+    /// 1 to 40 characters.
     pub title: String,
+    /// At most 4 items, each at least 1 character.
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned: Option<bool>,
 }
-
-/// The same type as [`NotesListResponseItem`].
-pub type NotesCreateResponse = NotesListResponseItem;
 
 /// The 409 body of `POST /api/notes`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -136,7 +147,8 @@ pub struct NotesCreateError409 {
     pub title: String,
 }
 
-/// The path parameters of `DELETE /api/notes/{id}`.
+/// The path parameters of `DELETE /api/notes/{id}`, `GET /api/notes/{id}` and
+/// `PUT /api/notes/{id}`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NotesDeleteParams {
     pub id: String,
@@ -145,6 +157,7 @@ pub struct NotesDeleteParams {
 /// The body of `DELETE /api/notes/{id}`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NotesDeleteBody {
+    /// At least 3 characters.
     pub reason: String,
 }
 
@@ -155,7 +168,7 @@ pub struct NotesDeleteResponse {
     pub reason: String,
 }
 
-/// The 404 body of `DELETE /api/notes/{id}`.
+/// The 404 body of `DELETE /api/notes/{id}` and `GET /api/notes/{id}`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "error", rename = "not_found")]
 pub struct NotFound {
@@ -165,36 +178,19 @@ pub struct NotFound {
 /// The same type as [`NotesDeleteParams`].
 pub type NotesRetrieveParams = NotesDeleteParams;
 
-/// The same type as [`NotesListResponseItem`].
-pub type NotesRetrieveResponse = NotesListResponseItem;
-
 /// The same type as [`NotesDeleteParams`].
 pub type NotesUpdateParams = NotesDeleteParams;
 
 /// The same type as [`NotesCreateBody`].
 pub type NotesUpdateBody = NotesCreateBody;
 
-/// The same type as [`NotesListResponseItem`].
-pub type NotesUpdateResponse = NotesListResponseItem;
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OddCreateBodyChain {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next: Option<Box<OddCreateBodyChain>>,
+    /// Always there: `None` is written `null`.
     pub origin: Option<Box<OddCreateBodyChain>>,
-}
-
-/// One of 6 alternatives.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum OddCreateBodyJson {
-    Text(String),
-    Number(f64),
-    Boolean(bool),
-    Null,
-    List(Vec<OddCreateBodyJson>),
-    Map(BTreeMap<String, OddCreateBodyJson>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -218,7 +214,7 @@ pub enum OddCreateBodyExpr {
     Add(OddCreateBodyExprAdd),
 }
 
-/// The body of `POST /api/odd`.
+/// The body and response of `POST /api/odd`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OddCreateBody {
@@ -231,25 +227,23 @@ pub struct OddCreateBody {
     pub pair: (String, f64),
     pub scores: BTreeMap<String, i64>,
     pub loose: OddCreateBodyLoose,
+    /// Always there: `None` is written `null`.
     pub loose_or_null: Option<OddCreateBodyLooseOrNull>,
     pub version: i64,
     pub level: OddCreateBodyLevel,
     pub anything: Value,
     pub chain: OddCreateBodyChain,
-    pub json: OddCreateBodyJson,
+    pub json: Value,
     #[serde(
         default,
         deserialize_with = "runtime::present_member",
         skip_serializing_if = "Option::is_none"
     )]
-    pub json_if_any: Option<OddCreateBodyJson>,
+    pub json_if_any: Option<Value>,
     pub expr: OddCreateBodyExpr,
-    #[serde(default = "default_odd_create_body_limit")]
+    /// `null` when left out.
+    #[serde(default)]
     pub limit: Option<i64>,
-}
-
-fn default_odd_create_body_limit() -> Option<i64> {
-    None
 }
 
 /// The same type as [`OddCreateBody`].
@@ -257,12 +251,15 @@ pub type OddCreateResponse = OddCreateBody;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShapesCreateBodyShapeCircle {
+    /// Greater than 0.
     pub radius: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShapesCreateBodyShapeRect {
+    /// Greater than 0.
     pub width: f64,
+    /// Greater than 0.
     pub height: f64,
 }
 
@@ -280,8 +277,10 @@ pub struct ShapesCreateBody {
     pub shape: ShapesCreateBodyShape,
     pub from: String,
     pub meta: ShapesCreateBodyMeta,
+    /// `"mm"` when left out.
     #[serde(default = "default_shapes_create_body_unit")]
     pub unit: ShapesCreateBodyUnit,
+    /// Always there: `None` is written `null`.
     pub note: Option<String>,
 }
 
@@ -300,6 +299,7 @@ pub struct ShapesCreateResponse {
     pub from: String,
     pub meta: ShapesCreateResponseMeta,
     pub unit: ShapesCreateResponseUnit,
+    /// Always there: `None` is written `null`.
     pub note: Option<String>,
 }
 
@@ -690,7 +690,7 @@ pub trait Handlers: Send + Sync + 'static {
     fn notes_create(
         &self,
         body: NotesCreateBody,
-    ) -> impl Future<Output = Result<NotesCreateResponse, NotesCreateError>> + Send;
+    ) -> impl Future<Output = Result<Note, NotesCreateError>> + Send;
 
     /// `DELETE /api/notes/{id}`
     fn notes_delete(
@@ -703,14 +703,14 @@ pub trait Handlers: Send + Sync + 'static {
     fn notes_retrieve(
         &self,
         params: NotesRetrieveParams,
-    ) -> impl Future<Output = Result<NotesRetrieveResponse, NotesRetrieveError>> + Send;
+    ) -> impl Future<Output = Result<Note, NotesRetrieveError>> + Send;
 
     /// `PUT /api/notes/{id}`
     fn notes_update(
         &self,
         params: NotesUpdateParams,
         body: NotesUpdateBody,
-    ) -> impl Future<Output = Result<NotesUpdateResponse, InternalError>> + Send;
+    ) -> impl Future<Output = Result<Note, InternalError>> + Send;
 
     /// `POST /api/odd`
     fn odd_create(
@@ -1131,39 +1131,41 @@ mod contract {
         properties: Some(&[
             ("items", Schema {
                 types: &[Type::Array],
-                items: Some(&Schema {
-                    types: &[Type::Object],
-                    properties: Some(&[
-                        ("title", Schema {
-                            types: &[Type::String],
-                            min_length: Some(1),
-                            max_length: Some(40),
-                            ..Schema::ANY
-                        }),
-                        ("tags", Schema {
-                            types: &[Type::Array],
-                            max_items: Some(4),
-                            items: Some(&Schema { types: &[Type::String], min_length: Some(1), ..Schema::ANY }),
-                            ..Schema::ANY
-                        }),
-                        ("pinned", Schema { types: &[Type::Boolean], ..Schema::ANY }),
-                        ("id", Schema { types: &[Type::String], ..Schema::ANY }),
-                        ("likes", Schema {
-                            types: &[Type::Integer],
-                            minimum: Some(-9_007_199_254_740_991.0),
-                            maximum: Some(9_007_199_254_740_991.0),
-                            ..Schema::ANY
-                        }),
-                    ]),
-                    required: &["title", "tags", "id", "likes"],
-                    additional: Additional::Refused,
-                    ..Schema::ANY
-                }),
+                items: Some(&NOTES_LIST_RESPONSE_NOTE),
                 ..Schema::ANY
             }),
             ("cursor", Schema { types: &[Type::String], ..Schema::ANY }),
         ]),
         required: &["items"],
+        additional: Additional::Refused,
+        ..Schema::ANY
+    };
+
+    pub(super) static NOTES_LIST_RESPONSE_NOTE: Schema = Schema {
+        types: &[Type::Object],
+        properties: Some(&[
+            ("title", Schema {
+                types: &[Type::String],
+                min_length: Some(1),
+                max_length: Some(40),
+                ..Schema::ANY
+            }),
+            ("tags", Schema {
+                types: &[Type::Array],
+                max_items: Some(4),
+                items: Some(&Schema { types: &[Type::String], min_length: Some(1), ..Schema::ANY }),
+                ..Schema::ANY
+            }),
+            ("pinned", Schema { types: &[Type::Boolean], ..Schema::ANY }),
+            ("id", Schema { types: &[Type::String], ..Schema::ANY }),
+            ("likes", Schema {
+                types: &[Type::Integer],
+                minimum: Some(-9_007_199_254_740_991.0),
+                maximum: Some(9_007_199_254_740_991.0),
+                ..Schema::ANY
+            }),
+        ]),
+        required: &["title", "tags", "id", "likes"],
         additional: Additional::Refused,
         ..Schema::ANY
     };
@@ -1190,6 +1192,11 @@ mod contract {
     };
 
     pub(super) static NOTES_CREATE_RESPONSE: Schema = Schema {
+        reference: Some(&NOTES_CREATE_RESPONSE_NOTE),
+        ..Schema::ANY
+    };
+
+    pub(super) static NOTES_CREATE_RESPONSE_NOTE: Schema = Schema {
         types: &[Type::Object],
         properties: Some(&[
             ("title", Schema {

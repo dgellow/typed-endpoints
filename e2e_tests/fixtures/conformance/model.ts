@@ -7,11 +7,12 @@ export const NoteBody = z.object({
   pinned: z.boolean().optional(),
 });
 
-/** A note as the server shows it. */
+// Named and described: generated code has one type for it, under this
+// name, with this documentation.
 export const Note = NoteBody.extend({
   id: z.string(),
   likes: z.number().int(),
-});
+}).meta({ id: "Note", description: "A note as the server shows it." });
 
 export type Note = z.output<typeof Note>;
 

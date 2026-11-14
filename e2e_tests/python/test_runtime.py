@@ -16,7 +16,7 @@ from pydantic import TypeAdapter
 
 import api_generated as api
 
-NOTE: TypeAdapter[Any] = TypeAdapter(api.NotesRetrieveResponse)
+NOTE: TypeAdapter[Any] = TypeAdapter(api.Note)
 ERRORS: dict[int, TypeAdapter[Any]] = {404: TypeAdapter(api.NotFound)}
 
 
@@ -49,7 +49,7 @@ class Respond(unittest.TestCase):
         self.assertEqual(respond(note), (200, note))
         # A model instance is sent without the fields that were not set.
         self.assertEqual(
-            respond(api.NotesRetrieveResponse.model_validate(note)), (200, note)
+            respond(api.Note.model_validate(note)), (200, note)
         )
 
     def test_a_value_the_model_rejects_is_a_500(self) -> None:
@@ -67,12 +67,12 @@ class Respond(unittest.TestCase):
     def test_a_model_instance_is_checked_again(self) -> None:
         # Pydantic trusts an instance. One built unchecked, or changed
         # after it was built, is not what its model describes.
-        unchecked = api.NotesRetrieveResponse.model_construct(
+        unchecked = api.Note.model_construct(
             id="1", likes=0, title="", tags=[]
         )
         self.assertEqual(respond(unchecked), (500, {"error": "Internal Server Error"}))
 
-        changed = api.NotesRetrieveResponse(id="1", likes=0, title="t", tags=[])
+        changed = api.Note(id="1", likes=0, title="t", tags=[])
         changed.title = ""
         self.assertEqual(respond(changed), (500, {"error": "Internal Server Error"}))
 

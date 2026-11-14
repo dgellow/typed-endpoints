@@ -9,6 +9,7 @@ import { z } from "zod";
 import type { JsonSchema } from "./index.ts";
 import {
   type Definition,
+  isJson,
   pascalCase,
   TypeGraph,
   type TypeNode,
@@ -521,6 +522,41 @@ Deno.test("type graph: an intersection of objects is one object", () => {
   }]);
   // Of anything else, it is not stated.
   assertEquals(typeOf(z.intersection(z.string(), z.number())), { kind: "any" });
+});
+
+Deno.test("type graph: isJson() recognises the definition that is JSON itself", () => {
+  type Json =
+    | string
+    | number
+    | boolean
+    | null
+    | Json[]
+    | { [key: string]: Json };
+  const json = (text: z.ZodType): z.ZodType<Json> => {
+    const Json: z.ZodType<Json> = z.union([
+      text,
+      z.number(),
+      z.boolean(),
+      z.null(),
+      z.array(z.lazy(() => Json)),
+      z.record(z.string(), z.lazy(() => Json)),
+    ]) as z.ZodType<Json>;
+    return Json;
+  };
+  const verdicts = (schema: z.ZodType) =>
+    graphOf(z.object({ data: schema })).definitions.map((definition) =>
+      [definition.name, isJson(definition)] as const
+    );
+
+  assertEquals(verdicts(json(z.string())), [
+    ["ThingData", true],
+    ["Thing", false],
+  ]);
+  // A bound makes it a type of its own.
+  assertEquals(verdicts(json(z.string().max(3))), [
+    ["ThingData", false],
+    ["Thing", false],
+  ]);
 });
 
 Deno.test("type graph: withoutNull() splits a nullable type", () => {
