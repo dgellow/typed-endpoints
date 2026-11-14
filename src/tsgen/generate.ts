@@ -445,21 +445,31 @@ const PAGINATION_FIELDS: Record<AnyPaginationMeta["style"], string[]> = {
   url: ["nextUrl", "prevUrl"],
 };
 
-function renderPagination(meta: AnyPaginationMeta, indent: string): string[] {
+/** The fields of pagination metadata that have a value, in output order. */
+function paginationEntries(meta: AnyPaginationMeta): [string, string][] {
   const values = meta as unknown as Record<string, string | undefined>;
-  const fields = [
-    "style",
-    "items",
-    "limitParam",
-    ...PAGINATION_FIELDS[meta.style],
-  ];
+  return ["style", "items", "limitParam", ...PAGINATION_FIELDS[meta.style]]
+    .filter((field) => values[field])
+    .map((field) => [field, values[field] as string]);
+}
+
+function renderPagination(meta: AnyPaginationMeta, indent: string): string[] {
   return [
     `${indent}pagination: {`,
-    ...fields
-      .filter((field) => values[field])
-      .map((field) => `${indent}  ${field}: ${JSON.stringify(values[field])};`),
+    ...paginationEntries(meta).map(([field, value]) =>
+      `${indent}  ${field}: ${JSON.stringify(value)};`
+    ),
     `${indent}};`,
   ];
+}
+
+/** Pagination metadata as a value, for the route table. */
+function paginationValue(meta: AnyPaginationMeta): string {
+  return `{ ${
+    paginationEntries(meta).map(([field, value]) =>
+      `${field}: ${JSON.stringify(value)}`
+    ).join(", ")
+  } }`;
 }
 
 /**
@@ -593,14 +603,20 @@ function generateClientFormat(
   lines.push("");
 
   // The same routes as a value: how the client turns `users.posts.list`
-  // into a method and a URL. Types are erased, so it cannot read `Api`.
+  // into a method and a URL, and how it finds the next page of a paginated
+  // endpoint. Types are erased, so it cannot read `Api`.
   lines.push("/** Pass to `createClient<Api>({ baseUrl, routes })`. */");
   lines.push("export const routes = {");
   for (const { endpoint, segments, methodName } of placed) {
+    const pagination = endpoint.pagination
+      ? `, pagination: ${paginationValue(endpoint.pagination)}`
+      : "";
     lines.push(
       `  ${JSON.stringify([...segments, methodName].join("."))}: { method: ${
         JSON.stringify(endpoint.method)
-      }, path: ${JSON.stringify(apiPathToClientTemplate(endpoint.path))} },`,
+      }, path: ${
+        JSON.stringify(apiPathToClientTemplate(endpoint.path))
+      }${pagination} },`,
     );
   }
   lines.push("} as const;");

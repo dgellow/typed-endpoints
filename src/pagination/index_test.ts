@@ -870,3 +870,143 @@ Deno.test("url.paginated merges extraResponse into a parent shared with a pagina
   });
   assertEquals(result.__pagination.nextUrl, "links.next");
 });
+
+// =============================================================================
+// page(): building the response of a page
+// =============================================================================
+
+const SAMPLE = [
+  { id: "1", name: "Ada", email: "ada@example.test" },
+  { id: "2", name: "Grace", email: "grace@example.test" },
+];
+
+Deno.test("page() builds a response the helper's schema accepts, for every style", () => {
+  const byCursor = cursor.paginated({
+    item: UserSchema,
+    names: { items: "data", cursor: "nextCursor" },
+  });
+  const cursorPage = byCursor.page({ items: SAMPLE, cursor: "abc" });
+  assertEquals(cursorPage, { data: SAMPLE, nextCursor: "abc" });
+  assertEquals(byCursor.response.parse(cursorPage), cursorPage);
+  // The last page has no cursor: the field is left out.
+  assertEquals(byCursor.page({ items: [], cursor: null }), { data: [] });
+  assertEquals(byCursor.page({ items: [] }), { data: [] });
+
+  const byId = cursorId.paginated({ item: UserSchema });
+  const idPage = byId.page({ items: SAMPLE });
+  assertEquals(idPage, { items: SAMPLE });
+  assertEquals(byId.response.parse(idPage), idPage);
+
+  const byOffset = offset.paginated({
+    item: UserSchema,
+    names: { total: "count" },
+  });
+  const offsetPage = byOffset.page({ items: SAMPLE, total: 12 });
+  assertEquals(offsetPage, { items: SAMPLE, count: 12 });
+  assertEquals(byOffset.response.parse(offsetPage), offsetPage);
+
+  const byPage = page.paginated({
+    item: UserSchema,
+    names: { total: "total", totalPages: "pages" },
+  });
+  const numbered = byPage.page({ items: SAMPLE, total: 12, totalPages: 6 });
+  assertEquals(numbered, { items: SAMPLE, total: 12, pages: 6 });
+  assertEquals(byPage.response.parse(numbered), numbered);
+
+  const byUrl = url.paginated({
+    item: UserSchema,
+    names: {
+      items: "data.users",
+      nextUrl: "links.next",
+      prevUrl: "links.prev",
+    },
+  });
+  const linked = byUrl.page({
+    items: SAMPLE,
+    next: "/users?page=3",
+    prev: "/users?page=1",
+  });
+  assertEquals(linked, {
+    data: { users: SAMPLE },
+    links: { next: "/users?page=3", prev: "/users?page=1" },
+  });
+  assertEquals(byUrl.response.parse(linked), linked);
+  // A page without links: the object that would hold them is still there,
+  // as the schema requires.
+  const only = byUrl.page({ items: [] });
+  assertEquals(only, { data: { users: [] }, links: {} });
+  assertEquals(byUrl.response.parse(only), only);
+  assertEquals(byUrl.page({ items: [], next: null, prev: null }), only);
+
+  // Top-level link fields need no parent.
+  const flat = url.paginated({ item: UserSchema });
+  const flatPage: unknown = flat.page({ items: [] });
+  assertEquals(flatPage, { items: [] });
+  assertEquals(flat.response.safeParse(flatPage).success, true);
+});
+
+Deno.test("page() takes the extra response fields the helper declares", () => {
+  const withExtra = offset.paginated({
+    item: UserSchema,
+    extraResponse: { took: z.number(), source: z.string() },
+  });
+  const built = withExtra.page({
+    items: SAMPLE,
+    total: 2,
+    extra: { took: 12, source: "cache" },
+  });
+  assertEquals(built, { items: SAMPLE, total: 2, took: 12, source: "cache" });
+  assertEquals(withExtra.response.parse(built), built);
+
+  // An extra field that shares a parent with a pagination field.
+  const shared = url.paginated({
+    item: UserSchema,
+    names: { nextUrl: "links.next" },
+    extraResponse: { links: z.object({ self: z.string() }) },
+  });
+  assertEquals(
+    shared.page({
+      items: [],
+      next: "/users?page=2",
+      extra: { links: { self: "/users?page=1" } },
+    }),
+    { items: [], links: { next: "/users?page=2", self: "/users?page=1" } },
+  );
+});
+
+Deno.test("page() checks its argument against the helper's configuration", () => {
+  const byOffset = offset.paginated({ item: UserSchema });
+  const byPage = page.paginated({
+    item: UserSchema,
+    names: { totalPages: "pages" },
+  });
+  const withExtra = cursor.paginated({
+    item: UserSchema,
+    extraResponse: { took: z.number() },
+  });
+  const never = false as boolean;
+  if (never) {
+    // @ts-expect-error an offset page needs the total
+    byOffset.page({ items: SAMPLE });
+    // @ts-expect-error the helper declares a page count
+    byPage.page({ items: SAMPLE });
+    // @ts-expect-error the helper declares no total
+    byPage.page({ items: SAMPLE, totalPages: 1, total: 2 });
+    // @ts-expect-error an item lacks `email`
+    byOffset.page({ items: [{ id: "1", name: "Ada" }], total: 1 });
+    // @ts-expect-error the declared extra field is missing
+    withExtra.page({ items: SAMPLE });
+    // @ts-expect-error `took` is a number
+    withExtra.page({ items: SAMPLE, extra: { took: "fast" } });
+  }
+});
+
+Deno.test("page() stays out of a spread: endpoint() gets schemas and metadata only", () => {
+  const helper = cursor.paginated({ item: UserSchema });
+  assertEquals(Object.keys({ ...helper }).sort(), [
+    "__pagination",
+    "query",
+    "response",
+  ]);
+  assertEquals(typeof helper.page, "function");
+});

@@ -169,9 +169,14 @@ export async function extractRoutes(
         }
       }
 
+      // A query schema without fields (the URL pagination style has one)
+      // describes no parameter: it is left out, not written as `{}`.
+      const withFields = (query: string | undefined) =>
+        query === undefined || query === "{}" ? {} : { query };
+
       methods[method] = {
         ...(def.body && { body: render("body", def.body, "input", "json") }),
-        ...(def.query && { query: render("query", def.query, "input") }),
+        ...withFields(def.query && render("query", def.query, "input")),
         ...(def.params && { params: render("params", def.params, "input") }),
         ...(def.response && {
           response: render("response", def.response, "output", "json"),
