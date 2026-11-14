@@ -42,9 +42,13 @@ export {
 
 // Fresh adapter
 export {
+  type ApiDefOf,
+  type ApiHandlers,
   createApiHandlers,
   endpoint,
   type FreshApiMethodDef,
+  type FreshSseMethodDef,
+  sseEndpoint,
 } from "./integrations/fresh.ts";
 
 // Protocol type generation
