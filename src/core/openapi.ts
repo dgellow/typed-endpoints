@@ -3,16 +3,16 @@ import {
   OpenApiGeneratorV31,
   OpenAPIRegistry,
 } from "@asteasolutions/zod-to-openapi";
-import { toFileUrl } from "@std/path";
 import { z } from "zod";
 import type { ApiDef, ApiMethodDef, HttpMethod } from "./types.ts";
 import type { AnyPaginationMeta } from "../pagination/types.ts";
 import {
   apiPathToTemplate,
-  collectRouteFiles,
   deriveOperationId,
   filePathToApiPath,
+  fileUrlOf,
   HTTP_METHODS,
+  listRouteFiles,
 } from "./routes.ts";
 
 /** Extended method def that may include pagination metadata */
@@ -107,10 +107,7 @@ export async function generateOpenApiSpec(
 
   const registry = new OpenAPIRegistry();
 
-  const routeFiles: string[] = [];
-  for await (const entry of Deno.readDir(routesDir)) {
-    await collectRouteFiles(routesDir, entry, routeFiles);
-  }
+  const routeFiles = await listRouteFiles(routesDir);
 
   // Cache-bust timestamp for fresh imports during build
   const cacheBuster = `?t=${Date.now()}`;
@@ -121,8 +118,7 @@ export async function generateOpenApiSpec(
   for (const filePath of routeFiles) {
     let apiDef: ApiDef | undefined;
     try {
-      const absolutePath = await Deno.realPath(filePath);
-      const fileUrl = toFileUrl(absolutePath).href + cacheBuster;
+      const fileUrl = await fileUrlOf(filePath) + cacheBuster;
       apiDef = ((await import(fileUrl)) as RouteModule).handler?.__apiDef;
     } catch (error) {
       if (!strict) console.warn(`Failed to process route ${filePath}:`, error);

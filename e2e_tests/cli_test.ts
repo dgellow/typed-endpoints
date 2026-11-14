@@ -206,7 +206,7 @@ Deno.test("CLI rejects a misspelled option and writes nothing", async () => {
   try {
     const result = await runCli("-r", ROUTES, "-o", out, "--formt", "client");
     assertEquals(result.code, 1);
-    assertEquals(result.stderr.includes('Unknown argument "--formt"'), true);
+    assertEquals(result.stderr.includes("Unknown option '--formt'"), true);
     assertEquals(
       await Deno.stat(out).then(() => true, () => false),
       false,

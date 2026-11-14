@@ -1,1 +1,1 @@
-export { collectRouteFiles, shouldSkipFile } from "../core/routes.ts";
+export { listRouteFiles, shouldSkipFile } from "../core/routes.ts";

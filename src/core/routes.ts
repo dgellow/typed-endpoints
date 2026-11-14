@@ -4,9 +4,14 @@
  * Routes follow Fresh's file-routing conventions: `[param]` segments,
  * `[...rest]` catch-alls, `(group)` folders, `index` files.
  *
+ * File access goes through `node:` modules, which Deno, Bun and Node
+ * provide alike.
+ *
  * @module
  */
 
+import { readdir, realpath, stat } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 import type { HttpMethod } from "./types.ts";
 
 export const HTTP_METHODS: readonly HttpMethod[] = [
@@ -35,37 +40,51 @@ export function shouldSkipFile(name: string): boolean {
   );
 }
 
-/** Recursively collect route files below `baseDir` into `files`. */
-export async function collectRouteFiles(
-  baseDir: string,
-  entry: Deno.DirEntry,
-  files: string[],
-): Promise<void> {
-  // Skip hidden files and directories
-  if (entry.name.startsWith(".")) return;
+/**
+ * The route files below `dir`, sorted by path.
+ *
+ * Follows symbolic links, skips hidden entries and the files
+ * `shouldSkipFile` names. Paths are `dir` joined with `/`, whatever the
+ * platform, because they are turned into URL paths.
+ */
+export async function listRouteFiles(dir: string): Promise<string[]> {
+  const files: string[] = [];
 
-  const fullPath = `${baseDir}/${entry.name}`;
-  const isSource = /\.(ts|tsx)$/.test(entry.name);
+  async function walk(current: string): Promise<void> {
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      // Skip hidden files and directories
+      if (entry.name.startsWith(".")) continue;
 
-  let isDirectory = entry.isDirectory;
-  let isFile = entry.isFile;
-  if (entry.isSymlink) {
-    try {
-      const stat = await Deno.stat(fullPath);
-      isDirectory = stat.isDirectory;
-      isFile = stat.isFile;
-    } catch {
-      return; // Broken symlink
+      const fullPath = `${current}/${entry.name}`;
+      let isDirectory = entry.isDirectory();
+      let isFile = entry.isFile();
+      if (entry.isSymbolicLink()) {
+        try {
+          const target = await stat(fullPath);
+          isDirectory = target.isDirectory();
+          isFile = target.isFile();
+        } catch {
+          continue; // Broken symlink
+        }
+      }
+
+      if (isDirectory) {
+        await walk(fullPath);
+      } else if (
+        isFile && /\.(ts|tsx)$/.test(entry.name) && !shouldSkipFile(entry.name)
+      ) {
+        files.push(fullPath);
+      }
     }
   }
 
-  if (isDirectory) {
-    for await (const subEntry of Deno.readDir(fullPath)) {
-      await collectRouteFiles(fullPath, subEntry, files);
-    }
-  } else if (isFile && isSource && !shouldSkipFile(entry.name)) {
-    files.push(fullPath);
-  }
+  await walk(dir);
+  return files.sort();
+}
+
+/** The `file:` URL of a path, with symbolic links resolved. */
+export async function fileUrlOf(path: string): Promise<string> {
+  return pathToFileURL(await realpath(path)).href;
 }
 
 // =============================================================================
