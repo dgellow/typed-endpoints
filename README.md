@@ -1096,7 +1096,7 @@ The DSL maps category theory concepts from André's research to TypeScript:
 | `repeat()`        | Kleene Star (*)         | Zero-or-more repetitions                      |
 | `repeat1()`       | Kleene Plus (+)         | One-or-more repetitions                       |
 | `choice()`        | Coproduct (+)           | One of several alternatives                   |
-| `branch()`        | Conditional             | Branch based on predicate                     |
+| `branch()`        | Conditional             | Branch on the response of an earlier step     |
 | `parallel()`      | Tensor (⊗)              | Concurrent execution                          |
 
 `sequence()`, `repeat()`, `repeat1()`, `choice()`, `branch()` and `parallel()`
@@ -1109,14 +1109,14 @@ A composition has a request type and a response type of its own, computed from
 its nodes (`PlanOf`, `ResultOf`). The definitions are the ones of André Videla's
 containers:
 
-| Node             | Request (`PlanOf`)                                         | Response (`ResultOf`)        |
-| ---------------- | ---------------------------------------------------------- | ---------------------------- |
-| step             | the step's request                                         | the step's response          |
-| `sequence(a, b)` | `{ first: PlanOf<a>, rest: (result) => PlanOf<b> }`        | `[ResultOf<a>, ResultOf<b>]` |
-| `repeat(a)`      | `undefined`, or `{ next: PlanOf<a>, rest: (result) => … }` | `ResultOf<a>[]`              |
-| `choice(a, b)`   | `{ choose, plan }` for one option                          | `{ choice, result }`         |
-| `branch(p, …)`   | `{ ifTrue: (prev) => plan, ifFalse: (prev) => plan }`      | `{ holds, result }`          |
-| `parallel(a, b)` | `[PlanOf<a>, PlanOf<b>]`                                   | `[ResultOf<a>, ResultOf<b>]` |
+| Node              | Request (`PlanOf`)                                         | Response (`ResultOf`)        |
+| ----------------- | ---------------------------------------------------------- | ---------------------------- |
+| step              | the step's request                                         | the step's response          |
+| `sequence(a, b)`  | `{ first: PlanOf<a>, rest: (result) => PlanOf<b> }`        | `[ResultOf<a>, ResultOf<b>]` |
+| `repeat(a)`       | `undefined`, or `{ next: PlanOf<a>, rest: (result) => … }` | `ResultOf<a>[]`              |
+| `choice(a, b)`    | `{ choose, plan }` for one option                          | `{ choice, result }`         |
+| `branch(s, p, …)` | `{ ifTrue: (prev) => plan, ifFalse: (prev) => plan }`      | `{ holds, result }`          |
+| `parallel(a, b)`  | `[PlanOf<a>, PlanOf<b>]`                                   | `[ResultOf<a>, ResultOf<b>]` |
 
 `rest` of a sequence receives the result of the first node and returns the plan
 of the remaining ones. `rest` of a repetition receives the result of one run and
@@ -1162,14 +1162,14 @@ const poll = (id: string): PlanOf<typeof polling> => ({
 });
 ```
 
-The predicate of a `branch` is asked about the result of the node before it in
-the enclosing sequence. When the predicate is a type guard, each side of the
-plan receives its half of the type:
+The predicate of a `branch` is asked about the latest response of the step it
+names. When the predicate is a type guard, each side of the plan receives its
+half of the type:
 
 ```typescript
 const login = sequence(
   authorize,
-  branch((prev: AuthResponse) => prev.type === "success", {
+  branch(authorize, (prev) => prev.type === "success", {
     then: exchange,
     else: report,
   }),
@@ -1184,10 +1184,45 @@ await runPlan(login, {
 }, executor);
 ```
 
-A sequence whose branch cannot be asked about the result before it (the
-predicate takes an `AuthResponse`, the node before it returns something else)
-has no plan: `PlanOf` is an uninhabited type that names both sides of the
-mismatch.
+The empty sequence, `sequence()`, is the node that does nothing: its plan is
+`undefined` and its result `[]`. It is the other side of a branch that has
+nothing to do.
+
+#### What a plan knows
+
+`PlanOf` computes, for every point of a composition, which steps have certainly
+run there and what their latest response is known to be (`Known`, `After`). A
+step that cannot run with that knowledge has the plan type `NotReady`, which no
+value has, so the composition cannot be run:
+
+| Composition                                                                      | Why it has no plan                                                                               |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `sequence(exchange, authorize)`                                                  | `exchange` runs before the step it depends on                                                    |
+| `sequence(authorize, exchange)`                                                  | `exchange` follows a success only (`when`); `authorize` may have failed. It needs a `branch`     |
+| `branch(authorize, isSuccess, { then: report, else: exchange })`                 | wrong side: there the response is the error variant                                              |
+| `sequence(exchange, exchange)` after a success                                   | `exchange` revokes `authorize`; the second run has nothing to follow                             |
+| `repeat(exchange)` after a success                                               | same, from the second run on                                                                     |
+| `parallel(authorize, exchange)`                                                  | the arms do not see each other                                                                   |
+| `sequence(exchange, refresh)`, `refresh` forwarding the optional `refresh_token` | the field is not known to have a value; it needs `branch(exchange, present("refresh_token"), …)` |
+
+How knowledge flows:
+
+- after a step: its response is known, what it revokes is forgotten
+- after a `repeat`: what holds whether it ran or not
+- after a `choice` or a `branch`: what every option agrees on
+- after a `parallel`: what any arm established, less what any arm revokes
+- on the sides of a `branch`: the response of the step it names, narrowed
+
+The uninhabited type says what is missing:
+`NotReady<"exchange", { authorize:
+Success }, { authorize: Success | Failure }>`
+reads "this step cannot run here; it needs `authorize` to be `Success`; known
+here: `Success | Failure`".
+
+A helper that returns part of a plan names what is known where it is used:
+`PlanOf<typeof pages, { login: LoggedIn }>`. `e2e_tests/plan_http_test.ts` runs
+such a plan over HTTP: a login, a branch on its outcome, then every page of a
+cursor-paginated endpoint as a repetition.
 
 What the runner guarantees:
 
@@ -1209,8 +1244,9 @@ What the runner guarantees:
   rejected with `PlanError`, whose `at` is the position in the node tree
   (`sequence[1][0]`).
 
-Not checked by the types: that the dependency of a dependent step ran earlier in
-the plan. It is a `StepNotAvailableError` at run time.
+The conditions `PlanOf` checks are checked again when the plan runs, for a plan
+that got past the types: `StepNotAvailableError` for a dependency that has not
+run, `StepRefusedError` for a response the step cannot follow.
 
 No plan has a member called `then`. A continuation may be async, and JavaScript
 treats a value with a `then` method as a promise.

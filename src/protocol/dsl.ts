@@ -404,30 +404,81 @@ export function choice<const TSteps extends readonly ProtocolNode[]>(
 }
 
 /**
- * Create a conditional branch based on predicate.
+ * Create a conditional branch on the response of an earlier step.
+ *
+ * The predicate is asked about the latest response of `on`. Written as a
+ * plain comparison, e.g. `(prev) => prev.type === "success"`, TypeScript
+ * infers a type guard: the `then` side then knows the response as the
+ * narrowed type and the `else` side as the rest, which is what makes a
+ * step with a `when` condition available on one side only (see `PlanOf`).
  *
  * @example
  * ```typescript
- * const next = branch(
- *   (prev) => prev.type === "success",
- *   { then: exchangeStep, else: errorStep }
+ * const login = sequence(
+ *   authorize,
+ *   branch(authorize, (prev) => prev.type === "success", {
+ *     then: exchange,
+ *     else: reportError,
+ *   }),
  * );
  * ```
+ *
+ * @param on The step whose response decides, as the step object.
+ * @param predicate Decides the side.
+ * @param branches The node of each side.
  */
 export function branch<
-  TPredicate extends (prev: never) => boolean,
+  const TOn extends StepRef,
+  TNarrow extends StepRefResponse<TOn>,
   TThen extends ProtocolNode,
   TElse extends ProtocolNode,
 >(
-  predicate: TPredicate,
-  branches: { then: TThen; else: TElse },
-): Branch<TPredicate, TThen, TElse> {
-  return {
+  on: TOn,
+  predicate: (prev: StepRefResponse<TOn>) => prev is TNarrow,
+  branches: { readonly then: TThen; readonly else: TElse },
+): Branch<
+  TOn["name"],
+  TNarrow,
+  Exclude<StepRefResponse<TOn>, TNarrow>,
+  TThen,
+  TElse
+>;
+/**
+ * Create a conditional branch whose predicate is not a type guard: both
+ * sides know the response by its full type.
+ */
+export function branch<
+  const TOn extends StepRef,
+  TThen extends ProtocolNode,
+  TElse extends ProtocolNode,
+>(
+  on: TOn,
+  predicate: (prev: StepRefResponse<TOn>) => boolean,
+  branches: { readonly then: TThen; readonly else: TElse },
+): Branch<
+  TOn["name"],
+  StepRefResponse<TOn>,
+  StepRefResponse<TOn>,
+  TThen,
+  TElse
+>;
+export function branch(
+  on: StepRef,
+  // deno-lint-ignore no-explicit-any
+  predicate: (prev: any) => boolean,
+  branches: { readonly then: ProtocolNode; readonly else: ProtocolNode },
+  // The overloads carry the types; `any` because the erased overload
+  // return type is not comparable with `Branch`.
+  // deno-lint-ignore no-explicit-any
+): any {
+  const node: Branch = {
     __kind: "branch",
+    on: on.name,
     predicate,
     then: branches.then,
     else: branches.else,
   };
+  return node;
 }
 
 /**

@@ -10,11 +10,12 @@
 import { assertEquals, assertInstanceOf, assertRejects } from "@std/assert";
 import { z } from "zod";
 
-import type { StepExecutor } from "./client.ts";
+import { present, type StepExecutor } from "./client.ts";
 import {
   branch,
   choice,
   dependentStep,
+  mappedStep,
   parallel,
   repeat,
   repeat1,
@@ -22,6 +23,7 @@ import {
   sequence,
   step,
 } from "./dsl.ts";
+import { fromStep } from "./mapping.ts";
 import {
   InvalidRequestError,
   InvalidResponseError,
@@ -29,6 +31,7 @@ import {
   StepRefusedError,
 } from "./errors.ts";
 import {
+  type After,
   each,
   PlanError,
   type PlanOf,
@@ -439,12 +442,13 @@ Deno.test("plan: a plan returned from an async continuation is not a promise", a
 });
 
 // -----------------------------------------------------------------------------
-// Branch: the plan of each side receives the narrowed response
+// What a plan knows: dependencies, variants, revocation
 // -----------------------------------------------------------------------------
 
 const AuthSuccess = z.object({ type: z.literal("success"), code: z.string() });
 const AuthError = z.object({ type: z.literal("error"), reason: z.string() });
-type AuthResponse = z.infer<typeof AuthSuccess> | z.infer<typeof AuthError>;
+type Success = z.infer<typeof AuthSuccess>;
+type Failure = z.infer<typeof AuthError>;
 
 const authorize = step({
   name: "authorize",
@@ -452,16 +456,29 @@ const authorize = step({
   response: z.discriminatedUnion("type", [AuthSuccess, AuthError]),
 });
 
+// Follows a successful authorization only, and spends it.
 const exchange = revoking(
   dependentStep({
     name: "exchange",
     dependsOn: authorize,
     when: (prev) => prev.type === "success",
     request: (prev) => z.object({ code: z.literal(prev.code) }),
-    response: z.object({ token: z.string() }),
+    response: z.object({
+      token: z.string(),
+      refresh_token: z.string().optional(),
+    }),
   }),
   ["authorize"],
 );
+
+// Forwards a field the token response may not have.
+const refresh = mappedStep({
+  name: "refresh",
+  dependsOn: "exchange",
+  requestMapping: { refresh_token: fromStep("exchange", "refresh_token") },
+  requestSchema: z.object({ refresh_token: z.string() }),
+  response: z.object({ token: z.string() }),
+});
 
 const report = step({
   name: "report",
@@ -471,36 +488,53 @@ const report = step({
 
 const login = sequence(
   authorize,
-  branch(
-    (prev: AuthResponse) => prev.type === "success",
-    { then: exchange, else: report },
-  ),
+  branch(authorize, (prev) => prev.type === "success", {
+    then: exchange,
+    else: report,
+  }),
 );
 
-function authServer(outcome: "success" | "error"): StepExecutor & {
-  readonly log: string[];
-} {
+function authServer(
+  outcome: "success" | "error",
+  options: { readonly refreshToken?: string } = {},
+): StepExecutor & { readonly log: string[] } {
   const log: string[] = [];
   return {
     log,
     // deno-lint-ignore no-explicit-any
     execute(name: string, request: any) {
       log.push(name);
-      if (name === "authorize") {
-        return Promise.resolve(
-          outcome === "success"
-            ? { type: "success", code: "c0de" }
-            : { type: "error", reason: "denied" },
-        );
+      switch (name) {
+        case "authorize":
+          return Promise.resolve(
+            outcome === "success"
+              ? { type: "success", code: "c0de" }
+              : { type: "error", reason: "denied" },
+          );
+        case "exchange":
+          return Promise.resolve({
+            token: `token-for-${request.code}`,
+            ...(options.refreshToken &&
+              { refresh_token: options.refreshToken }),
+          });
+        case "refresh":
+          return Promise.resolve({ token: `via-${request.refresh_token}` });
+        case "ping":
+          return Promise.resolve(request);
+        default:
+          return Promise.resolve({ reported: true });
       }
-      if (name === "exchange") {
-        return Promise.resolve({ token: `token-for-${request.code}` });
-      }
-      if (name === "ping") return Promise.resolve(request);
-      return Promise.resolve({ reported: true });
     },
   };
 }
+
+// deno-lint-ignore no-explicit-any
+const runUntyped = runPlan as (...args: any[]) => Promise<unknown>;
+
+/** Whether a plan type is one no value has. */
+type Uninhabited<T> = [T] extends [never] ? false
+  : [T] extends [{ readonly "no plan exists": never }] ? true
+  : false;
 
 Deno.test("plan: a branch runs the side its predicate selects", async () => {
   const plan: PlanOf<typeof login> = {
@@ -531,7 +565,11 @@ Deno.test("plan: a branch runs the side its predicate selects", async () => {
   }
 });
 
-Deno.test("plan: the sides of a branch see the narrowed type only", () => {
+Deno.test("plan: the sides of a branch see their half of the response", () => {
+  type Sides = Awaited<ReturnType<PlanOf<typeof login>["rest"]>>;
+  assertType<Equal<Parameters<Sides["ifTrue"]>[0], Success>>();
+  assertType<Equal<Parameters<Sides["ifFalse"]>[0], Failure>>();
+
   const never = false as boolean;
   if (never) {
     runPlan(login, {
@@ -546,66 +584,209 @@ Deno.test("plan: the sides of a branch see the narrowed type only", () => {
   }
 });
 
-Deno.test("plan: a branch that cannot be asked about the result before it has no plan", () => {
-  // `ping` returns `{ n }`; the predicate asks about an `AuthResponse`.
-  const mismatched = sequence(
-    ping,
-    branch(
-      (prev: AuthResponse) => prev.type === "success",
-      { then: ping, else: ping },
-    ),
-  );
+Deno.test("plan: a step has no plan before its dependency has run", () => {
+  // Alone, and before `authorize`.
+  assertType<Uninhabited<PlanOf<typeof exchange>>>();
+  const reversed = sequence(exchange, authorize);
+  assertType<Uninhabited<PlanOf<typeof reversed>["first"]>>();
+
+  // After it, the step is ready on the side that knows the variant.
+  type Sides = Awaited<ReturnType<PlanOf<typeof login>["rest"]>>;
+  assertType<
+    Equal<Awaited<ReturnType<Sides["ifTrue"]>>, { code: string }>
+  >();
+
   const never = false as boolean;
   if (never) {
-    runPlan(
-      mismatched,
-      {
-        // @ts-expect-error: no plan exists for this sequence
-        first: { n: 1 },
-        rest: () => ({ ifTrue: () => ({ n: 1 }), ifFalse: () => ({ n: 1 }) }),
-      },
-      echo,
-    );
+    // @ts-expect-error: no plan exists
+    runPlan(exchange, { code: "c0de" }, authServer("success"));
 
-    // At the top there is no result before the branch.
-    const top = branch(
-      (prev: AuthResponse) => prev.type === "success",
-      { then: ping, else: ping },
-    );
-    runPlan(
-      top,
-      // @ts-expect-error: the predicate would be asked about `undefined`
-      { ifTrue: () => ({ n: 1 }), ifFalse: () => ({ n: 1 }) },
-      echo,
-    );
+    runPlan(reversed, {
+      // @ts-expect-error: `exchange` runs before `authorize`
+      first: { code: "c0de" },
+      rest: () => ({ client: "app" }),
+    }, authServer("success"));
   }
-
-  // Through a repetition, the branch is still asked about what precedes
-  // the repetition.
-  const retried = sequence(
-    authorize,
-    repeat(
-      branch(
-        (prev: AuthResponse) => prev.type === "success",
-        { then: ping, else: report },
-      ),
-    ),
-  );
-  assertType<
-    Equal<
-      Parameters<PlanOf<typeof retried>["rest"]>[0],
-      AuthResponse
-    >
-  >();
 });
 
-Deno.test("plan: the rules of dependent steps hold inside a plan", async () => {
+Deno.test("plan: a step that follows one variant needs a branch", () => {
+  // `authorize` may have failed: `exchange` cannot follow it directly.
+  const unchecked = sequence(authorize, exchange);
+  type Rest = Awaited<ReturnType<PlanOf<typeof unchecked>["rest"]>>;
+  assertType<Uninhabited<Rest>>();
+  // The plan type says what is missing.
+  assertType<Equal<Rest["it needs"], { readonly authorize: Success }>>();
+  assertType<
+    Equal<Rest["known here"]["authorize"], Success | Failure>
+  >();
+
+  const never = false as boolean;
+  if (never) {
+    runPlan(unchecked, {
+      first: { client: "app" },
+      // @ts-expect-error: `authorize` is not known to have succeeded
+      rest: () => ({ code: "c0de" }),
+    }, authServer("success"));
+  }
+
+  // On the wrong side of the branch it is not ready either.
+  const wrongSide = sequence(
+    authorize,
+    branch(authorize, (prev) => prev.type === "success", {
+      then: report,
+      else: exchange,
+    }),
+  );
+  type WrongSides = Awaited<ReturnType<PlanOf<typeof wrongSide>["rest"]>>;
+  assertType<Uninhabited<Awaited<ReturnType<WrongSides["ifFalse"]>>>>();
+});
+
+Deno.test("plan: what a step revokes is not known after it", () => {
+  // `exchange` spends the authorization: there is no second exchange.
+  const twice = sequence(
+    authorize,
+    branch(authorize, (prev) => prev.type === "success", {
+      then: sequence(exchange, exchange),
+      else: report,
+    }),
+  );
+  type Sides = Awaited<ReturnType<PlanOf<typeof twice>["rest"]>>;
+  type Then = Awaited<ReturnType<Sides["ifTrue"]>>;
+  assertType<Equal<Then["first"], { code: string }>>();
+  assertType<Uninhabited<Awaited<ReturnType<Then["rest"]>>>>();
+
+  // A repetition cannot spend what it does not renew: its second run
+  // would have no authorization.
+  const spending = sequence(
+    authorize,
+    branch(authorize, (prev) => prev.type === "success", {
+      then: repeat(exchange),
+      else: report,
+    }),
+  );
+  type SpendingSides = Awaited<ReturnType<PlanOf<typeof spending>["rest"]>>;
+  type Loop = NonNullable<Awaited<ReturnType<SpendingSides["ifTrue"]>>>;
+  assertType<Uninhabited<Loop["next"]>>();
+
+  // A repetition that renews it is fine.
+  const renewing = repeat(login);
+  type Renewing = NonNullable<PlanOf<typeof renewing>>;
+  assertType<Equal<Renewing["next"]["first"], { client: string }>>();
+});
+
+Deno.test("plan: what is known after a node", () => {
+  // Both sides of `login` ran different steps, and one of them revoked
+  // `authorize`: nothing is certain afterwards.
+  assertType<Equal<keyof After<typeof login>, never>>();
+
+  // The operations of a file session may not run at all.
+  assertType<Equal<keyof After<typeof fileSession>, "open" | "close">>();
+
+  // Every arm of a parallel node runs.
+  const both = parallel(authorize, ping);
+  assertType<Equal<keyof After<typeof both>, "authorize" | "ping">>();
+
+  // An option of a choice may not.
+  const either = choice(authorize, ping);
+  assertType<Equal<keyof After<typeof either>, never>>();
+  const always = choice(sequence(ping, authorize), authorize);
+  assertType<Equal<keyof After<typeof always>, "authorize">>();
+});
+
+Deno.test("plan: a forwarded field needs to be known to have a value", async () => {
+  const withRefresh = sequence(
+    authorize,
+    branch(authorize, (prev) => prev.type === "success", {
+      then: sequence(
+        exchange,
+        // `refresh_token` is optional in the token response.
+        branch(exchange, present("refresh_token"), {
+          then: refresh,
+          // The empty sequence: nothing to do.
+          else: sequence(),
+        }),
+      ),
+      else: report,
+    }),
+  );
+
+  const plan: PlanOf<typeof withRefresh> = {
+    first: { client: "app" },
+    rest: () => ({
+      ifTrue: (auth) => ({
+        first: { code: auth.code },
+        rest: () => ({
+          // `tokens.refresh_token` is a string here.
+          ifTrue: (tokens) => ({ refresh_token: tokens.refresh_token }),
+          ifFalse: () => undefined,
+        }),
+      }),
+      ifFalse: (auth) => ({ reason: auth.reason }),
+    }),
+  };
+
+  const rotating = authServer("success", { refreshToken: "r1" });
+  const [, withToken] = await runPlan(withRefresh, plan, rotating);
+  assertEquals(withToken, {
+    holds: true,
+    result: [
+      { token: "token-for-c0de", refresh_token: "r1" },
+      { holds: true, result: { token: "via-r1" } },
+    ],
+  });
+  assertEquals(rotating.log, ["authorize", "exchange", "refresh"]);
+
+  const plain = authServer("success");
+  const [, withoutToken] = await runPlan(withRefresh, plan, plain);
+  assertEquals(withoutToken, {
+    holds: true,
+    result: [{ token: "token-for-c0de" }, { holds: false, result: [] }],
+  });
+  assertEquals(plain.log, ["authorize", "exchange"]);
+
+  // Without the inner branch, `refresh` has no plan.
+  const unchecked = sequence(exchange, refresh);
+  type Known = { readonly authorize: Success };
+  type Rest = Awaited<ReturnType<PlanOf<typeof unchecked, Known>["rest"]>>;
+  assertType<Uninhabited<Rest>>();
+});
+
+Deno.test("plan: a predicate that is no type guard narrows nothing", async () => {
+  const retry = sequence(
+    ping,
+    branch(ping, (prev) => prev.n < 3, { then: ping, else: sequence() }),
+  );
+  type Sides = Awaited<ReturnType<PlanOf<typeof retry>["rest"]>>;
+  assertType<Equal<Parameters<Sides["ifTrue"]>[0], N>>();
+  assertType<Equal<Parameters<Sides["ifFalse"]>[0], N>>();
+
+  const plan: PlanOf<typeof retry> = {
+    first: { n: 1 },
+    rest: () => ({
+      ifTrue: ({ n }) => ({ n: n + 1 }),
+      ifFalse: () => undefined,
+    }),
+  };
+  assertEquals(await runPlan(retry, plan, echo), [
+    { n: 1 },
+    { holds: true, result: { n: 2 } },
+  ]);
+  assertEquals(
+    await runPlan(retry, { ...plan, first: { n: 5 } }, echo),
+    [{ n: 5 }, { holds: false, result: [] }],
+  );
+});
+
+Deno.test("plan: the rules hold at run time for a plan that got past the types", async () => {
   // Forwarding another code than the one authorize returned.
   const wrongCode = await assertRejects(
     () =>
-      runPlan(sequence(authorize, exchange), {
+      runPlan(login, {
         first: { client: "app" },
-        rest: () => ({ code: "forged" }),
+        rest: () => ({
+          ifTrue: () => ({ code: "forged" }),
+          ifFalse: (prev) => ({ reason: prev.reason }),
+        }),
       }, authServer("success")),
     InvalidRequestError,
   );
@@ -614,7 +795,7 @@ Deno.test("plan: the rules of dependent steps hold inside a plan", async () => {
   // exchange after the error variant: refused by its `when`.
   const refused = await assertRejects(
     () =>
-      runPlan(sequence(authorize, exchange), {
+      runUntyped(sequence(authorize, exchange), {
         first: { client: "app" },
         rest: () => ({ code: "c0de" }),
       }, authServer("error")),
@@ -626,10 +807,10 @@ Deno.test("plan: the rules of dependent steps hold inside a plan", async () => {
   const server = authServer("success");
   const spent = await assertRejects(
     () =>
-      runPlan(sequence(authorize, exchange, exchange), {
+      runUntyped(sequence(authorize, exchange, exchange), {
         first: { client: "app" },
-        rest: (auth) => ({
-          first: { code: auth.type === "success" ? auth.code : "" },
+        rest: () => ({
+          first: { code: "c0de" },
           rest: () => ({ code: "c0de" }),
         }),
       }, server),
@@ -640,9 +821,25 @@ Deno.test("plan: the rules of dependent steps hold inside a plan", async () => {
 
   // A dependent step before its dependency.
   await assertRejects(
-    () => runPlan(exchange, { code: "c0de" }, authServer("success")),
+    () => runUntyped(exchange, { code: "c0de" }, authServer("success")),
     StepNotAvailableError,
   );
+
+  // A branch on a step that has not run.
+  const early = branch(authorize, (prev) => prev.type === "success", {
+    then: ping,
+    else: ping,
+  });
+  assertType<Uninhabited<PlanOf<typeof early>>>();
+  const noAnswer = await assertRejects(
+    () =>
+      runUntyped(early, {
+        ifTrue: () => ({ n: 1 }),
+        ifFalse: () => ({ n: 1 }),
+      }, echo),
+    StepNotAvailableError,
+  );
+  assertEquals(noAnswer.requires, "authorize");
 });
 
 // -----------------------------------------------------------------------------
@@ -679,23 +876,38 @@ Deno.test("plan: parallel runs its arms together", async () => {
 
 Deno.test("plan: the arms of a parallel node do not see each other", async () => {
   // Arm 0 authorizes; arm 1 exchanges. Arm 1 starts from what was known
-  // before the node, where nobody has authorized, whatever the timing.
+  // before the node, where nobody has authorized: it has no plan.
   const racing = parallel(authorize, exchange);
+  assertType<Uninhabited<PlanOf<typeof racing>[1]>>();
+
+  // Whatever the timing, it is refused at run time too.
   const server = authServer("success");
   await assertRejects(
-    () => runPlan(racing, [{ client: "app" }, { code: "c0de" }], server),
+    () => runUntyped(racing, [{ client: "app" }, { code: "c0de" }], server),
     StepNotAvailableError,
   );
   // The other arm ran to its end before the node rejected.
   assertEquals(server.log, ["authorize"]);
 
   // After the node, the responses of every arm are known.
-  const after = sequence(parallel(authorize, ping), exchange);
+  const after = sequence(
+    parallel(authorize, ping),
+    branch(authorize, (prev) => prev.type === "success", {
+      then: exchange,
+      else: report,
+    }),
+  );
   const [, exchanged] = await runPlan(after, {
     first: [{ client: "app" }, { n: 1 }],
-    rest: ([auth]) => ({ code: auth.type === "success" ? auth.code : "" }),
+    rest: () => ({
+      ifTrue: (auth) => ({ code: auth.code }),
+      ifFalse: (auth) => ({ reason: auth.reason }),
+    }),
   }, authServer("success"));
-  assertEquals(exchanged, { token: "token-for-c0de" });
+  assertEquals(exchanged, {
+    holds: true,
+    result: { token: "token-for-c0de" },
+  });
 });
 
 Deno.test("plan: a parallel node settles before it rejects", async () => {
@@ -723,8 +935,7 @@ Deno.test("plan: a parallel node settles before it rejects", async () => {
 // -----------------------------------------------------------------------------
 
 Deno.test("plan: a plan of the wrong shape is refused with its position", async () => {
-  // deno-lint-ignore no-explicit-any
-  const untyped = runPlan as (...args: any[]) => Promise<unknown>;
+  const untyped = runUntyped;
 
   const noThen = await assertRejects(
     () => untyped(fileSession, { first: { path: "a.txt" } }, fileSystem()),
