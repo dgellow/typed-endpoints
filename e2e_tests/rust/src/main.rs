@@ -218,3 +218,20 @@ async fn main() -> std::io::Result<()> {
     println!("http://{}", listener.local_addr()?);
     axum::serve(listener, api::router(Notes::default())).await
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::{Notes, api};
+
+    /// The handlers can be shared with whatever else holds them.
+    #[test]
+    fn router_takes_shared_handlers() {
+        let notes = Arc::new(Notes::default());
+        let _router = api::router_from_arc(Arc::clone(&notes));
+        // The router holds these handlers, not a copy of them (axum keeps
+        // a reference per route).
+        assert!(Arc::strong_count(&notes) > 1);
+    }
+}

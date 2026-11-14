@@ -71,24 +71,32 @@ Deno.test("rust axum: every handler can fail; what is not declared is an Interna
 
   // A route answers a failure as the operation says, or as a 500.
   assertEquals(block(lines, "async fn notes_list<H: Handlers>").slice(-5), [
-    "    match handlers.notes_list().await {",
+    "    Ok(match handlers.notes_list().await {",
     "        Ok(response) => operation.respond(&response),",
     "        Err(error) => operation.internal(&error),",
-    "    }",
+    "    })",
     "}",
   ]);
-  assertEquals(block(lines, "async fn notes_retrieve<H: Handlers>").slice(-5), [
-    "    match handlers.notes_retrieve(params).await {",
+  // What axum itself may refuse is taken as a `Result`; a refusal leaves
+  // the function at the question mark.
+  assertEquals(block(lines, "async fn notes_retrieve<H: Handlers>"), [
+    "async fn notes_retrieve<H: Handlers>(",
+    "    State(handlers): State<Arc<H>>,",
+    "    path: Result<Path<HashMap<String, String>>, PathRejection>,",
+    ") -> Result<Response, runtime::Refused> {",
+    "    let operation = &contract::NOTES_RETRIEVE;",
+    "    let params = operation.params(path)?;",
+    "    Ok(match handlers.notes_retrieve(params).await {",
     "        Ok(response) => operation.respond(&response),",
     "        Err(error) => error.respond(operation),",
-    "    }",
+    "    })",
     "}",
   ]);
   assertEquals(block(lines, "async fn notes_clear<H: Handlers>").slice(-5), [
-    "    match handlers.notes_clear().await {",
+    "    Ok(match handlers.notes_clear().await {",
     "        Ok(()) => StatusCode::NO_CONTENT.into_response(),",
     "        Err(error) => operation.internal(&error),",
-    "    }",
+    "    })",
     "}",
   ]);
 });
@@ -122,6 +130,25 @@ Deno.test("rust axum: an error type has a variant per status, named as the statu
     ],
   );
   assertEquals(lines.includes("fn status(code: u16) -> StatusCode {"), true);
+
+  // Each body is checked against the schema declared for its status,
+  // which the generator names; nothing is looked up when a request fails.
+  assertEquals(block(lines, "    fn respond("), [
+    "    fn respond(&self, operation: &runtime::Operation) -> Response {",
+    "        match self {",
+    "            Self::NotFound(body) => operation.fail(",
+    "                StatusCode::NOT_FOUND,",
+    "                &contract::NOTES_RETRIEVE_ERROR404,",
+    "                body,",
+    "            ),",
+    "            Self::Status499(body) => {",
+    "                operation.fail(status(499), &contract::NOTES_RETRIEVE_ERROR499, body)",
+    "            }",
+    "            Self::Internal(error) => operation.internal(error),",
+    "        }",
+    "    }",
+    "}",
+  ]);
 });
 
 Deno.test("rust axum: a body converts into the error only when its type says which variant", () => {
@@ -198,6 +225,7 @@ Deno.test("rust axum: the module imports what its code names, and no more", () =
       "use std::future::Future;",
       "use std::sync::Arc;",
       "use axum::body::Bytes;",
+      "use axum::extract::rejection::{BytesRejection, PathRejection};",
       "use axum::extract::{Path, Query, State};",
       "use axum::http::{HeaderMap, StatusCode};",
       "use axum::response::{IntoResponse, Response};",
@@ -221,11 +249,17 @@ Deno.test("rust axum: one route per operation; a catch-all is written as axum wr
   );
   assertEquals(block(lines, "pub fn router<H: Handlers>"), [
     "pub fn router<H: Handlers>(handlers: H) -> axum::Router {",
+    "    router_from_arc(Arc::new(handlers))",
+    "}",
+  ]);
+  // For handlers that something else holds as well.
+  assertEquals(block(lines, "pub fn router_from_arc<H: Handlers>"), [
+    "pub fn router_from_arc<H: Handlers>(handlers: Arc<H>) -> axum::Router {",
     "    axum::Router::new()",
     '        .route("/notes", get(notes_list::<H>))',
     '        .route("/notes", post(notes_create::<H>))',
     '        .route("/files/{*path}", get(files_retrieve::<H>))',
-    "        .with_state(Arc::new(handlers))",
+    "        .with_state(handlers)",
     "}",
   ]);
 });
@@ -240,7 +274,9 @@ Deno.test("rust axum: the router compiles the contract's patterns, and says that
     },
     response: NOTE,
   }));
-  const at = withPattern.findIndex((line) => line.startsWith("pub fn router"));
+  const at = withPattern.findIndex((line) =>
+    line.startsWith("pub fn router_from_arc")
+  );
   assertEquals(
     withPattern[at + 1],
     "    runtime::compile(contract::PATTERNS);",

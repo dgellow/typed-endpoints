@@ -102,6 +102,8 @@ interface DeclaredError {
   readonly variant: string;
   /** The status as a `StatusCode` expression. */
   readonly code: string;
+  /** The static that holds the schema of its body. */
+  readonly schema: string;
 }
 
 /** One operation, with the Rust names the module gives its parts. */
@@ -211,7 +213,6 @@ export function renderAxum(
         query: query?.schema,
         body: body?.schema,
         response: response?.schema,
-        errors: new Map(errors.map((error) => [error.status, error.schema])),
       }),
       ...(params && { params: params.type }),
       ...(query && { query: query.type }),
@@ -314,6 +315,10 @@ function imports(rendered: readonly Rendered[], models: RustModels): string[] {
     "use std::sync::Arc;",
     "",
     ...(any((item) => !!item.body) ? ["use axum::body::Bytes;"] : []),
+    ...group("axum::extract::rejection", [
+      ...(any((item) => !!item.body) ? ["BytesRejection"] : []),
+      ...(any((item) => !!item.params) ? ["PathRejection"] : []),
+    ]),
     ...group("axum::extract", [
       ...(any((item) => !!item.params) ? ["Path"] : []),
       ...(any((item) => !!item.query) ? ["Query"] : []),
@@ -387,8 +392,13 @@ function errorEnum(item: Rendered, graph: TypeGraph): string[] {
     "",
     "    fn respond(&self, operation: &runtime::Operation) -> Response {",
     "        match self {",
-    ...item.errors.map((error) =>
-      `            Self::${error.variant}(body) => operation.fail(self.status(), body),`
+    ...item.errors.flatMap((error) =>
+      arm(
+        12,
+        `Self::${error.variant}(body)`,
+        "operation.fail(",
+        [error.code, `&contract::${error.schema}`, "body"],
+      )
     ),
     "            Self::Internal(error) => operation.internal(error),",
     "        }",
@@ -409,6 +419,31 @@ function errorEnum(item: Rendered, graph: TypeGraph): string[] {
     "    }",
     "}",
     "",
+  ];
+}
+
+/**
+ * A match arm that is a call, as rustfmt writes it: an argument per line
+ * when the arguments are wider than rustfmt's `fn_call_width`; otherwise
+ * on one line, or the call in a block when the line is too long.
+ */
+function arm(
+  indent: number,
+  pattern: string,
+  open: string,
+  args: readonly string[],
+): string[] {
+  const pad = " ".repeat(indent);
+  const call = `${open}${args.join(", ")})`;
+  if (args.join(", ").length <= 60) {
+    return `${pad}${pattern} => ${call},`.length <= 100
+      ? [`${pad}${pattern} => ${call},`]
+      : [`${pad}${pattern} => {`, `${pad}    ${call}`, `${pad}}`];
+  }
+  return [
+    `${pad}${pattern} => ${open}`,
+    ...args.map((arg) => `${pad}    ${arg},`),
+    `${pad}),`,
   ];
 }
 
@@ -440,19 +475,25 @@ function handlerSignature(item: Rendered): string[] {
 
 function route(item: Rendered): string[] {
   const extractors = ["State(handlers): State<Arc<H>>"];
+  // What axum itself can refuse is taken as a `Result`, and answered in
+  // the shape of every other refusal.
   if (item.params) {
-    extractors.push("Path(path): Path<HashMap<String, String>>");
+    extractors.push(
+      "path: Result<Path<HashMap<String, String>>, PathRejection>",
+    );
   }
   if (item.query) {
     extractors.push("Query(pairs): Query<Vec<(String, String)>>");
   }
-  if (item.body) extractors.push("headers: HeaderMap", "bytes: Bytes");
+  if (item.body) {
+    extractors.push(
+      "headers: HeaderMap",
+      "bytes: Result<Bytes, BytesRejection>",
+    );
+  }
 
   const read = (name: string, expression: string) => [
-    `    let ${name} = match ${expression} {`,
-    `        Ok(${name}) => ${name},`,
-    "        Err(response) => return *response,",
-    "    };",
+    `    let ${name} = ${expression}?;`,
   ];
   const passed = [
     ...(item.params ? ["params"] : []),
@@ -466,21 +507,21 @@ function route(item: Rendered): string[] {
       0,
       `async fn ${item.method}<H: Handlers>(`,
       extractors,
-      ") -> Response {",
+      ") -> Result<Response, runtime::Refused> {",
     ),
     `    let operation = &contract::${item.constant};`,
     // In the order the TypeScript handlers check: body, query, path.
-    ...(item.body ? read("body", "operation.body(&headers, &bytes)") : []),
+    ...(item.body ? read("body", "operation.body(&headers, bytes)") : []),
     ...(item.query ? read("query", "operation.query(pairs)") : []),
     ...(item.params ? read("params", "operation.params(path)") : []),
-    `    match ${call} {`,
+    `    Ok(match ${call} {`,
     item.response
       ? "        Ok(response) => operation.respond(&response),"
       : "        Ok(()) => StatusCode::NO_CONTENT.into_response(),",
     item.errorEnum
       ? "        Err(error) => error.respond(operation),"
       : "        Err(error) => operation.internal(&error),",
-    "    }",
+    "    })",
     "}",
   ];
 }
@@ -489,19 +530,22 @@ function router(
   rendered: readonly Rendered[],
   patterns: boolean,
 ): string[] {
+  const panics = (text: readonly string[]) =>
+    patterns ? ["///", "/// # Panics", "///", ...text] : [];
   return [
     "/// The operations as routes that call the given handlers.",
-    ...(patterns
-      ? [
-        "///",
-        "/// # Panics",
-        "///",
-        "/// If a pattern of the contract is not one this module's regular",
-        "/// expression engine can compile. It is found here, when the server",
-        "/// starts, and not by the first request that reaches it.",
-      ]
-      : []),
+    ...panics(["/// As [`router_from_arc`] does."]),
     "pub fn router<H: Handlers>(handlers: H) -> axum::Router {",
+    "    router_from_arc(Arc::new(handlers))",
+    "}",
+    "",
+    "/// [`router`], for handlers that something else holds as well.",
+    ...panics([
+      "/// If a pattern of the contract is not one this module's regular",
+      "/// expression engine can compile. It is found here, when the server",
+      "/// starts, and not by the first request that reaches it.",
+    ]),
+    "pub fn router_from_arc<H: Handlers>(handlers: Arc<H>) -> axum::Router {",
     ...(patterns ? ["    runtime::compile(contract::PATTERNS);"] : []),
     "    axum::Router::new()",
     // One line per operation; axum joins the methods of a path.
@@ -516,7 +560,7 @@ function router(
         ")",
       )
     ),
-    "        .with_state(Arc::new(handlers))",
+    "        .with_state(handlers)",
     "}",
   ];
 }

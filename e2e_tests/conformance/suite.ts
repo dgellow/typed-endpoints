@@ -58,7 +58,12 @@ export type Difference =
    * A value that fits no member of a union is reported once per member,
    * the member named in the path, not once at the union.
    */
-  | "issue-per-union-member";
+  | "issue-per-union-member"
+  /**
+   * A path that is not UTF-8 once decoded reaches the handler, with
+   * U+FFFD where the bytes were.
+   */
+  | "malformed-path-is-decoded";
 
 /** A request a server has to refuse. */
 export interface Refusal {
@@ -815,6 +820,20 @@ export function conformance(
       const body = await response.json() as Invalid;
       assertEquals(body.in, "query");
       assertEquals(body.issues.map((issue) => issue.path), [["limit"]]);
+    }
+  });
+
+  test("edge: a path that is not UTF-8 once decoded is refused", async () => {
+    for (const id of ["%FF", "%E0%A4%A"]) {
+      const response = await send("GET", `/api/notes/${id}`);
+      if (differs("malformed-path-is-decoded")) {
+        assertEquals(response.status, 404);
+        assertEquals((await response.json()).error, "not_found");
+        continue;
+      }
+      assertEquals(response.status, 400);
+      // JSON, as every refusal is.
+      assertEquals(await response.json(), { error: "Malformed URL path" });
     }
   });
 

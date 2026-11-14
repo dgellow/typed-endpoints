@@ -139,7 +139,6 @@ export class RustContract {
    * schemas of its parts.
    *
    * @param name Name for the static, in constant case.
-   * @param errors The static of each declared error body, by status.
    */
   operation(
     name: string,
@@ -149,7 +148,6 @@ export class RustContract {
       readonly query?: string;
       readonly body?: string;
       readonly response?: string;
-      readonly errors: ReadonlyMap<string, string>;
     },
   ): string {
     const unique = this.unique(name);
@@ -163,10 +161,6 @@ export class RustContract {
       `        query: ${part(parts.query)},`,
       `        body: ${part(parts.body)},`,
       `        response: ${part(parts.response)},`,
-      `        errors: &[${
-        [...parts.errors].map(([status, schema]) => `(${status}, &${schema})`)
-          .join(", ")
-      }],`,
       "    };",
     ]);
     return unique;

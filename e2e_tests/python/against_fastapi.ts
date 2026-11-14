@@ -26,5 +26,7 @@ conformance("fastapi", () => url, {
       "the codes and messages are Pydantic's, and FastAPI's order",
     "issue-per-union-member":
       "Pydantic reports a union once per member, named in the path",
+    "malformed-path-is-decoded":
+      "Starlette decodes a path leniently: the handler gets U+FFFD",
   },
 });
