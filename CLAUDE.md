@@ -104,3 +104,6 @@ N. TypeScript can't express dependent types, so:
   only after `session.ready(step)` or `session.narrow(step, guard)`
 - **Runtime**: enforces actual value constraints via Zod (`z.literal()`), and
   the same variant conditions (`when`) for callers that bypass the types
+- **Revocation**: `revoking(step, names)` removes steps from `TDone`/`TSeen` and
+  their responses from the session. The types follow the returned session;
+  `createSession(..., { singleUse: true })` refuses the earlier value at runtime
