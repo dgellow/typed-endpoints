@@ -43,7 +43,13 @@ cargo build --locked --quiet
 log="$(mktemp)"
 "$project/target/debug/typed-endpoints-rust-e2e" >"$log" 2>&1 &
 server=$!
-trap 'kill "$server" 2>/dev/null || true; rm -f "$log"' EXIT
+# Stops the server and waits for it: it is not left when the script returns.
+stop() {
+  kill "$server" 2>/dev/null || true
+  wait "$server" 2>/dev/null || true
+  rm -f "$log"
+}
+trap stop EXIT
 
 url=""
 for _ in $(seq 1 100); do
