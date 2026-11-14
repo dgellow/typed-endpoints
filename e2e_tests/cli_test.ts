@@ -212,6 +212,27 @@ Deno.test("CLI --format fastapi writes the checked-in Python module", async () =
   }
 });
 
+Deno.test("CLI --format python-client writes the checked-in Python client", async () => {
+  const output = await Deno.makeTempFile({ suffix: ".py" });
+  try {
+    const result = await runCli(
+      "-r",
+      "e2e_tests/fixtures/python/routes",
+      "-o",
+      output,
+      "--format",
+      "python-client",
+    );
+    assertEquals(result.code, 0, result.stderr);
+    assertEquals(
+      await Deno.readTextFile(output),
+      await Deno.readTextFile("e2e_tests/python/client_generated.py"),
+    );
+  } finally {
+    await Deno.remove(output);
+  }
+});
+
 Deno.test("CLI defaults to the types format", async () => {
   const explicit = await Deno.makeTempFile({ suffix: ".ts" });
   const implicit = await Deno.makeTempFile({ suffix: ".ts" });

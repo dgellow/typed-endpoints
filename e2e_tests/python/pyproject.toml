@@ -5,6 +5,7 @@ description = "The fixture API of typed-endpoints served by FastAPI, from genera
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.163,<1",
+    "httpx>=0.28,<1",
     "uvicorn>=0.54,<1",
 ]
 
@@ -17,5 +18,5 @@ dev = [
 package = false
 
 [tool.pyright]
-include = ["api_generated.py", "app.py", "test_runtime.py"]
+include = ["api_generated.py", "app.py", "client_generated.py", "test_client.py", "test_pagination.py", "test_runtime.py"]
 typeCheckingMode = "strict"

@@ -5,7 +5,7 @@ import process from "node:process";
 import { parseArgs } from "node:util";
 import { ROUTE_CONVENTIONS, type RouteConvention } from "./core/routes.ts";
 import { generateContract } from "./contract/index.ts";
-import { generateFastApi } from "./python/index.ts";
+import { generateFastApi, generatePythonClient } from "./python/index.ts";
 import { generateTypes } from "./tsgen/mod.ts";
 import { generateProtocolTypesFromModule } from "./protocol/typegen.ts";
 
@@ -17,6 +17,7 @@ const FORMATS = [
   "protocol",
   "contract",
   "fastapi",
+  "python-client",
 ] as const;
 
 const help = `
@@ -29,8 +30,8 @@ Options:
   -r, --routes <dir>    Routes directory, repeatable (default: routes/api)
   -o, --output <file>   Output file path (required)
   -c, --config <file>   Path to deno.json (auto-detected if not provided)
-  -f, --format <fmt>    Output format: types, client, routes, protocol, contract
-                        or fastapi (default: types)
+  -f, --format <fmt>    Output format: types, client, routes, protocol, contract,
+                        fastapi or python-client (default: types)
   --convention <name>   Route file layout: fresh, next, sveltekit, astro, or nitro
                         (default: fresh; also the layout for Bun, Hono and fetch)
   -p, --protocol <file> Protocol module path (required when --format protocol)
@@ -46,6 +47,7 @@ Formats:
   contract - The routes as JSON: each operation with a JSON Schema per part
   fastapi  - A Python module: Pydantic models, a Handlers protocol and a
              FastAPI router
+  python-client - A Python module: Pydantic models and an httpx client
 
 Examples:
   typed-endpoints -r routes/api -o src/api-types.ts
@@ -54,6 +56,7 @@ Examples:
   typed-endpoints -r app/api -o src/api-client.ts --format client --convention next
   typed-endpoints --format protocol --protocol ./my-protocol.ts -o src/protocol-types.ts
   typed-endpoints -r routes/api -o server/api_generated.py --format fastapi
+  typed-endpoints -r routes/api -o client/api_client.py --format python-client
 `;
 
 /**
@@ -122,6 +125,7 @@ async function main() {
     | "protocol"
     | "contract"
     | "fastapi"
+    | "python-client"
     | undefined;
   if (format && !FORMATS.includes(format)) {
     fail(`Invalid format "${format}". Must be: ${FORMATS.join(", ")}`);
@@ -174,6 +178,14 @@ async function main() {
     } else if (format === "fastapi") {
       // A Python module: Pydantic models and a FastAPI router.
       await generateFastApi({
+        routesDirs,
+        output: args.output,
+        config,
+        convention,
+      });
+    } else if (format === "python-client") {
+      // A Python module: Pydantic models and an httpx client.
+      await generatePythonClient({
         routesDirs,
         output: args.output,
         config,

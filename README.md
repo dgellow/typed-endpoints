@@ -1038,7 +1038,38 @@ What differs, and what does not cross:
   refused by FastAPI; a form body is a 400 there, not a 415
 - Not generated yet: server-sent event streams (listed in a comment in the
   module), request-dependent responses (`projection()`, `selection()`),
-  protocols, a Python client
+  protocols
+
+**A Python client.** `generatePythonClient()` (`--format python-client`) writes
+a module with the same models and two classes, `Client` and `AsyncClient`
+(httpx). For every operation:
+
+```python
+import api_client as api
+
+client = api.Client("http://localhost:8000")
+
+note = client.notes_retrieve("n1")  # raises ApiError outside 200-299
+
+result = client.notes_retrieve_result("n1")  # a declared error is a value
+if isinstance(result, api.Fail):
+    result.status  # Literal[404]
+    result.body  # NotFound
+
+for item in client.notes_list_items(api.NotesListQuery(tag=["urgent"])):
+    ...  # every item, page after page
+```
+
+| TypeScript client                          | Python client                                                                                                                                       |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `notes.retrieve(id)`                       | `notes_retrieve(id)`: the parsed response; `ApiError` for a status outside 200-299                                                                  |
+| `notes.retrieve.result(id)`                | `notes_retrieve_result(id)`: the response, or `Fail[Literal[404], NotFound]`; a status the operation does not declare still raises                  |
+| `notes.list.pages()`, `notes.list.items()` | `notes_list_pages()`, `notes_list_items()`: iterators (async iterators on `AsyncClient`) that find the next page by the endpoint's pagination style |
+
+Methods are named after the operation id; there is no resource hierarchy. A body
+field that was not set is not sent, and responses are parsed by strict models.
+The client's tests run against the fixture's TypeScript handlers and against the
+generated FastAPI application.
 
 The module is built from a contract, which is also available on its own:
 `generateContract()` (`--format contract`) describes every operation with its
@@ -1046,7 +1077,7 @@ method, path template, declared error statuses, pagination metadata and a JSON
 Schema (draft 2020-12) for each part. Request parts are the input side of the
 Zod schema, responses the output side.
 
-How it is checked (`./scripts/test-python`, through `uv`): the generated module
+How it is checked (`./scripts/test-python`, through `uv`): the generated modules
 and a hand-written implementation of `Handlers` pass pyright in strict mode; the
 application runs under uvicorn; and the tests that hold for the fixture's
 TypeScript server hold for it, using the TypeScript client generated from the

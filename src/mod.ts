@@ -142,6 +142,8 @@ export {
 export {
   generateFastApi,
   type GenerateFastApiOptions,
+  generatePythonClient,
+  type GeneratePythonClientOptions,
 } from "./python/index.ts";
 
 // Vite plugin
