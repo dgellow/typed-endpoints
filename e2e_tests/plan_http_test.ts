@@ -90,19 +90,19 @@ const itemsHandler = createApiHandlers({
 // Steps, from the endpoints
 // -----------------------------------------------------------------------------
 
-const login = fromEndpoint(sessionHandler, "POST", { name: "login" });
+// Each step knows the path its endpoint is served at: no route table.
+const login = fromEndpoint(sessionHandler, "POST", {
+  name: "login",
+  path: "/api/session",
+});
 
 const listItems = fromEndpointMapped(itemsHandler, "GET", {
   name: "listItems",
+  path: "/api/items",
   dependsOn: "login",
   // `token` exists on the success variant of the login response only.
   requestMapping: { token: fromStep("login", "token") },
 });
-
-const routes = {
-  login: { method: "POST", path: "/api/session" },
-  listItems: { method: "GET", path: "/api/items" },
-} as const;
 
 // The HTTP executor reads each step's route and field locations here.
 const itemsProtocol = protocol({
@@ -179,7 +179,6 @@ Deno.test("E2E plan: login, then every page of a cursor-paginated endpoint", asy
   try {
     const executor = createHttpExecutor(itemsProtocol, {
       baseUrl: server.baseUrl,
-      routes,
     });
 
     const [session, listing] = await runPlan(browse, plan("secret"), executor);
@@ -216,7 +215,6 @@ Deno.test("E2E plan: a failed login takes the other side", async () => {
   try {
     const executor = createHttpExecutor(itemsProtocol, {
       baseUrl: server.baseUrl,
-      routes,
     });
 
     const [session, listing] = await runPlan(browse, plan("guess"), executor);
@@ -234,7 +232,6 @@ Deno.test("E2E plan: a token other than the one the login returned is not sent",
   try {
     const executor = createHttpExecutor(itemsProtocol, {
       baseUrl: server.baseUrl,
-      routes,
     });
 
     const forged: PlanOf<typeof browse> = {
@@ -267,6 +264,6 @@ Deno.test("E2E plan: listing without a branch on the login has no plan", () => {
         next: { token: "token-of-ada", limit: 2 },
         rest: () => undefined,
       }),
-    }, createHttpExecutor(itemsProtocol, { baseUrl: "", routes }));
+    }, createHttpExecutor(itemsProtocol, { baseUrl: "" }));
   }
 });

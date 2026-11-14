@@ -20,6 +20,14 @@ import type { FieldMapping } from "./mapping.ts";
 /** Where a request field is sent over HTTP. */
 export type RequestLocation = "path" | "query" | "body";
 
+/** The HTTP route a step is served at. */
+export interface StepRoute {
+  /** HTTP method. */
+  readonly method: string;
+  /** Path template with `{param}` placeholders, e.g. `/api/users/{id}`. */
+  readonly path: string;
+}
+
 /**
  * Where each field of a step's request is sent over HTTP.
  *
@@ -59,6 +67,12 @@ export interface Step<
   readonly operationId?: string;
   /** Where each request field is sent over HTTP */
   readonly requestLocations?: RequestLocations;
+  /**
+   * The route the step is served at, when the step knows it (a step made
+   * with `fromEndpoint()` and a `path`). The HTTP executor then needs no
+   * route table for it.
+   */
+  readonly route?: StepRoute;
 }
 
 /**
@@ -99,6 +113,12 @@ export interface DependentStep<
   readonly operationId?: string;
   /** Where each request field is sent over HTTP */
   readonly requestLocations?: RequestLocations;
+  /**
+   * The route the step is served at, when the step knows it (a step made
+   * with `fromEndpoint()` and a `path`). The HTTP executor then needs no
+   * route table for it.
+   */
+  readonly route?: StepRoute;
 }
 
 /**
@@ -136,6 +156,12 @@ export interface MappedStep<
   readonly operationId?: string;
   /** Where each request field is sent over HTTP */
   readonly requestLocations?: RequestLocations;
+  /**
+   * The route the step is served at, when the step knows it (a step made
+   * with `fromEndpoint()` and a `path`). The HTTP executor then needs no
+   * route table for it.
+   */
+  readonly route?: StepRoute;
 }
 
 // =============================================================================

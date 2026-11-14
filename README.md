@@ -1629,7 +1629,9 @@ const { response } = await session.execute("login", {
 
 Features:
 
-- **Route mapping**: Steps map to HTTP endpoints via `operationId`
+- **Route mapping**: a step made with `fromEndpoint()` and a `path` carries its
+  route; other steps map to HTTP endpoints via `operationId` and `routes`. Every
+  step is resolved when the executor is created
 - **Auth propagation**: Automatically inject tokens from previous step responses
 - **Request mapping**: `{userId}` in the path is filled from the request; for a
   step created from an endpoint each remaining field goes to the query string or
@@ -1662,12 +1664,17 @@ const authProtocol = protocol({
   initial: "login",
   steps: {
     // fromEndpoint extracts body + query + params → request schema
-    // and copies response schema directly
-    login: fromEndpoint(loginHandler, "POST", { name: "login" }),
+    // and copies response schema directly. `path` is where the endpoint is
+    // served: the step then knows its route.
+    login: fromEndpoint(loginHandler, "POST", {
+      name: "login",
+      path: "/api/auth/login",
+    }),
 
     // fromEndpointMapped creates mapped steps with declarative field mappings
     profile: fromEndpointMapped(profileHandler, "GET", {
       name: "profile",
+      path: "/api/auth/profile",
       dependsOn: "login",
       requestMapping: {
         token: fromStep("login", "accessToken"),
@@ -1677,6 +1684,7 @@ const authProtocol = protocol({
     // fromEndpointDependent creates dependent steps with dynamic schemas
     refresh: fromEndpointDependent(refreshHandler, "POST", {
       name: "refresh",
+      path: "/api/auth/refresh",
       dependsOn: "login",
       request: (prev: { refreshToken: string }) =>
         z.object({ refreshToken: z.literal(prev.refreshToken) }),
@@ -1684,12 +1692,26 @@ const authProtocol = protocol({
   },
 });
 
-// Use with HTTP executor as before
+// Every step knows its route: no route table is needed.
 const executor = createHttpExecutor(authProtocol, {
   baseUrl: "https://api.example.com",
-  routes: apiRoutes,
 });
 ```
+
+How a step finds its route:
+
+- With `path`, the step carries `{ method, path }`. The file-route form
+  (`/api/users/[id]`) is accepted as well as the template (`/api/users/{id}`). A
+  path parameter the endpoint does not declare in `params` is refused when the
+  step is created
+- Without `path`, the executor looks the step up in `routes` under its
+  `operationId`: the one set on the endpoint, or the step name. With `path`, the
+  default is the id the route generator derives for that path and method
+  (`POST /api/auth/login` is `authLoginCreate`), so the step also matches a
+  generated route table
+- `createHttpExecutor()` resolves every step when it is created and fails there,
+  naming each step that has no route. `except: ["stepName"]` leaves out steps
+  another executor performs
 
 Benefits:
 

@@ -81,6 +81,7 @@ export type {
   StepName,
   StepRequest,
   StepResponse,
+  StepRoute,
 } from "./types.ts";
 
 // DSL functions

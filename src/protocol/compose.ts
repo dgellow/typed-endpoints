@@ -21,6 +21,7 @@
  */
 
 import { z } from "zod";
+import { apiPathToTemplate, deriveOperationId } from "../core/routes.ts";
 import type { HttpMethod } from "../core/types.ts";
 import { zodDef } from "../core/zod_internals.ts";
 import type { MappingForRequest } from "./dsl.ts";
@@ -31,6 +32,7 @@ import type {
   RequestLocation,
   RequestLocations,
   Step,
+  StepRoute,
 } from "./types.ts";
 
 // =============================================================================
@@ -105,7 +107,18 @@ export type EndpointResponseSchema<D> = [SchemaAt<D, "response">] extends
 export interface FromEndpointOptions<TName extends string = string> {
   /** Step name */
   readonly name: TName;
-  /** Override operationId (defaults to endpoint's operationId or name) */
+  /**
+   * Path the endpoint is served at, e.g. `/api/users/{id}` (the file-route
+   * form `/api/users/[id]` is accepted too). The step then knows its route:
+   * the HTTP executor needs no route table for it, and no `operationId`
+   * has to be written to connect the two.
+   */
+  readonly path?: string;
+  /**
+   * Override operationId. Defaults to the endpoint's `operationId`; without
+   * one, to the id the route generators derive from `path` and the method
+   * (`usersRetrieve`), or to the step name when no `path` is given.
+   */
   readonly operationId?: string;
   /** Step description */
   readonly description?: string;
@@ -121,7 +134,18 @@ export interface FromEndpointDependentOptions<
 > {
   /** Step name */
   readonly name: TName;
-  /** Override operationId (defaults to endpoint's operationId or name) */
+  /**
+   * Path the endpoint is served at, e.g. `/api/users/{id}` (the file-route
+   * form `/api/users/[id]` is accepted too). The step then knows its route:
+   * the HTTP executor needs no route table for it, and no `operationId`
+   * has to be written to connect the two.
+   */
+  readonly path?: string;
+  /**
+   * Override operationId. Defaults to the endpoint's `operationId`; without
+   * one, to the id the route generators derive from `path` and the method
+   * (`usersRetrieve`), or to the step name when no `path` is given.
+   */
   readonly operationId?: string;
   /** Step description */
   readonly description?: string;
@@ -139,7 +163,18 @@ export interface FromEndpointMappedOptions<
 > {
   /** Step name */
   readonly name: TName;
-  /** Override operationId (defaults to endpoint's operationId or name) */
+  /**
+   * Path the endpoint is served at, e.g. `/api/users/{id}` (the file-route
+   * form `/api/users/[id]` is accepted too). The step then knows its route:
+   * the HTTP executor needs no route table for it, and no `operationId`
+   * has to be written to connect the two.
+   */
+  readonly path?: string;
+  /**
+   * Override operationId. Defaults to the endpoint's `operationId`; without
+   * one, to the id the route generators derive from `path` and the method
+   * (`usersRetrieve`), or to the step name when no `path` is given.
+   */
   readonly operationId?: string;
   /** Step description */
   readonly description?: string;
@@ -210,6 +245,49 @@ function mergeRequestSchemas(
   return { schema: z.object(shape), locations };
 }
 
+/**
+ * How a step made from an endpoint is found over HTTP: its route, when
+ * the path is given, and its operationId.
+ *
+ * With a path, the operationId is the one the route generators derive for
+ * that path and method, so the step also matches a generated route table.
+ */
+function routing(
+  handler: HandlerWithApiDef,
+  method: HttpMethod,
+  def: MethodDefLike,
+  options: {
+    readonly name: string;
+    readonly path?: string;
+    readonly operationId?: string;
+  },
+  locations: RequestLocations,
+): { route?: StepRoute; operationId: string } {
+  if (options.path === undefined) {
+    return {
+      operationId: options.operationId ?? def.operationId ?? options.name,
+    };
+  }
+
+  const path = apiPathToTemplate(options.path);
+  for (const [, param] of path.matchAll(/\{(\w+)\}/g)) {
+    if (!locations[param]?.includes("path")) {
+      throw new Error(
+        `Cannot create step "${options.name}": the path ${path} has the parameter "${param}", which the ${method} endpoint does not declare in its params schema`,
+      );
+    }
+  }
+
+  // The generators name an operation from the file-route form of its path
+  // and the methods the path defines.
+  const filePath = path.replace(/\{(\w+)\}/g, "[$1]");
+  return {
+    route: { method, path },
+    operationId: options.operationId ?? def.operationId ??
+      deriveOperationId(filePath, method, Object.keys(handler.__apiDef)),
+  };
+}
+
 // =============================================================================
 // Composition Functions
 // =============================================================================
@@ -263,7 +341,7 @@ export function fromEndpoint<
     response: (def.response ?? z.unknown()) as EndpointResponseSchema<
       H["__apiDef"][M]
     >,
-    operationId: options.operationId ?? def.operationId ?? options.name,
+    ...routing(handler, method, def, options, request.locations),
     description: options.description ?? def.description,
   };
 }
@@ -318,16 +396,17 @@ export function fromEndpointDependent<
     throw new Error(`No ${method} definition found in handler`);
   }
 
+  const locations = mergeRequestSchemas(def, method).locations;
   return {
     __kind: "dependent_step",
     name: options.name,
     dependsOn: options.dependsOn,
     request: options.request,
-    requestLocations: mergeRequestSchemas(def, method).locations,
+    requestLocations: locations,
     response: (def.response ?? z.unknown()) as EndpointResponseSchema<
       H["__apiDef"][M]
     >,
-    operationId: options.operationId ?? def.operationId ?? options.name,
+    ...routing(handler, method, def, options, locations),
     description: options.description ?? def.description,
   };
 }
@@ -387,7 +466,7 @@ export function fromEndpointMapped<
     response: (def.response ?? z.unknown()) as EndpointResponseSchema<
       H["__apiDef"][M]
     >,
-    operationId: options.operationId ?? def.operationId ?? options.name,
+    ...routing(handler, method, def, options, request.locations),
     description: options.description ?? def.description,
   };
 }
