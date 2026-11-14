@@ -82,6 +82,13 @@ export interface DependentStep<
   readonly name: TName;
   /** Request schema is derived from previous step's response */
   readonly request: (prev: TPrevResponse) => TRequest;
+  /**
+   * Which responses of the previous step this step can follow. `false`
+   * refuses the step at runtime; `TPrevResponse` is the type the guard
+   * narrows to, which a session requires at compile time.
+   */
+  // deno-lint-ignore no-explicit-any
+  readonly when?: (prev: any) => boolean;
   /** Response schema. */
   readonly response: TResponse;
   /** The step whose response the request function receives. */
