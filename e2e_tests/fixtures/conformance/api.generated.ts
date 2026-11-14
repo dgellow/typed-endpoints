@@ -2,8 +2,18 @@
 // Do not edit manually
 
 // Named types
-export type RecursiveInput = { name: string; children: RecursiveInput[]; };
-export type Recursive = { name: string; children: Recursive[]; };
+export type RecursiveInput = { name: string; next?: RecursiveInput | undefined; origin: RecursiveInput | null; };
+export type RecursiveInput3 = string | number | boolean | null | RecursiveInput2[] | { [key: string]: RecursiveInput3; };
+export type RecursiveInput2 = string | number | boolean | null | RecursiveInput2[] | { [key: string]: RecursiveInput3; };
+export type RecursiveInput5 = { op: "add"; args: (number | RecursiveInput4 | RecursiveInput5)[]; };
+export type RecursiveInput4 = { op: "neg"; of: number | RecursiveInput4 | RecursiveInput5; };
+export type Recursive = { name: string; next?: Recursive | undefined; origin: Recursive | null; };
+export type Recursive3 = string | number | boolean | null | Recursive2[] | { [key: string]: Recursive3; };
+export type Recursive2 = string | number | boolean | null | Recursive2[] | { [key: string]: Recursive3; };
+export type Recursive5 = { op: "add"; args: (number | Recursive4 | Recursive5)[]; };
+export type Recursive4 = { op: "neg"; of: number | Recursive4 | Recursive5; };
+export type RecursiveInput6 = { name: string; children: RecursiveInput6[]; };
+export type Recursive6 = { name: string; children: Recursive6[]; };
 
 export interface Api {
   echo: {
@@ -11,6 +21,13 @@ export interface Api {
       path: "/api/echo/{+path}";
       params: { path: string; };
       response: { path: string; segments: string[]; };
+    };
+  };
+  edges: {
+    create: {
+      path: "/api/edges";
+      body: { short?: string | undefined; digits?: string | undefined; plain?: string | undefined; word?: string | undefined; count?: number | undefined; step?: number | undefined; flag?: boolean | undefined; maybe?: string | null | undefined; when?: string | undefined; id?: string | undefined; email?: string | undefined; };
+      response: { received: string[]; maybe?: string | null | undefined; count?: number | undefined; };
     };
   };
   notes: {
@@ -52,6 +69,13 @@ export interface Api {
       errors: { 404: { error: "not_found"; id: string; }; };
     };
   };
+  odd: {
+    create: {
+      path: "/api/odd";
+      body: { type: string; createdAt: string; created_at: string; "2fa": boolean; pair: [string, number]; scores: Record<string, number>; loose: string | number | string[]; looseOrNull: string | number | null; version: 2; anything: unknown; chain: RecursiveInput; json: string | number | boolean | null | RecursiveInput2[] | Record<string, RecursiveInput3>; jsonIfAny?: string | number | boolean | null | RecursiveInput2[] | Record<string, RecursiveInput3> | undefined; expr: number | RecursiveInput4 | RecursiveInput5; limit?: number | null | undefined; };
+      response: { type: string; createdAt: string; created_at: string; "2fa": boolean; pair: [string, number]; scores: Record<string, number>; loose: string | number | string[]; looseOrNull: string | number | null; version: 2; anything: unknown; chain: Recursive; json: string | number | boolean | null | Recursive2[] | Record<string, Recursive3>; jsonIfAny?: string | number | boolean | null | Recursive2[] | Record<string, Recursive3> | undefined; expr: number | Recursive4 | Recursive5; limit: number | null; };
+    };
+  };
   shapes: {
     create: {
       path: "/api/shapes";
@@ -72,8 +96,8 @@ export interface Api {
   trees: {
     create: {
       path: "/api/trees";
-      body: RecursiveInput;
-      response: { depth: number; root: Recursive; };
+      body: RecursiveInput6;
+      response: { depth: number; root: Recursive6; };
     };
   };
 }
@@ -81,11 +105,13 @@ export interface Api {
 /** Pass to `createClient<Api>({ baseUrl, routes })`. */
 export const routes = {
   "echo.retrieve": { method: "GET", path: "/api/echo/{+path}" },
+  "edges.create": { method: "POST", path: "/api/edges" },
   "notes.list": { method: "GET", path: "/api/notes", pagination: { style: "cursor", items: "items", limitParam: "limit", cursor: "cursor", cursorParam: "cursor" } },
   "notes.create": { method: "POST", path: "/api/notes", errors: [409] },
   "notes.retrieve": { method: "GET", path: "/api/notes/{id}", errors: [404] },
   "notes.update": { method: "PUT", path: "/api/notes/{id}" },
   "notes.delete": { method: "DELETE", path: "/api/notes/{id}", body: true, errors: [404] },
+  "odd.create": { method: "POST", path: "/api/odd" },
   "shapes.create": { method: "POST", path: "/api/shapes" },
   "ticks.subscribe": { method: "GET", path: "/api/ticks" },
   "trees.create": { method: "POST", path: "/api/trees" },

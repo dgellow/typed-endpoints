@@ -20,6 +20,7 @@
  */
 
 import type { JsonSchema } from "../contract/index.ts";
+import { context } from "../contract/types.ts";
 
 /** Python keywords and names a Pydantic model already uses. */
 const RESERVED: ReadonlySet<string> = new Set([
@@ -166,8 +167,14 @@ export class PythonModels {
   private readonly unnamed = new Map<Document, Map<string, string>>();
   /** Classes whose fields are being rendered: a reference is to itself. */
   private readonly building = new Set<string>();
+  /** Schemas that are not objects, while their type is worked out. */
+  private readonly open = new Map<Schema, { hint: string; name?: string }>();
+  /** Types that refer to themselves, by content: their name. */
+  private readonly recursive = new Map<string, string>();
   /** Whether a type expression used `SafeInt`. */
   usesSafeInt = false;
+  /** Whether a definition is a `type` statement, which needs Python 3.12. */
+  usesTypeStatement = false;
 
   /**
    * The Python type of a schema, named `name` if it needs a name (an
@@ -183,7 +190,9 @@ export class PythonModels {
       $defs?: Record<string, Schema>;
     };
     const document: Document = { root, rootName: name, defs: $defs ?? {} };
-    return this.typeOf(root, name, document, strict);
+    return isObject(root)
+      ? this.typeOf(root, name, document, strict)
+      : this.expand(root, name, document, strict);
   }
 
   /** The source of every definition. */
@@ -222,7 +231,11 @@ export class PythonModels {
   ): string {
     // References: the document's own root, or a named definition.
     if (typeof schema.$ref === "string") {
-      if (schema.$ref === "#") return JSON.stringify(document.rootName);
+      if (schema.$ref === "#") {
+        return isObject(document.root)
+          ? forward(document.rootName)
+          : this.expand(document.root, document.rootName, document, strict);
+      }
       const key = schema.$ref.replace(/^#\/\$defs\//, "");
       const target = document.defs[key];
       if (!target) throw new Error(`Unresolved reference ${schema.$ref}`);
@@ -310,7 +323,12 @@ export class PythonModels {
       const members = (schema.prefixItems as Schema[]).map((member, i) =>
         this.typeOf(member, `${name}Item${i + 1}`, document, strict)
       );
-      return `tuple[${members.join(", ")}]`;
+      // JSON has no tuples: an array is what arrives. A strict model takes
+      // only a Python tuple for one, so the container is not strict; its
+      // members still are.
+      return constrained(`tuple[${members.join(", ")}]`, {
+        strict: strict ? false : undefined,
+      });
     }
     const items = schema.items && typeof schema.items === "object"
       ? this.typeOf(schema.items as Schema, `${name}Item`, document, strict)
@@ -349,14 +367,12 @@ export class PythonModels {
     document: Document,
     strict: boolean,
   ): string {
-    if (schema.type !== "object" || !schema.properties) {
-      return this.typeOf(schema, hint, document, strict);
-    }
+    if (!isObject(schema)) return this.expand(schema, hint, document, strict);
     let known = this.unnamed.get(document);
     if (!known) this.unnamed.set(document, known = new Map());
     const existing = known.get(key);
     if (existing !== undefined) {
-      return this.building.has(existing) ? JSON.stringify(existing) : existing;
+      return this.building.has(existing) ? forward(existing) : existing;
     }
     const name = this.unique(hint);
     known.set(key, name);
@@ -377,7 +393,7 @@ export class PythonModels {
       const known = this.shared.get(name);
       if (known === content) {
         // Inside its own definition the class does not exist yet.
-        return this.building.has(name) ? JSON.stringify(name) : name;
+        return this.building.has(name) ? forward(name) : name;
       }
       if (known !== undefined) {
         throw new Error(
@@ -387,7 +403,52 @@ export class PythonModels {
       this.shared.set(name, content);
       return this.objectOf(schema, name, document, strict, true);
     }
-    return this.typeOf(schema, pascalCase(key), document, strict);
+    return this.expand(schema, pascalCase(key), document, strict);
+  }
+
+  /**
+   * The type of a schema that is not an object. Written in place, unless
+   * the schema refers to itself (a JSON value, an expression): then it is
+   * a `type` statement, whose right side may name the type itself.
+   */
+  private expand(
+    schema: Schema,
+    hint: string,
+    document: Document,
+    strict: boolean,
+  ): string {
+    const content = JSON.stringify([
+      schema,
+      strict,
+      context(schema, document),
+    ]);
+    const known = this.recursive.get(content);
+    if (known !== undefined) return known;
+
+    const open = this.open.get(schema);
+    if (open) {
+      // Reached again from inside itself. A class defined on the way
+      // names it before it exists.
+      open.name ??= this.unique(open.hint);
+      return forward(open.name);
+    }
+
+    const entry: { hint: string; name?: string } = { hint };
+    this.open.set(schema, entry);
+    const type = this.typeOf(schema, hint, document, strict);
+    this.open.delete(schema);
+    if (entry.name === undefined) return type;
+
+    this.recursive.set(content, entry.name);
+    this.usesTypeStatement = true;
+    this.definitions.push({
+      name: entry.name,
+      // The right side of a `type` statement is evaluated when it is
+      // used, so it names itself and later classes as they are.
+      lines: [`type ${entry.name} = ${type.replaceAll(FORWARD, "")}`],
+      rebuild: false,
+    });
+    return entry.name;
   }
 
   private objectOf(
@@ -459,7 +520,7 @@ export class PythonModels {
     }
     body.push(`    model_config = ConfigDict(${config.join(", ")})`);
 
-    let selfReference = false;
+    let incomplete = false;
     for (const [wireName, member] of Object.entries(properties ?? {})) {
       const attribute = attributeName(wireName);
       let type = this.typeOf(
@@ -468,7 +529,9 @@ export class PythonModels {
         document,
         strict,
       );
-      if (type.includes(JSON.stringify(className))) selfReference = true;
+      // A name that did not exist when the class was made: the class is
+      // completed once every definition exists.
+      if (type.includes(FORWARD)) incomplete = true;
 
       const options: string[] = [];
       let fallback: string | undefined;
@@ -480,6 +543,10 @@ export class PythonModels {
           fallback = "None";
         }
       }
+      // A class that does not exist yet can only be named in a string,
+      // and a string is not a type that `|` or `list[...]` accept
+      // everywhere: the whole annotation is the string.
+      if (type.includes(FORWARD)) type = annotation(type);
       if (attribute !== wireName) {
         // Not `alias`: a type checker would then take the wire name for
         // the constructor's parameter, which Python cannot spell.
@@ -509,7 +576,7 @@ export class PythonModels {
     this.definitions.push({
       name: className,
       lines: [`class ${className}(BaseModel):`, ...body],
-      rebuild: selfReference,
+      rebuild: incomplete,
     });
     return className;
   }
@@ -518,6 +585,27 @@ export class PythonModels {
 // =============================================================================
 // Helpers
 // =============================================================================
+
+/** Whether a schema becomes a class. */
+function isObject(schema: Schema): boolean {
+  return schema.type === "object" && schema.properties !== undefined;
+}
+
+/** Marks a name that is used before its class exists. */
+const FORWARD = "\u0001";
+
+/** A reference to a class that is still being defined. */
+function forward(name: string): string {
+  return `${FORWARD}${name}${FORWARD}`;
+}
+
+/** A type that names a class not yet defined, as a string annotation. */
+function annotation(type: string): string {
+  const text = type.replaceAll(FORWARD, "");
+  if (!text.includes('"')) return `"${text}"`;
+  if (!text.includes("'")) return `'${text}'`;
+  return JSON.stringify(text);
+}
 
 /** `Annotated[T, Field(...)]` when there is a constraint, else `T`. */
 function constrained(type: string, constraints: Record<string, unknown>) {

@@ -1,0 +1,719 @@
+[
+  {
+    "request": "POST /api/notes {\"title\":\"\",\"tags\":\"x\",\"pinned\":1,\"extra\":true}",
+    "status": 400,
+    "body": {
+      "error": "Validation error: title: Too small: expected string to have >=1 characters, tags: Invalid input: expected array, received string, pinned: Invalid input: expected boolean, received number",
+      "in": "body",
+      "issues": [
+        {
+          "path": [
+            "title"
+          ],
+          "message": "Too small: expected string to have >=1 characters",
+          "code": "too_small"
+        },
+        {
+          "path": [
+            "tags"
+          ],
+          "message": "Invalid input: expected array, received string",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "pinned"
+          ],
+          "message": "Invalid input: expected boolean, received number",
+          "code": "invalid_type"
+        }
+      ]
+    }
+  },
+  {
+    "request": "POST /api/notes {}",
+    "status": 400,
+    "body": {
+      "error": "Validation error: title: Invalid input: expected string, received undefined, tags: Invalid input: expected array, received undefined",
+      "in": "body",
+      "issues": [
+        {
+          "path": [
+            "title"
+          ],
+          "message": "Invalid input: expected string, received undefined",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "tags"
+          ],
+          "message": "Invalid input: expected array, received undefined",
+          "code": "invalid_type"
+        }
+      ]
+    }
+  },
+  {
+    "request": "POST /api/notes []",
+    "status": 400,
+    "body": {
+      "error": "Validation error: Invalid input: expected object, received array",
+      "in": "body",
+      "issues": [
+        {
+          "path": [],
+          "message": "Invalid input: expected object, received array",
+          "code": "invalid_type"
+        }
+      ]
+    }
+  },
+  {
+    "request": "POST /api/notes null",
+    "status": 400,
+    "body": {
+      "error": "Validation error: Invalid input: expected object, received null",
+      "in": "body",
+      "issues": [
+        {
+          "path": [],
+          "message": "Invalid input: expected object, received null",
+          "code": "invalid_type"
+        }
+      ]
+    }
+  },
+  {
+    "request": "POST /api/notes {not json",
+    "status": 400,
+    "body": {
+      "error": "Invalid JSON body",
+      "in": "json",
+      "issues": []
+    }
+  },
+  {
+    "request": "DELETE /api/notes/n1",
+    "status": 400,
+    "body": {
+      "error": "Validation error: Invalid input: expected object, received undefined",
+      "in": "body",
+      "issues": [
+        {
+          "path": [],
+          "message": "Invalid input: expected object, received undefined",
+          "code": "invalid_type"
+        }
+      ]
+    }
+  },
+  {
+    "request": "DELETE /api/notes/n1 {\"reason\":\"\"}",
+    "status": 400,
+    "body": {
+      "error": "Validation error: reason: Too small: expected string to have >=3 characters",
+      "in": "body",
+      "issues": [
+        {
+          "path": [
+            "reason"
+          ],
+          "message": "Too small: expected string to have >=3 characters",
+          "code": "too_small"
+        }
+      ]
+    }
+  },
+  {
+    "request": "POST /api/notes a=b",
+    "status": 415,
+    "body": {
+      "error": "Unsupported content type \"application/x-www-form-urlencoded\": the body has to be JSON",
+      "in": "content-type",
+      "issues": []
+    }
+  },
+  {
+    "request": "GET /api/notes?limit=abc&tag=a",
+    "status": 400,
+    "body": {
+      "error": "Query validation error: limit: Invalid input: expected number, received NaN",
+      "in": "query",
+      "issues": [
+        {
+          "path": [
+            "limit"
+          ],
+          "message": "Invalid input: expected number, received NaN",
+          "code": "invalid_type"
+        }
+      ]
+    }
+  },
+  {
+    "request": "GET /api/notes?limit=500",
+    "status": 400,
+    "body": {
+      "error": "Query validation error: limit: Too big: expected number to be <=100",
+      "in": "query",
+      "issues": [
+        {
+          "path": [
+            "limit"
+          ],
+          "message": "Too big: expected number to be <=100",
+          "code": "too_big"
+        }
+      ]
+    }
+  },
+  {
+    "request": "GET /api/notes?limit=1.5",
+    "status": 400,
+    "body": {
+      "error": "Query validation error: limit: Invalid input: expected int, received number",
+      "in": "query",
+      "issues": [
+        {
+          "path": [
+            "limit"
+          ],
+          "message": "Invalid input: expected int, received number",
+          "code": "invalid_type"
+        }
+      ]
+    }
+  },
+  {
+    "request": "GET /api/notes?limit=",
+    "status": 400,
+    "body": {
+      "error": "Query validation error: limit: Too small: expected number to be >=1",
+      "in": "query",
+      "issues": [
+        {
+          "path": [
+            "limit"
+          ],
+          "message": "Too small: expected number to be >=1",
+          "code": "too_small"
+        }
+      ]
+    }
+  },
+  {
+    "request": "POST /api/edges {\"short\":\"abcde\",\"digits\":\"x\",\"count\":1.5,\"step\":0.25,\"flag\":null,\"when\":\"yesterday\",\"id\":\"nope\",\"email\":\"nope\",\"maybe\":3,\"plain\":\"3\"}",
+    "status": 400,
+    "body": {
+      "error": "Validation error: short: Too big: expected string to have <=4 characters, digits: Invalid string: must match pattern /^\\d+$/, plain: Invalid string: must match pattern /^[\\D]+$/, count: Invalid input: expected int, received number, step: Invalid number: must be a multiple of 0.1, flag: Invalid input: expected boolean, received null, maybe: Invalid input: expected string, received number, when: Invalid ISO datetime, id: Invalid UUID, email: Invalid email address",
+      "in": "body",
+      "issues": [
+        {
+          "path": [
+            "short"
+          ],
+          "message": "Too big: expected string to have <=4 characters",
+          "code": "too_big"
+        },
+        {
+          "path": [
+            "digits"
+          ],
+          "message": "Invalid string: must match pattern /^\\d+$/",
+          "code": "invalid_format"
+        },
+        {
+          "path": [
+            "plain"
+          ],
+          "message": "Invalid string: must match pattern /^[\\D]+$/",
+          "code": "invalid_format"
+        },
+        {
+          "path": [
+            "count"
+          ],
+          "message": "Invalid input: expected int, received number",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "step"
+          ],
+          "message": "Invalid number: must be a multiple of 0.1",
+          "code": "not_multiple_of"
+        },
+        {
+          "path": [
+            "flag"
+          ],
+          "message": "Invalid input: expected boolean, received null",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "maybe"
+          ],
+          "message": "Invalid input: expected string, received number",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "when"
+          ],
+          "message": "Invalid ISO datetime",
+          "code": "invalid_format"
+        },
+        {
+          "path": [
+            "id"
+          ],
+          "message": "Invalid UUID",
+          "code": "invalid_format"
+        },
+        {
+          "path": [
+            "email"
+          ],
+          "message": "Invalid email address",
+          "code": "invalid_format"
+        }
+      ]
+    }
+  },
+  {
+    "request": "POST /api/edges {\"count\":\"1\",\"flag\":\"true\",\"short\":4}",
+    "status": 400,
+    "body": {
+      "error": "Validation error: short: Invalid input: expected string, received number, count: Invalid input: expected number, received string, flag: Invalid input: expected boolean, received string",
+      "in": "body",
+      "issues": [
+        {
+          "path": [
+            "short"
+          ],
+          "message": "Invalid input: expected string, received number",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "count"
+          ],
+          "message": "Invalid input: expected number, received string",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "flag"
+          ],
+          "message": "Invalid input: expected boolean, received string",
+          "code": "invalid_type"
+        }
+      ]
+    }
+  },
+  {
+    "request": "POST /api/edges {\"count\":1152921504606846976}",
+    "status": 400,
+    "body": {
+      "error": "Validation error: count: Too big: expected int to be <=9007199254740991",
+      "in": "body",
+      "issues": [
+        {
+          "path": [
+            "count"
+          ],
+          "message": "Too big: expected int to be <=9007199254740991",
+          "code": "too_big"
+        }
+      ]
+    }
+  },
+  {
+    "request": "POST /api/shapes {\"shape\":{\"kind\":\"triangle\"},\"from\":\"x\",\"meta\":{\"data-id\":\"m\"},\"note\":null}",
+    "status": 400,
+    "body": {
+      "error": "Validation error: shape.kind: Invalid discriminator value. Expected 'circle' | 'rect'",
+      "in": "body",
+      "issues": [
+        {
+          "path": [
+            "shape",
+            "kind"
+          ],
+          "message": "Invalid discriminator value. Expected 'circle' | 'rect'",
+          "code": "invalid_union"
+        }
+      ]
+    }
+  },
+  {
+    "request": "POST /api/shapes {\"shape\":{\"kind\":\"circle\"},\"from\":\"x\",\"meta\":{\"data-id\":\"m\"},\"note\":null}",
+    "status": 400,
+    "body": {
+      "error": "Validation error: shape.radius: Invalid input: expected number, received undefined",
+      "in": "body",
+      "issues": [
+        {
+          "path": [
+            "shape",
+            "radius"
+          ],
+          "message": "Invalid input: expected number, received undefined",
+          "code": "invalid_type"
+        }
+      ]
+    }
+  },
+  {
+    "request": "POST /api/shapes {\"shape\":\"circle\",\"from\":\"x\",\"meta\":{\"data-id\":\"m\"},\"note\":null}",
+    "status": 400,
+    "body": {
+      "error": "Validation error: shape: Invalid input: expected object, received string",
+      "in": "body",
+      "issues": [
+        {
+          "path": [
+            "shape"
+          ],
+          "message": "Invalid input: expected object, received string",
+          "code": "invalid_type"
+        }
+      ]
+    }
+  },
+  {
+    "request": "POST /api/shapes {\"shape\":{\"radius\":2},\"from\":\"x\",\"meta\":{\"data-id\":\"m\"},\"note\":null}",
+    "status": 400,
+    "body": {
+      "error": "Validation error: shape.kind: Invalid discriminator value. Expected 'circle' | 'rect'",
+      "in": "body",
+      "issues": [
+        {
+          "path": [
+            "shape",
+            "kind"
+          ],
+          "message": "Invalid discriminator value. Expected 'circle' | 'rect'",
+          "code": "invalid_union"
+        }
+      ]
+    }
+  },
+  {
+    "request": "POST /api/shapes {\"shape\":{\"kind\":\"circle\",\"radius\":-1},\"from\":\"x\",\"meta\":{\"data-id\":\"m\"},\"note\":null}",
+    "status": 400,
+    "body": {
+      "error": "Validation error: shape.radius: Too small: expected number to be >0",
+      "in": "body",
+      "issues": [
+        {
+          "path": [
+            "shape",
+            "radius"
+          ],
+          "message": "Too small: expected number to be >0",
+          "code": "too_small"
+        }
+      ]
+    }
+  },
+  {
+    "request": "POST /api/shapes {\"shape\":{\"kind\":\"circle\",\"radius\":1},\"from\":\"x\",\"meta\":{},\"note\":3,\"unit\":\"km\"}",
+    "status": 400,
+    "body": {
+      "error": "Validation error: meta.data-id: Invalid input: expected string, received undefined, unit: Invalid option: expected one of \"mm\"|\"cm\", note: Invalid input: expected string, received number",
+      "in": "body",
+      "issues": [
+        {
+          "path": [
+            "meta",
+            "data-id"
+          ],
+          "message": "Invalid input: expected string, received undefined",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "unit"
+          ],
+          "message": "Invalid option: expected one of \"mm\"|\"cm\"",
+          "code": "invalid_value"
+        },
+        {
+          "path": [
+            "note"
+          ],
+          "message": "Invalid input: expected string, received number",
+          "code": "invalid_type"
+        }
+      ]
+    }
+  },
+  {
+    "request": "POST /api/shapes {\"from\":\"x\"}",
+    "status": 400,
+    "body": {
+      "error": "Validation error: shape: Invalid input: expected object, received undefined, meta: Invalid input: expected object, received undefined, note: Invalid input: expected string, received undefined",
+      "in": "body",
+      "issues": [
+        {
+          "path": [
+            "shape"
+          ],
+          "message": "Invalid input: expected object, received undefined",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "meta"
+          ],
+          "message": "Invalid input: expected object, received undefined",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "note"
+          ],
+          "message": "Invalid input: expected string, received undefined",
+          "code": "invalid_type"
+        }
+      ]
+    }
+  },
+  {
+    "request": "POST /api/odd {\"type\":\"memo\",\"createdAt\":\"a\",\"created_at\":\"b\",\"2fa\":true,\"pair\":[\"a\",1,2],\"scores\":{\"first\":1},\"loose\":true,\"looseOrNull\":true,\"version\":3,\"anything\":1,\"chain\":{\"name\":\"a\",\"origin\":null},\"json\":null,\"expr\":1}",
+    "status": 400,
+    "body": {
+      "error": "Validation error: pair: Too big: expected array to have <=2 items, loose: Invalid input, looseOrNull: Invalid input, version: Invalid input: expected 2",
+      "in": "body",
+      "issues": [
+        {
+          "path": [
+            "pair"
+          ],
+          "message": "Too big: expected array to have <=2 items",
+          "code": "too_big"
+        },
+        {
+          "path": [
+            "loose"
+          ],
+          "message": "Invalid input",
+          "code": "invalid_union"
+        },
+        {
+          "path": [
+            "looseOrNull"
+          ],
+          "message": "Invalid input",
+          "code": "invalid_union"
+        },
+        {
+          "path": [
+            "version"
+          ],
+          "message": "Invalid input: expected 2",
+          "code": "invalid_value"
+        }
+      ]
+    }
+  },
+  {
+    "request": "POST /api/odd {\"type\":\"memo\",\"createdAt\":\"a\",\"created_at\":\"b\",\"2fa\":true,\"pair\":[\"a\"],\"scores\":{\"a\":1.5,\"b\":\"x\"},\"loose\":\"x\",\"looseOrNull\":null,\"version\":2,\"anything\":1,\"chain\":{\"name\":\"a\",\"origin\":null},\"json\":null,\"expr\":{\"op\":\"neg\",\"of\":\"two\"}}",
+    "status": 400,
+    "body": {
+      "error": "Validation error: pair: Too small: expected array to have >=2 items, scores.a: Invalid input: expected int, received number, scores.b: Invalid input: expected number, received string, expr: Invalid input",
+      "in": "body",
+      "issues": [
+        {
+          "path": [
+            "pair"
+          ],
+          "message": "Too small: expected array to have >=2 items",
+          "code": "too_small"
+        },
+        {
+          "path": [
+            "scores",
+            "a"
+          ],
+          "message": "Invalid input: expected int, received number",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "scores",
+            "b"
+          ],
+          "message": "Invalid input: expected number, received string",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "expr"
+          ],
+          "message": "Invalid input",
+          "code": "invalid_union"
+        }
+      ]
+    }
+  },
+  {
+    "request": "POST /api/odd {\"type\":\"memo\",\"createdAt\":\"a\",\"created_at\":\"b\",\"2fa\":true,\"pair\":[\"width\",2.5],\"scores\":{\"first\":1},\"loose\":\"x\",\"looseOrNull\":null,\"version\":2,\"anything\":1,\"chain\":{\"name\":\"a\",\"origin\":null,\"next\":{\"name\":1}},\"json\":null,\"expr\":1}",
+    "status": 400,
+    "body": {
+      "error": "Validation error: chain.next.name: Invalid input: expected string, received number, chain.next.origin: Invalid input: expected object, received undefined",
+      "in": "body",
+      "issues": [
+        {
+          "path": [
+            "chain",
+            "next",
+            "name"
+          ],
+          "message": "Invalid input: expected string, received number",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "chain",
+            "next",
+            "origin"
+          ],
+          "message": "Invalid input: expected object, received undefined",
+          "code": "invalid_type"
+        }
+      ]
+    }
+  },
+  {
+    "request": "POST /api/odd {}",
+    "status": 400,
+    "body": {
+      "error": "Validation error: type: Invalid input: expected string, received undefined, createdAt: Invalid input: expected string, received undefined, created_at: Invalid input: expected string, received undefined, 2fa: Invalid input: expected boolean, received undefined, pair: Invalid input: expected tuple, received undefined, scores: Invalid input: expected record, received undefined, loose: Invalid input, looseOrNull: Invalid input, version: Invalid input: expected 2, anything: Invalid input: expected nonoptional, received undefined, chain: Invalid input: expected object, received undefined, json: Invalid input, expr: Invalid input",
+      "in": "body",
+      "issues": [
+        {
+          "path": [
+            "type"
+          ],
+          "message": "Invalid input: expected string, received undefined",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "createdAt"
+          ],
+          "message": "Invalid input: expected string, received undefined",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "created_at"
+          ],
+          "message": "Invalid input: expected string, received undefined",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "2fa"
+          ],
+          "message": "Invalid input: expected boolean, received undefined",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "pair"
+          ],
+          "message": "Invalid input: expected tuple, received undefined",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "scores"
+          ],
+          "message": "Invalid input: expected record, received undefined",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "loose"
+          ],
+          "message": "Invalid input",
+          "code": "invalid_union"
+        },
+        {
+          "path": [
+            "looseOrNull"
+          ],
+          "message": "Invalid input",
+          "code": "invalid_union"
+        },
+        {
+          "path": [
+            "version"
+          ],
+          "message": "Invalid input: expected 2",
+          "code": "invalid_value"
+        },
+        {
+          "path": [
+            "anything"
+          ],
+          "message": "Invalid input: expected nonoptional, received undefined",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "chain"
+          ],
+          "message": "Invalid input: expected object, received undefined",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "json"
+          ],
+          "message": "Invalid input",
+          "code": "invalid_union"
+        },
+        {
+          "path": [
+            "expr"
+          ],
+          "message": "Invalid input",
+          "code": "invalid_union"
+        }
+      ]
+    }
+  },
+  {
+    "request": "POST /api/trees {\"name\":\"r\",\"children\":[{\"name\":\"c\"},3]}",
+    "status": 400,
+    "body": {
+      "error": "Validation error: children.0.children: Invalid input: expected array, received undefined, children.1: Invalid input: expected object, received number",
+      "in": "body",
+      "issues": [
+        {
+          "path": [
+            "children",
+            0,
+            "children"
+          ],
+          "message": "Invalid input: expected array, received undefined",
+          "code": "invalid_type"
+        },
+        {
+          "path": [
+            "children",
+            1
+          ],
+          "message": "Invalid input: expected object, received number",
+          "code": "invalid_type"
+        }
+      ]
+    }
+  }
+]

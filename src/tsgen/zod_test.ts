@@ -247,6 +247,40 @@ Deno.test("zodToTypeString names recursive schemas", () => {
   ]);
 });
 
+type Json = string | null | Json[] | { [key: string]: Json };
+const Json: z.ZodType<Json> = z.union([
+  z.string(),
+  z.null(),
+  z.array(z.lazy(() => Json)),
+  z.record(z.string(), z.lazy(() => Json)),
+]);
+
+Deno.test("zodToTypeString writes a record inside a recursive type as an index signature", () => {
+  const declarations = new TypeDeclarations();
+  // `type T = Record<string, T>` does not compile (TS2456); that the text
+  // below does is checked where a generated file with it is imported
+  // (`e2e_tests/fixtures/conformance/api.generated.ts`).
+  assertEquals(
+    zodToTypeString(Json, { declarations }),
+    "string | null | Recursive[] | Record<string, Recursive2>",
+  );
+  assertEquals(declarations.entries(), [
+    [
+      "Recursive2",
+      "string | null | Recursive[] | { [key: string]: Recursive2; }",
+    ],
+    [
+      "Recursive",
+      "string | null | Recursive[] | { [key: string]: Recursive2; }",
+    ],
+  ]);
+  // Outside a recursive type, a record is written as before.
+  assertEquals(
+    zodToTypeString(z.record(z.string(), z.number())),
+    "Record<string, number>",
+  );
+});
+
 Deno.test("zodToTypeString names input and output sides separately", () => {
   const declarations = new TypeDeclarations();
   assertEquals(zodToTypeString(Category, { declarations }), "Category");

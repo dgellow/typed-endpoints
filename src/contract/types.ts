@@ -1,0 +1,622 @@
+/**
+ * The types of a contract, for generators.
+ *
+ * A contract carries JSON Schema. A generator for a language with nominal
+ * types needs more than a schema says: a name for every object, for every
+ * union and for every set of literals; the same object recognised as the
+ * same type wherever it occurs; a reference that closes a cycle marked as
+ * one. Those decisions do not depend on the target language, so they are
+ * taken once, here, and a generator renders the result.
+ *
+ * `TypeGraph.define()` turns one schema into a `TypeNode` and records the
+ * definitions (objects, their other names, and types that refer to
+ * themselves) it needs, each after the definitions it uses.
+ *
+ * @module
+ */
+
+import type { JsonSchema } from "../tsgen/extract.ts";
+
+/** A value a literal type can be. */
+export type Scalar = string | number | boolean | null;
+
+/** Bounds of a number. */
+export interface NumberBounds {
+  readonly minimum?: number;
+  readonly maximum?: number;
+  readonly exclusiveMinimum?: number;
+  readonly exclusiveMaximum?: number;
+  readonly multipleOf?: number;
+}
+
+/** A type, as a generator sees it. */
+export type TypeNode =
+  /** Anything: what JSON Schema could not state. */
+  | { readonly kind: "any" }
+  | { readonly kind: "null" }
+  | { readonly kind: "boolean" }
+  | {
+    readonly kind: "string";
+    readonly minLength?: number;
+    readonly maxLength?: number;
+    /** A regular expression in JavaScript syntax. */
+    readonly pattern?: string;
+    readonly format?: string;
+  }
+  | ({ readonly kind: "integer" | "number" } & NumberBounds)
+  /** One of a set of values. `name` is free for a generator to use. */
+  | {
+    readonly kind: "literal";
+    readonly name: string;
+    readonly values: readonly Scalar[];
+  }
+  | {
+    readonly kind: "array";
+    readonly items: TypeNode;
+    readonly minItems?: number;
+    readonly maxItems?: number;
+  }
+  | { readonly kind: "tuple"; readonly items: readonly TypeNode[] }
+  /** An object with any keys, whose values have one type. */
+  | { readonly kind: "map"; readonly values: TypeNode }
+  /**
+   * One of several types. `null` as a variant is how a nullable type is
+   * written. `discriminator` is the field that tells object variants
+   * apart, when there is one.
+   */
+  | {
+    readonly kind: "union";
+    readonly name: string;
+    readonly variants: readonly TypeNode[];
+    readonly discriminator?: string;
+  }
+  /**
+   * A definition, by name. `cyclic` when the definition is the one being
+   * defined, or encloses it: a language with value types needs
+   * indirection there.
+   */
+  | { readonly kind: "ref"; readonly name: string; readonly cyclic: boolean };
+
+/** A field of an object. */
+export interface FieldNode {
+  /** The name on the wire. */
+  readonly name: string;
+  readonly type: TypeNode;
+  /** Whether the field has to be present. */
+  readonly required: boolean;
+  /** The value a missing field takes, if the schema gives one. */
+  readonly default?: { readonly value: unknown };
+  readonly description?: string;
+}
+
+/** An object type. */
+export interface ObjectDefinition {
+  readonly kind: "object";
+  readonly name: string;
+  readonly description?: string;
+  /** Whether members the schema does not name are refused. */
+  readonly closed: boolean;
+  /**
+   * Whether the values arrive as text (query and path parameters) and
+   * are turned into numbers and booleans, or keep their JSON types.
+   */
+  readonly text: boolean;
+  readonly fields: readonly FieldNode[];
+}
+
+/** Another name for a definition: the same object in another place. */
+export interface AliasDefinition {
+  readonly kind: "alias";
+  readonly name: string;
+  readonly target: string;
+}
+
+/**
+ * A type that is not an object and refers to itself: a JSON value, an
+ * expression. It cannot be written in place, so it has a name.
+ */
+export interface NamedDefinition {
+  readonly kind: "named";
+  readonly name: string;
+  readonly type: TypeNode;
+}
+
+/** Something a generated module defines. */
+export type Definition =
+  | ObjectDefinition
+  | AliasDefinition
+  | NamedDefinition;
+
+/** `usersRetrieve`, `users-list`, `user_posts` as `UsersRetrieve`... */
+export function pascalCase(name: string): string {
+  const words = name
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(/[^A-Za-z0-9]+/)
+    .filter((word) => word !== "");
+  const joined = words
+    .map((word) => word[0].toUpperCase() + word.slice(1))
+    .join("");
+  return /^[0-9]/.test(joined) ? `_${joined}` : joined || "_";
+}
+
+/** A nullable type as the type it is when it is not null. */
+export function withoutNull(
+  type: TypeNode,
+): { readonly type: TypeNode; readonly nullable: boolean } {
+  if (type.kind === "null") return { type, nullable: true };
+  if (type.kind !== "union") return { type, nullable: false };
+  const rest = type.variants.filter((variant) => variant.kind !== "null");
+  if (rest.length === type.variants.length) return { type, nullable: false };
+  return {
+    type: rest.length === 1 ? rest[0] : { ...type, variants: rest },
+    nullable: true,
+  };
+}
+
+type Schema = Readonly<Record<string, unknown>>;
+
+interface Document {
+  readonly root: Schema;
+  /** The name the root has, once it has one. */
+  rootName: string;
+  readonly defs: Readonly<Record<string, Schema>>;
+}
+
+/** Whether a schema becomes an object definition. */
+function isObject(schema: Schema): boolean {
+  return schema.type === "object" && schema.properties !== undefined;
+}
+
+/** A schema that is not an object, while its type is being worked out. */
+interface Open {
+  readonly hint: string;
+  /** Set when the schema turns out to refer to itself. */
+  name?: string;
+}
+
+/** The types of a set of schemas, named and shared. */
+export class TypeGraph {
+  /** Every definition, each after the definitions it uses. */
+  readonly definitions: Definition[] = [];
+
+  private readonly names = new Set<string>();
+  /** Named `$defs`: their content, to tell a reuse from a clash. */
+  private readonly shared = new Map<string, string>();
+  /** Objects already defined, by content. */
+  private readonly known = new Map<string, string>();
+  /** The definitions Zod named itself, per document. */
+  private readonly unnamed = new Map<Document, Map<string, string>>();
+  /** Objects whose fields are being read: a reference to one is a cycle. */
+  private readonly building = new Set<string>();
+  /** Schemas that are not objects, while their type is worked out. */
+  private readonly open = new Map<Schema, Open>();
+  /** Types that refer to themselves, by content: their name. */
+  private readonly recursive = new Map<string, string>();
+
+  /**
+   * The type of a schema.
+   *
+   * @param name Name for the type if it needs one (an object does).
+   * @param schema A JSON Schema document.
+   * @param text Whether its values arrive as text (query, path).
+   */
+  define(name: string, schema: JsonSchema, text: boolean): TypeNode {
+    const { $defs, $schema: _dialect, ...root } = schema as Schema & {
+      $defs?: Record<string, Schema>;
+    };
+    const document: Document = { root, rootName: name, defs: $defs ?? {} };
+    return isObject(root)
+      ? this.typeOf(root, name, document, text)
+      : this.expand(root, name, document, text);
+  }
+
+  /** The definition of that name, following other names to the object. */
+  object(name: string): ObjectDefinition | undefined {
+    const definition = this.definitions.find((d) => d.name === name);
+    if (!definition || definition.kind === "named") return undefined;
+    return definition.kind === "alias"
+      ? this.object(definition.target)
+      : definition;
+  }
+
+  /**
+   * Whether `null` is a value of the type, also when the type is a name
+   * for one that says so.
+   */
+  nullable(type: TypeNode, seen: ReadonlySet<string> = new Set()): boolean {
+    if (type.kind === "null") return true;
+    if (type.kind === "union") {
+      return type.variants.some((variant) => this.nullable(variant, seen));
+    }
+    if (type.kind !== "ref" || seen.has(type.name)) return false;
+    const definition = this.definitions.find((d) => d.name === type.name);
+    return definition?.kind === "named" &&
+      this.nullable(definition.type, new Set([...seen, type.name]));
+  }
+
+  // ---------------------------------------------------------------------------
+
+  private unique(name: string): string {
+    let candidate = name;
+    for (let i = 2; this.names.has(candidate); i++) candidate = `${name}${i}`;
+    this.names.add(candidate);
+    return candidate;
+  }
+
+  private typeOf(
+    schema: Schema,
+    name: string,
+    document: Document,
+    text: boolean,
+  ): TypeNode {
+    if (typeof schema.$ref === "string") {
+      if (schema.$ref === "#") {
+        return isObject(document.root)
+          ? { kind: "ref", name: document.rootName, cyclic: true }
+          : this.expand(document.root, document.rootName, document, text);
+      }
+      const key = schema.$ref.replace(/^#\/\$defs\//, "");
+      const target = document.defs[key];
+      if (!target) throw new Error(`Unresolved reference ${schema.$ref}`);
+      // A definition Zod named itself (`__schema0`) is named after where
+      // it is used.
+      return /^__schema\d+$/.test(key)
+        ? this.unnamedType(key, target, name, document, text)
+        : this.sharedType(key, target, document, text);
+    }
+
+    if ("const" in schema) {
+      return { kind: "literal", name, values: [schema.const as Scalar] };
+    }
+    if (Array.isArray(schema.enum)) {
+      return { kind: "literal", name, values: schema.enum as Scalar[] };
+    }
+
+    const alternatives = (schema.anyOf ?? schema.oneOf) as
+      | Schema[]
+      | undefined;
+    if (Array.isArray(alternatives)) {
+      return this.unionOf(alternatives, name, document, text);
+    }
+
+    if (Array.isArray(schema.allOf)) {
+      const members = schema.allOf as Schema[];
+      if (members.length === 1) {
+        return this.typeOf(members[0], name, document, text);
+      }
+      const merged = mergeObjects(members);
+      return merged
+        ? this.typeOf(merged, name, document, text)
+        : { kind: "any" };
+    }
+
+    if (Array.isArray(schema.type)) {
+      const members = (schema.type as string[]).map((type) => ({
+        ...schema,
+        type,
+      }));
+      return this.unionOf(members, name, document, text);
+    }
+
+    const number = (key: string) =>
+      typeof schema[key] === "number" ? { [key]: schema[key] } : {};
+    switch (schema.type) {
+      case "null":
+        return { kind: "null" };
+      case "boolean":
+        return { kind: "boolean" };
+      case "string":
+        return {
+          kind: "string",
+          ...number("minLength"),
+          ...number("maxLength"),
+          ...(typeof schema.pattern === "string" &&
+            { pattern: schema.pattern }),
+          ...(typeof schema.format === "string" && { format: schema.format }),
+        };
+      case "integer":
+      case "number":
+        return {
+          kind: schema.type,
+          ...number("minimum"),
+          ...number("maximum"),
+          ...number("exclusiveMinimum"),
+          ...number("exclusiveMaximum"),
+          ...number("multipleOf"),
+        };
+      case "array": {
+        if (Array.isArray(schema.prefixItems)) {
+          return {
+            kind: "tuple",
+            items: (schema.prefixItems as Schema[]).map((member, i) =>
+              this.typeOf(member, `${name}Item${i + 1}`, document, text)
+            ),
+          };
+        }
+        return {
+          kind: "array",
+          items: schema.items && typeof schema.items === "object"
+            ? this.typeOf(schema.items as Schema, `${name}Item`, document, text)
+            : { kind: "any" },
+          ...number("minItems"),
+          ...number("maxItems"),
+        };
+      }
+      case "object":
+        return this.objectOf(schema, name, document, text);
+      default:
+        return { kind: "any" };
+    }
+  }
+
+  private unionOf(
+    alternatives: readonly Schema[],
+    name: string,
+    document: Document,
+    text: boolean,
+  ): TypeNode {
+    const tag = discriminator(alternatives, document);
+    const variants = alternatives.map((member, i) => {
+      const value = tag && (resolve(member, document).properties as
+        | Record<string, Schema>
+        | undefined)?.[tag]?.const;
+      const suffix = typeof value === "string" ? pascalCase(value) : `${i + 1}`;
+      return this.typeOf(member, `${name}${suffix}`, document, text);
+    });
+    if (variants.length === 1) return variants[0];
+    return {
+      kind: "union",
+      name,
+      variants,
+      ...(tag && { discriminator: tag }),
+    };
+  }
+
+  private unnamedType(
+    key: string,
+    schema: Schema,
+    hint: string,
+    document: Document,
+    text: boolean,
+  ): TypeNode {
+    if (!isObject(schema)) return this.expand(schema, hint, document, text);
+    let known = this.unnamed.get(document);
+    if (!known) this.unnamed.set(document, known = new Map());
+    const existing = known.get(key);
+    if (existing !== undefined) {
+      return {
+        kind: "ref",
+        name: existing,
+        cyclic: this.building.has(existing),
+      };
+    }
+    const name = this.unique(hint);
+    known.set(key, name);
+    return this.objectOf(schema, name, document, text, true);
+  }
+
+  private sharedType(
+    key: string,
+    schema: Schema,
+    document: Document,
+    text: boolean,
+  ): TypeNode {
+    if (isObject(schema)) {
+      const name = pascalCase(key);
+      const content = JSON.stringify([schema, text]);
+      const known = this.shared.get(name);
+      if (known === content) {
+        return { kind: "ref", name, cyclic: this.building.has(name) };
+      }
+      if (known !== undefined) {
+        throw new Error(
+          `Two different schemas are named "${key}"; give one another id`,
+        );
+      }
+      this.shared.set(name, content);
+      this.names.add(name);
+      return this.objectOf(schema, name, document, text, true);
+    }
+    return this.expand(schema, pascalCase(key), document, text);
+  }
+
+  /**
+   * The type of a schema that is not an object. Written in place, unless
+   * the schema refers to itself: then it is a definition, and the type is
+   * a reference to it.
+   */
+  private expand(
+    schema: Schema,
+    hint: string,
+    document: Document,
+    text: boolean,
+  ): TypeNode {
+    const content = JSON.stringify([schema, text, context(schema, document)]);
+    const known = this.recursive.get(content);
+    if (known !== undefined) return { kind: "ref", name: known, cyclic: false };
+
+    const open = this.open.get(schema);
+    if (open) {
+      // Reached again from inside itself.
+      open.name ??= this.unique(open.hint);
+      return { kind: "ref", name: open.name, cyclic: true };
+    }
+
+    const entry: Open = { hint };
+    this.open.set(schema, entry);
+    const type = this.typeOf(schema, hint, document, text);
+    this.open.delete(schema);
+    if (entry.name === undefined) return type;
+
+    this.recursive.set(content, entry.name);
+    this.definitions.push({
+      kind: "named",
+      name: entry.name,
+      type: type.kind === "union" ? { ...type, name: entry.name } : type,
+    });
+    return { kind: "ref", name: entry.name, cyclic: false };
+  }
+
+  private objectOf(
+    schema: Schema,
+    name: string,
+    document: Document,
+    text: boolean,
+    named = false,
+  ): TypeNode {
+    const properties = schema.properties as
+      | Record<string, Schema>
+      | undefined;
+    const additional = schema.additionalProperties;
+
+    if (!properties || Object.keys(properties).length === 0) {
+      if (additional && typeof additional === "object") {
+        return {
+          kind: "map",
+          values: this.typeOf(
+            additional as Schema,
+            `${name}Value`,
+            document,
+            text,
+          ),
+        };
+      }
+      if (!properties) return { kind: "map", values: { kind: "any" } };
+    }
+
+    // The same object under another name is that object again.
+    const content = JSON.stringify([
+      schema,
+      text,
+      JSON.stringify(schema).includes('"$ref":"#/') ? document.defs : null,
+      JSON.stringify(schema).includes('"$ref":"#"') ? document.rootName : null,
+    ]);
+    const isRoot = schema === document.root;
+    if (!named) {
+      const same = this.known.get(content);
+      if (same !== undefined) {
+        const alias = this.unique(name);
+        this.definitions.push({ kind: "alias", name: alias, target: same });
+        return { kind: "ref", name: alias, cyclic: false };
+      }
+    }
+
+    const typeName = named ? name : this.unique(name);
+    // What refers to the root refers to it by the name it got.
+    if (isRoot) document.rootName = typeName;
+    this.known.set(content, typeName);
+    this.building.add(typeName);
+    const required = new Set((schema.required as string[] | undefined) ?? []);
+
+    const fields: FieldNode[] = Object.entries(properties ?? {}).map(
+      ([wireName, member]) => ({
+        name: wireName,
+        type: this.typeOf(
+          member,
+          `${typeName}${pascalCase(wireName)}`,
+          document,
+          text,
+        ),
+        required: required.has(wireName),
+        ...(!required.has(wireName) && "default" in member &&
+          { default: { value: member.default } }),
+        ...(typeof member.description === "string" &&
+          { description: member.description }),
+      }),
+    );
+
+    this.building.delete(typeName);
+    this.definitions.push({
+      kind: "object",
+      name: typeName,
+      ...(typeof schema.description === "string" &&
+        { description: schema.description }),
+      closed: additional === false,
+      text,
+      fields,
+    });
+    return { kind: "ref", name: typeName, cyclic: false };
+  }
+}
+
+/**
+ * What a schema means besides its own text: the definitions and the root
+ * it refers to.
+ */
+export function context(
+  schema: Readonly<Record<string, unknown>>,
+  document: {
+    readonly root: Readonly<Record<string, unknown>>;
+    readonly defs: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
+  },
+): unknown {
+  // The definitions it reaches, in the order it reaches them.
+  const reached: Record<string, unknown> = {};
+  let refersToRoot = false;
+  const visit = (text: string) => {
+    if (text.includes('"$ref":"#"')) refersToRoot = true;
+    for (const [, key] of text.matchAll(/"\$ref":"#\/\$defs\/([^"]+)"/g)) {
+      const target = document.defs[key];
+      if (target === undefined || key in reached) continue;
+      reached[key] = target;
+      visit(JSON.stringify(target));
+    }
+  };
+  visit(JSON.stringify(schema));
+  return [
+    reached,
+    refersToRoot && schema !== document.root ? document.root : null,
+  ];
+}
+
+function resolve(schema: Schema, document: Document): Schema {
+  if (typeof schema.$ref !== "string") return schema;
+  if (schema.$ref === "#") return document.root;
+  return document.defs[schema.$ref.replace(/^#\/\$defs\//, "")] ?? schema;
+}
+
+/**
+ * The property that tells the members of a union apart: every member is an
+ * object that requires it with a string constant, and no two constants
+ * are equal.
+ */
+function discriminator(
+  alternatives: readonly Schema[],
+  document: Document,
+): string | undefined {
+  if (alternatives.length < 2) return undefined;
+  const members = alternatives.map((member) => resolve(member, document));
+  if (!members.every((member) => member.type === "object")) return undefined;
+
+  const first = (members[0].properties ?? {}) as Record<string, Schema>;
+  for (const key of Object.keys(first)) {
+    const values = members.map((member) => {
+      const property = (member.properties as Record<string, Schema> | undefined)
+        ?.[key];
+      const required = (member.required as string[] | undefined) ?? [];
+      return property && required.includes(key) &&
+          typeof property.const === "string"
+        ? property.const
+        : undefined;
+    });
+    if (
+      values.every((value) => value !== undefined) &&
+      new Set(values).size === values.length
+    ) {
+      return key;
+    }
+  }
+  return undefined;
+}
+
+/** An intersection of object schemas as one object schema. */
+function mergeObjects(members: readonly Schema[]): Schema | undefined {
+  if (!members.every((member) => member.type === "object")) return undefined;
+  return {
+    type: "object",
+    properties: Object.assign({}, ...members.map((m) => m.properties ?? {})),
+    required: [
+      ...new Set(members.flatMap((m) => (m.required as string[]) ?? [])),
+    ],
+  };
+}

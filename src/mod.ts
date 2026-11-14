@@ -145,6 +145,7 @@ export {
   generatePythonClient,
   type GeneratePythonClientOptions,
 } from "./python/index.ts";
+export { generateAxum, type GenerateAxumOptions } from "./rust/index.ts";
 
 // Vite plugin
 export {

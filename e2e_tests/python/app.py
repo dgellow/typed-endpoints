@@ -1,4 +1,4 @@
-"""The fixture API of e2e_tests/fixtures/python, in Python.
+"""The fixture API of e2e_tests/fixtures/conformance, in Python.
 
 The handlers do what the TypeScript handlers of the fixture do. Models,
 `Handlers` and `create_app()` come from `api_generated.py`, which the
@@ -7,7 +7,7 @@ generator writes from the TypeScript routes.
 
 import asyncio
 from collections.abc import AsyncIterator
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi.responses import Response
 
@@ -105,6 +105,13 @@ class Notes:
             note=body.note,
         )
 
+    async def odd_create(
+        self, body: api.OddCreateBody
+    ) -> api.OddCreateResponse | Response:
+        # What was sent, and the default the body's model filled in.
+        sent = body.model_dump(by_alias=True, exclude_unset=True)
+        return api.OddCreateResponse.model_validate({**sent, "limit": body.limit})
+
     async def trees_create(
         self, body: api.TreesCreateBody
     ) -> api.TreesCreateResponse | Response:
@@ -133,6 +140,17 @@ class Notes:
                 )
             yield api.TicksListTickEvent(data=api.TicksListTickData(n=n), id=str(n))
         yield api.TicksListDoneEvent(data=api.TicksListDoneData(total=query.count))
+
+    async def edges_create(
+        self, body: api.EdgesCreateBody
+    ) -> api.EdgesCreateResponse | Response:
+        # Which fields arrived; `maybe` and `count` given back.
+        answer: dict[str, Any] = {"received": sorted(body.model_fields_set)}
+        if "maybe" in body.model_fields_set:
+            answer["maybe"] = body.maybe
+        if body.count is not None:
+            answer["count"] = body.count
+        return api.EdgesCreateResponse.model_validate(answer)
 
     def _store(self, note_id: str, likes: int, body: api.NotesCreateBody) -> Note:
         # Only the fields the body set: an absent `pinned` stays absent.

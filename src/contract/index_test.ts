@@ -3,7 +3,7 @@ import { assert, assertEquals } from "@std/assert";
 import { generateTypes } from "../tsgen/mod.ts";
 import { type ContractOperation, generateContract } from "./index.ts";
 
-const PYTHON_FIXTURE = "e2e_tests/fixtures/python/routes";
+const CONFORMANCE_FIXTURE = "e2e_tests/fixtures/conformance/routes";
 const TSGEN_FIXTURE = "src/tsgen/fixtures/routes/api";
 
 function byId(
@@ -13,7 +13,9 @@ function byId(
 }
 
 Deno.test("contract: every operation, ordered by path and method, with its template", async () => {
-  const contract = await generateContract({ routesDirs: [PYTHON_FIXTURE] });
+  const contract = await generateContract({
+    routesDirs: [CONFORMANCE_FIXTURE],
+  });
 
   assertEquals(contract.version, 1);
   assertEquals(
@@ -22,11 +24,13 @@ Deno.test("contract: every operation, ordered by path and method, with its templ
     ),
     [
       "GET /api/echo/{+path} echoRetrieve",
+      "POST /api/edges edgesCreate",
       "GET /api/notes notesList",
       "POST /api/notes notesCreate",
       "DELETE /api/notes/{id} notesDelete",
       "GET /api/notes/{id} notesRetrieve",
       "PUT /api/notes/{id} notesUpdate",
+      "POST /api/odd oddCreate",
       "POST /api/shapes shapesCreate",
       "GET /api/ticks ticksList",
       "POST /api/trees treesCreate",
@@ -45,9 +49,11 @@ Deno.test("contract: every operation, ordered by path and method, with its templ
 });
 
 Deno.test("contract: operation ids are the ones the route table uses", async () => {
-  const contract = await generateContract({ routesDirs: [PYTHON_FIXTURE] });
+  const contract = await generateContract({
+    routesDirs: [CONFORMANCE_FIXTURE],
+  });
   const table = await generateTypes({
-    routesDirs: [PYTHON_FIXTURE],
+    routesDirs: [CONFORMANCE_FIXTURE],
     format: "routes",
   });
   for (const { operationId } of contract.operations) {
@@ -57,7 +63,7 @@ Deno.test("contract: operation ids are the ones the route table uses", async () 
 
 Deno.test("contract: request parts are the input side, responses the output side", async () => {
   const { shapesCreate, notesUpdate } = byId(
-    (await generateContract({ routesDirs: [PYTHON_FIXTURE] })).operations,
+    (await generateContract({ routesDirs: [CONFORMANCE_FIXTURE] })).operations,
   );
 
   // `unit` has a default: a client may leave it out, a response has it.
@@ -87,7 +93,7 @@ Deno.test("contract: request parts are the input side, responses the output side
 
 Deno.test("contract: declared errors, named schemas, pagination", async () => {
   const { notesRetrieve, notesCreate, notesList, notesUpdate } = byId(
-    (await generateContract({ routesDirs: [PYTHON_FIXTURE] })).operations,
+    (await generateContract({ routesDirs: [CONFORMANCE_FIXTURE] })).operations,
   );
 
   // Statuses of 400 and above, by status.
@@ -124,7 +130,7 @@ Deno.test("contract: an event stream lists its events; what JSON Schema cannot s
 
   // The data schema of each event, and the keep-alive interval.
   const { ticksList } = byId(
-    (await generateContract({ routesDirs: [PYTHON_FIXTURE] })).operations,
+    (await generateContract({ routesDirs: [CONFORMANCE_FIXTURE] })).operations,
   );
   assertEquals(Object.keys(ticksList.events!), ["tick", "done"]);
   assertEquals(
@@ -139,7 +145,7 @@ Deno.test("contract: `output` writes the same document as JSON", async () => {
   const output = await Deno.makeTempFile({ suffix: ".json" });
   try {
     const contract = await generateContract({
-      routesDirs: [PYTHON_FIXTURE],
+      routesDirs: [CONFORMANCE_FIXTURE],
       output,
     });
     assertEquals(JSON.parse(await Deno.readTextFile(output)), contract);
