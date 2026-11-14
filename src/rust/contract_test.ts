@@ -111,6 +111,27 @@ Deno.test("rust contract: constants, options, alternatives, lists, tuples and re
   );
 });
 
+Deno.test("rust contract: a union says which member decides its alternative, if one does", () => {
+  const circle = z.object({ kind: z.literal("circle"), radius: z.number() });
+  const square = z.object({ kind: z.literal("square"), side: z.number() });
+  const tagged = (schema: z.ZodType) =>
+    statics(schema).split("\n").filter((line) => line.includes("tag:")).map(
+      (line) => line.trim(),
+    );
+
+  // Every alternative is an object with a constant of its own there.
+  assertEquals(tagged(z.discriminatedUnion("kind", [circle, square])), [
+    'tag: Some("kind"),',
+  ]);
+  // Found by what the alternatives are, not by how the union was written.
+  assertEquals(tagged(z.union([circle, square])), ['tag: Some("kind"),']);
+
+  // An alternative that is not an object cannot be told by a member.
+  assertEquals(tagged(z.union([z.number(), circle, square])), []);
+  // The same constant twice tells nothing apart.
+  assertEquals(tagged(z.union([circle, circle.extend({ x: z.string() })])), []);
+});
+
 Deno.test("rust contract: a reference is the address of a static, also to itself", () => {
   const Tree: z.ZodType = z.object({
     name: z.string(),

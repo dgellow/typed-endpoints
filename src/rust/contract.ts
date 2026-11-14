@@ -14,6 +14,7 @@
  */
 
 import type { JsonSchema } from "../contract/index.ts";
+import { discriminatorOf } from "../contract/types.ts";
 
 type Json = Readonly<Record<string, unknown>>;
 
@@ -118,9 +119,15 @@ export class RustContract {
       return found;
     };
 
-    this.write(unique, root, target);
+    // The member that decides the alternative of a union, as the type
+    // graph finds it: the checker and the types agree on it.
+    const document = { root, defs: $defs ?? {} };
+    const tag = (alternatives: readonly Json[]) =>
+      discriminatorOf(alternatives, document);
+
+    this.write(unique, root, target, tag);
     for (const [key, definition] of definitions) {
-      this.write(definition, $defs![key], target);
+      this.write(definition, $defs![key], target, tag);
     }
     return unique;
   }
@@ -193,9 +200,10 @@ export class RustContract {
     name: string,
     schema: Json,
     target: (reference: string) => string,
+    tag: (alternatives: readonly Json[]) => string | undefined,
   ): void {
     const head = `pub(super) static ${name}: Schema = `;
-    const body = this.literal(schema, target, 4, head.length);
+    const body = this.literal(schema, target, tag, 4, head.length);
     this.statics.push(`    ${head}${body};`.split("\n"));
   }
 
@@ -208,6 +216,7 @@ export class RustContract {
   private literal(
     schema: unknown,
     target: (reference: string) => string,
+    tag: (alternatives: readonly Json[]) => string | undefined,
     indent: number,
     lead = 0,
   ): string {
@@ -215,7 +224,7 @@ export class RustContract {
     const rules = schema as Json;
     const inner = indent + 4;
     const nested = (value: unknown, at = inner) =>
-      this.literal(value, target, at);
+      this.literal(value, target, tag, at);
     const list = (values: readonly unknown[], at = inner) =>
       values.length === 0 ? "&[]" : [
         "&[",
@@ -275,6 +284,8 @@ export class RustContract {
     const alternatives = rules.anyOf ?? rules.oneOf;
     if (Array.isArray(alternatives)) {
       set("any_of", [`Some(${list(alternatives)})`]);
+      const decides = tag(alternatives as Json[]);
+      if (decides !== undefined) set("tag", [`Some(${rustString(decides)})`]);
     }
     if (Array.isArray(rules.allOf)) {
       set("all_of", [`Some(${list(rules.allOf)})`]);
