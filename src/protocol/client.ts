@@ -26,6 +26,7 @@ import { validateProtocol } from "./dsl.ts";
 import {
   InvalidRequestError,
   InvalidResponseError,
+  SessionSpentError,
   StepNotAvailableError,
   StepRefusedError,
   UnknownStepError,
@@ -126,6 +127,11 @@ export type SetSeen<TSeen extends Seen, K extends string, TNarrow> = {
 export type DropSeen<TSeen extends Seen, K extends string> = {
   readonly [P in keyof TSeen as P extends K ? never : P]: TSeen[P];
 };
+
+/** Names of the steps that executing step `T` revokes (`revoking()`). */
+export type RevokedBy<T> = T extends { readonly revokes: readonly (infer R)[] }
+  ? R & string
+  : never;
 
 /** The type a dependent step's `request` function accepts as `prev`. */
 export type PrevOf<T> = T extends {
@@ -387,7 +393,11 @@ export class ProtocolSession<
     readonly executor: StepExecutor,
     readonly responses: SessionState<TSteps, TDone, TSeen>,
     readonly history: readonly string[],
+    readonly options: SessionOptions = {},
   ) {}
+
+  /** The step this session value was used for, in a single-use session. */
+  #spentBy: string | undefined;
 
   /**
    * Establish that a step can run, using the step's own conditions.
@@ -469,8 +479,8 @@ export class ProtocolSession<
     ExecuteResult<
       StepResponse<TSteps[K]>,
       TSteps,
-      TDone | K,
-      DropSeen<TSeen, K>
+      Exclude<TDone | K, RevokedBy<TSteps[K]>>,
+      DropSeen<TSeen, K | RevokedBy<TSteps[K]>>
     >
   > {
     const step = this.protocol.steps[stepName];
@@ -479,6 +489,10 @@ export class ProtocolSession<
 
     if (!step) {
       throw new UnknownStepError(protocolName, stepName);
+    }
+
+    if (this.#spentBy !== undefined) {
+      throw new SessionSpentError(protocolName, stepName, this.#spentBy);
     }
 
     // Get request schema
@@ -603,22 +617,27 @@ export class ProtocolSession<
       );
     }
 
-    // Create new session with updated state
-    const newResponses = {
+    // Create new session with updated state. Steps this one revokes count
+    // as not executed: their responses leave the session.
+    const revoked = (step as { revokes?: readonly string[] }).revokes ?? [];
+    const newResponses: Record<string, unknown> = {
       ...this.responses,
       [stepName]: resResult.data,
-    } as unknown as SessionState<TSteps, TDone | K, DropSeen<TSeen, K>>;
+    };
+    for (const name of revoked) delete newResponses[name];
 
-    const newSession = new ProtocolSession<
-      TSteps,
-      TDone | K,
-      DropSeen<TSeen, K>
-    >(
+    type NewDone = Exclude<TDone | K, RevokedBy<TSteps[K]>>;
+    type NewSeen = DropSeen<TSeen, K | RevokedBy<TSteps[K]>>;
+    const newSession = new ProtocolSession<TSteps, NewDone, NewSeen>(
       this.protocol,
       this.executor,
-      newResponses,
+      newResponses as unknown as SessionState<TSteps, NewDone, NewSeen>,
       [...this.history, stepName],
+      this.options,
     );
+
+    // The step succeeded: in a single-use session this value is spent.
+    if (this.options.singleUse) this.#spentBy = stepName;
 
     return {
       response: resResult.data as StepResponse<TSteps[K]>,
@@ -679,12 +698,28 @@ export class ProtocolSession<
 // Session Creation
 // =============================================================================
 
+/** Options of `createSession()`. */
+export interface SessionOptions {
+  /**
+   * Each session value can execute one step. Default: false.
+   *
+   * `execute()` returns a new session and leaves the one it was called on
+   * unchanged, with its earlier type. Without this option that earlier
+   * value can still execute steps, including steps a later one revoked
+   * (`revoking()`). With it, a session value that has executed a step
+   * rejects further steps with `SessionSpentError`. A failed `execute()`
+   * does not spend the session.
+   */
+  readonly singleUse?: boolean;
+}
+
 /**
  * Create initial session - no steps executed yet.
  */
 export function createSession<TSteps extends Record<string, AnyStep>>(
   protocol: Protocol<string, TSteps>,
   executor: StepExecutor,
+  options: SessionOptions = {},
 ): ProtocolSession<TSteps, never> {
   // A malformed protocol would otherwise fail at some later step, or not
   // enforce what its definition says.
@@ -709,6 +744,7 @@ export function createSession<TSteps extends Record<string, AnyStep>>(
     executor,
     {} as SessionState<TSteps, never>,
     [],
+    options,
   );
 }
 

@@ -144,3 +144,32 @@ export class InvalidResponseError extends ProtocolError {
     super(message, protocol, step);
   }
 }
+
+/**
+ * The session value was already used to execute a step.
+ *
+ * Raised by a session created with `singleUse`: each session value can
+ * continue the protocol once. Continue with the session `execute()`
+ * returned.
+ */
+export class SessionSpentError extends ProtocolError {
+  /**
+   * Create the error.
+   *
+   * @param protocol Name of the protocol.
+   * @param step Name of the step that was being executed.
+   * @param spentBy The step this session value was used for before.
+   */
+  constructor(
+    protocol: string,
+    step: string,
+    /** The step this session value was used for before. */
+    readonly spentBy: string,
+  ) {
+    super(
+      `Cannot execute "${step}": this session value was already used to execute "${spentBy}"; continue with the session that call returned`,
+      protocol,
+      step,
+    );
+  }
+}
