@@ -157,6 +157,15 @@ impl api::Handlers for Notes {
         })
     }
 
+    async fn edges_list(
+        &self,
+        query: api::EdgesListQuery,
+    ) -> Result<api::EdgesListResponse, api::InternalError> {
+        Ok(api::EdgesListResponse {
+            labels: query.label,
+        })
+    }
+
     async fn edges_create(
         &self,
         body: api::EdgesCreateBody,

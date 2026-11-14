@@ -24,6 +24,7 @@ Deno.test("contract: every operation, ordered by path and method, with its templ
     ),
     [
       "GET /api/echo/{+path} echoRetrieve",
+      "GET /api/edges edgesList",
       "POST /api/edges edgesCreate",
       "GET /api/notes notesList",
       "POST /api/notes notesCreate",

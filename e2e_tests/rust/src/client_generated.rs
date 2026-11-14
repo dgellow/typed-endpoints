@@ -37,6 +37,18 @@ pub struct EchoRetrieveResponse {
     pub segments: Vec<String>,
 }
 
+/// The query of `GET /api/edges`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct EdgesListQuery {
+    pub label: Vec<String>,
+}
+
+/// The response of `GET /api/edges`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct EdgesListResponse {
+    pub labels: Vec<String>,
+}
+
 /// The body of `POST /api/edges`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct EdgesCreateBody {
@@ -699,6 +711,18 @@ impl Client {
     pub async fn echo_retrieve(&self, path: &str) -> Result<EchoRetrieveResponse, Error> {
         let path = format!("/api/echo/{}", runtime::rest(path)?);
         let answer = self.send(Method::GET, &path, &[], None).await?;
+        answer.success()
+    }
+
+    /// `GET /api/edges`
+    ///
+    /// # Errors
+    ///
+    /// If the request cannot be sent, or the answer is not the response of the
+    /// operation.
+    pub async fn edges_list(&self, query: &EdgesListQuery) -> Result<EdgesListResponse, Error> {
+        let query = runtime::pairs(query)?;
+        let answer = self.send(Method::GET, "/api/edges", &query, None).await?;
         answer.success()
     }
 

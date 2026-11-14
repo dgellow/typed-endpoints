@@ -139,6 +139,18 @@ class EchoRetrieveResponse(_ClosedJson):
     segments: list[str]
 
 
+class EdgesListQuery(_Model):
+    """The query of `GET /api/edges`."""
+
+    label: list[str]
+
+
+class EdgesListResponse(_ClosedJson):
+    """The response of `GET /api/edges`."""
+
+    labels: list[str]
+
+
 class EdgesCreateBody(_Json):
     """The body of `POST /api/edges`."""
 
@@ -480,6 +492,7 @@ type TicksListEvent = TicksListTickEvent | TicksListDoneEvent
 # What a handler returns: the response, a failure the operation declares,
 # or a response written by hand, which is sent as it is.
 type EchoRetrieveResult = EchoRetrieveResponse | Response
+type EdgesListResult = EdgesListResponse | Response
 type EdgesCreateResult = EdgesCreateResponse | Response
 type NotesListResult = NotesListResponse | Response
 type NotesCreateResult = Note | Fail[Literal[409], NotesCreateError409] | Response
@@ -501,6 +514,10 @@ class Handlers(Protocol):
 
     async def echo_retrieve(self, params: EchoRetrieveParams) -> EchoRetrieveResult:
         """Answer `GET /api/echo/{+path}`."""
+        ...
+
+    async def edges_list(self, query: EdgesListQuery) -> EdgesListResult:
+        """Answer `GET /api/edges`."""
         ...
 
     async def edges_create(self, body: EdgesCreateBody) -> EdgesCreateResult:
@@ -579,6 +596,14 @@ _ECHO_RETRIEVE_PARAMS: _Part[EchoRetrieveParams] = _Part(
         "required": ["path"],
     },
     TypeAdapter(EchoRetrieveParams),
+)
+_EDGES_LIST_QUERY: _Part[EdgesListQuery] = _Part(
+    {
+        "type": "object",
+        "properties": {"label": {"type": "array", "items": {"type": "string"}}},
+        "required": ["label"],
+    },
+    TypeAdapter(EdgesListQuery),
 )
 _EDGES_CREATE_BODY: _Part[EdgesCreateBody] = _Part(
     {
@@ -862,6 +887,8 @@ _TREES_CREATE_BODY: _Part[TreesCreateBody] = _Part(
 
 _ECHO_RETRIEVE_RESPONSE: TypeAdapter[Any] = TypeAdapter(EchoRetrieveResponse)
 _ECHO_RETRIEVE_ERRORS: dict[int, TypeAdapter[Any]] = {}
+_EDGES_LIST_RESPONSE: TypeAdapter[Any] = TypeAdapter(EdgesListResponse)
+_EDGES_LIST_ERRORS: dict[int, TypeAdapter[Any]] = {}
 _EDGES_CREATE_RESPONSE: TypeAdapter[Any] = TypeAdapter(EdgesCreateResponse)
 _EDGES_CREATE_ERRORS: dict[int, TypeAdapter[Any]] = {}
 _NOTES_LIST_RESPONSE: TypeAdapter[Any] = TypeAdapter(NotesListResponse)
@@ -906,6 +933,24 @@ def _add_echo_retrieve(router: APIRouter, handlers: Handlers) -> None:
             handlers.echo_retrieve(params=params),
             _ECHO_RETRIEVE_RESPONSE,
             _ECHO_RETRIEVE_ERRORS,
+        )
+
+
+def _add_edges_list(router: APIRouter, handlers: Handlers) -> None:
+    @router.get(
+        "/api/edges",
+        operation_id="edgesList",
+        response_model=None,
+        responses={200: {"model": EdgesListResponse}, 400: {"model": InvalidRequest}},
+        openapi_extra=_described(query=_EDGES_LIST_QUERY),
+    )
+    async def edges_list(request: Request) -> Response:
+        query = _query(request, _EDGES_LIST_QUERY)
+        return await _respond(
+            "GET /api/edges",
+            handlers.edges_list(query=query),
+            _EDGES_LIST_RESPONSE,
+            _EDGES_LIST_ERRORS,
         )
 
 
@@ -1135,6 +1180,7 @@ def create_router(handlers: Handlers) -> APIRouter:
     """
     router = APIRouter(route_class=_Route)
     _add_echo_retrieve(router, handlers)
+    _add_edges_list(router, handlers)
     _add_edges_create(router, handlers)
     _add_notes_list(router, handlers)
     _add_notes_create(router, handlers)

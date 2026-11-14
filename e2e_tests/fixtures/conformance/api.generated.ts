@@ -24,6 +24,11 @@ export interface Api {
     };
   };
   edges: {
+    list: {
+      path: "/api/edges";
+      query: { label: string[]; };
+      response: { labels: string[]; };
+    };
     create: {
       path: "/api/edges";
       body: { short?: string | undefined; digits?: string | undefined; plain?: string | undefined; word?: string | undefined; count?: number | undefined; step?: number | undefined; huge?: number | undefined; flag?: boolean | undefined; maybe?: string | null | undefined; when?: string | undefined; id?: string | undefined; email?: string | undefined; };
@@ -105,6 +110,7 @@ export interface Api {
 /** Pass to `createClient<Api>({ baseUrl, routes })`. */
 export const routes = {
   "echo.retrieve": { method: "GET", path: "/api/echo/{+path}" },
+  "edges.list": { method: "GET", path: "/api/edges" },
   "edges.create": { method: "POST", path: "/api/edges" },
   "notes.list": { method: "GET", path: "/api/notes", pagination: { style: "cursor", items: "items", limitParam: "limit", cursor: "cursor", cursorParam: "cursor" } },
   "notes.create": { method: "POST", path: "/api/notes", errors: [409] },

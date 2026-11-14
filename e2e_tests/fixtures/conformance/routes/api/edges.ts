@@ -30,6 +30,13 @@ const Edges = z.object({
 });
 
 export const handler = createApiHandlers({
+  // A list in a query, which has to be there: no occurrence of its key is
+  // an empty list, and one occurrence a list of one.
+  GET: endpoint({
+    query: z.object({ label: z.array(z.string()) }),
+    response: z.object({ labels: z.array(z.string()) }),
+    handler: (_request, { query }) => ({ labels: query.label }),
+  }),
   // Says which fields arrived, and gives `maybe` and `count` back.
   POST: endpoint({
     body: Edges,

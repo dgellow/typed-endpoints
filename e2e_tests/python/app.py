@@ -148,6 +148,10 @@ class Notes:
             yield api.TicksListTickEvent(data=api.TicksListTickData(n=n), id=str(n))
         yield api.TicksListDoneEvent(data=api.TicksListDoneData(total=query.count))
 
+    async def edges_list(self, query: api.EdgesListQuery) -> api.EdgesListResult:
+        """Give back the labels of the query."""
+        return api.EdgesListResponse(labels=query.label)
+
     async def edges_create(self, body: api.EdgesCreateBody) -> api.EdgesCreateResult:
         """Say which members arrived; give `maybe` and `count` back."""
         answer: dict[str, Any] = {"received": sorted(body.model_fields_set)}

@@ -259,6 +259,9 @@ Deno.test("rust axum: one route per operation; a catch-all is written as axum wr
     '        .route("/notes", get(notes_list::<H>))',
     '        .route("/notes", post(notes_create::<H>))',
     '        .route("/files/{*path}", get(files_retrieve::<H>))',
+    // A path that cannot be decoded is refused before a route reads
+    // anything of the request.
+    "        .layer(axum::middleware::from_fn(runtime::well_formed))",
     "        .with_state(handlers)",
     "}",
   ]);
