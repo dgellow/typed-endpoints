@@ -231,6 +231,22 @@ def _pattern(source: str) -> re.Pattern[str]:
     return re.compile(ends, re.ASCII)
 `.trim();
 
+/**
+ * `_is_none()`, written when a member may be left out and null is not a
+ * value of it. Python has one way to say that something is not there.
+ */
+const IS_NONE = `
+def _is_none(value: object) -> bool:
+    """Whether a member that may be left out is left out.
+
+    None is how Python says that it is, and such a member is not written.
+    Where null is a value of a member, None is that value: the member is
+    written as null when it was set to None, and not at all when it was
+    not set.
+    """
+    return value is None
+`.trim();
+
 /** A member of a model class. */
 interface FieldInfo {
   /** The name on the wire. */
@@ -335,6 +351,8 @@ export class PythonModels {
   private readonly bases = new Set<BaseKey>();
   /** Whether a member has a pattern. */
   private usesPatterns = false;
+  /** Whether a member that may be left out is not written when it is None. */
+  private usesIsNone = false;
   /** Whether a type expression used `SafeInt`. */
   usesSafeInt = false;
   /** Whether a definition is a `type` statement, which needs Python 3.12. */
@@ -399,6 +417,7 @@ export class PythonModels {
       lines.push(...stringConstant(0, name, text));
     }
     if (this.patterns.size > 0) lines.push("", "");
+    if (this.usesIsNone) lines.push(IS_NONE, "", "");
 
     for (const key of ["model", "closed", "json", "closedJson"] as const) {
       if (!this.bases.has(key)) continue;
@@ -950,12 +969,20 @@ export class PythonModels {
       const hoisted = hoist(type);
       type = hoisted.type;
       let fallback: string | undefined;
+      const constraints = [...hoisted.constraints];
       if (!required.has(wire)) {
         if ("default" in member) {
           fallback = pythonLiteral(member.default);
         } else {
           if (!/(^|\| )None$/.test(type)) type = `${type} | None`;
           fallback = "None";
+          // None is how Python says that the member is left out, so it
+          // is not written: unless null is a value of the member, which
+          // then has three states (not set, None, a value).
+          if (!acceptsNull(member, document)) {
+            constraints.push("exclude_if=_is_none");
+            this.usesIsNone = true;
+          }
         }
       }
       fields.push({
@@ -963,7 +990,7 @@ export class PythonModels {
         attribute,
         type,
         ...(fallback !== undefined && { fallback }),
-        constraints: hoisted.constraints,
+        constraints,
         ...(typeof member.description === "string" &&
           { description: member.description }),
       });
@@ -1003,6 +1030,41 @@ export class PythonModels {
 // =============================================================================
 // Helpers
 // =============================================================================
+
+/**
+ * Whether null is a value of a schema: then None is that value, and not
+ * the absence of the member.
+ */
+function acceptsNull(
+  schema: Schema,
+  document: Document,
+  seen = new Set<Schema>(),
+): boolean {
+  const resolved = resolve(schema, document);
+  // A reference back to where the question started adds nothing.
+  if (seen.has(resolved)) return false;
+  seen.add(resolved);
+  if ("const" in resolved) return resolved.const === null;
+  if (Array.isArray(resolved.enum)) return resolved.enum.includes(null);
+  const alternatives = resolved.anyOf ?? resolved.oneOf;
+  if (Array.isArray(alternatives)) {
+    return alternatives.some((alternative) =>
+      acceptsNull(alternative as Schema, document, seen)
+    );
+  }
+  if (Array.isArray(resolved.allOf)) {
+    return resolved.allOf.every((part) =>
+      acceptsNull(part as Schema, document, seen)
+    );
+  }
+  const types = Array.isArray(resolved.type)
+    ? resolved.type
+    : typeof resolved.type === "string"
+    ? [resolved.type]
+    : [];
+  // No type: anything, null included.
+  return types.length === 0 || types.includes("null");
+}
 
 /** Whether a schema becomes a class. */
 function isObject(schema: Schema): boolean {

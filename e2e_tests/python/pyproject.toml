@@ -6,6 +6,8 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.163,<1",
     "httpx>=0.28,<1",
+    # What the generated modules need: `exclude_if` on a field.
+    "pydantic>=2.12,<3",
     "uvicorn>=0.54,<1",
 ]
 

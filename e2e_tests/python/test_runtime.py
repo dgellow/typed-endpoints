@@ -51,6 +51,26 @@ class Respond(unittest.TestCase):
         # A model instance is sent without the fields that were not set.
         self.assertEqual(respond(api.Note.model_validate(note)), (200, note))
 
+    def test_none_is_a_member_left_out_unless_null_is_a_value_of_it(self) -> None:
+        note: dict[str, object] = {"id": "1", "likes": 0, "title": "t", "tags": []}
+        # `pinned` may be left out and is never null: None says "left out",
+        # also when it was passed, and nothing is written.
+        self.assertEqual(
+            respond(api.Note(id="1", likes=0, title="t", tags=[], pinned=None)),
+            (200, note),
+        )
+        # `maybe` may be left out or be null: set to None it is null, and not
+        # set it is left out.
+        edges: TypeAdapter[Any] = TypeAdapter(api.EdgesCreateResponse)
+        self.assertEqual(
+            respond(api.EdgesCreateResponse(received=[], maybe=None), edges),
+            (200, {"received": [], "maybe": None}),
+        )
+        self.assertEqual(
+            respond(api.EdgesCreateResponse(received=[], count=None), edges),
+            (200, {"received": []}),
+        )
+
     def test_a_value_the_model_rejects_is_a_500(self) -> None:
         rejected: list[Any] = [
             {"id": "1", "likes": 0, "title": "", "tags": []},
