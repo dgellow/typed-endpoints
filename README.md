@@ -874,6 +874,87 @@ What the client does:
 - A 4xx response and an event whose data is not JSON reject the iteration at
   once
 
+### Resource Laws
+
+A route with GET and PUT on one path is a lens: GET is a view of state the
+server keeps, PUT updates that state from a value. A lens is expected to obey
+laws, and each is a statement about HTTP that clients rely on.
+`checkResourceLaws()` checks them against a server, with bodies generated from
+the PUT body schema (`arbitrary()`):
+
+| Law       | Requests                            | Holds when              | A handler that fails it                                       |
+| --------- | ----------------------------------- | ----------------------- | ------------------------------------------------------------- |
+| `get-get` | GET, GET                            | the two views are equal | a view that changes by being read (a read counter)            |
+| `get-put` | GET, PUT of that view, GET          | the view did not change | a PUT that resets what the body does not carry (a like count) |
+| `put-get` | PUT `v`, GET                        | the view contains `v`   | a PUT that accepts a field and does not store it              |
+| `put-put` | PUT `w`, GET, PUT `u`, PUT `w`, GET | the two views are equal | a PUT that merges like PATCH, or that appends or counts       |
+
+`put-put` is the lens law in full (the last PUT wins and nothing of an earlier
+one remains); idempotence is the case `u = w`.
+
+```typescript
+import {
+  checkResourceLaws,
+  formatResourceLawsReport,
+} from "@dgellow/typed-endpoints";
+import { handler } from "./routes/api/notes/[id].ts";
+
+const report = await checkResourceLaws(handler, {
+  url: "http://localhost:8000/api/notes/1",
+  ignore: ["updatedAt"],
+});
+if (!report.ok) throw new Error(formatResourceLawsReport(report));
+```
+
+The report of a PUT that stores the title and nothing else of its body:
+
+```
+resource laws: PUT http://localhost:8000/api/notes/1, 20 runs, seed 0
+  get-get: held in 20 of 20 runs
+  get-put: held in 20 of 20 runs
+  put-get: held in 0 of 20 runs, violated in 20
+    run 0: PUT {"title":"afd","tags":["pqlp"]}, GET
+      tags.0: put "pqlp", read "a"
+  put-put: held in 20 of 20 runs
+```
+
+- The first argument is what `createApiHandlers()` returns, or the method
+  definitions (`{ GET: {}, PUT: { body } }`). A route without GET, or without a
+  body schema on PUT, is a compile error that states which
+- The view is usually larger than the body (an id, timestamps): `put-get` asks
+  that the view contains the body as the schema parses it (defaults filled in,
+  transforms applied), field by field. The other laws compare whole views
+- `ignore` names places the laws do not compare, as dotted paths with `*` for
+  any key or index: `updatedAt`, `meta.revision`, `items.*.etag`
+- `send` replaces `fetch`. A fetch handler checks the laws without a server:
+  `send: createRouter({ "/api/notes/[id]": handler })`
+- `method: "PATCH"` checks a resource that is updated with PATCH. A partial
+  update obeys `put-get` and `get-put` and not `put-put` (a field of `u` that
+  `w` does not mention remains), so `put-put` is left out unless `laws` asks for
+  it
+- `runs` (default 20), `seed` (default 0), `laws`, `headers`, and `value` for
+  bodies with constraints the schema does not state
+- `report.laws[law]` has `held`, `violations` (the requests of the run and the
+  places that differ), `refusals` (a request answered outside 200-299) and
+  `skips` (`get-put` when the view is not a value the body schema accepts).
+  `report.ok` is true when every checked law held in every run
+
+Limits:
+
+- The check writes to the resource it is pointed at, and the resource has to
+  exist: a 404 on the first GET is a refusal
+- It is a test, not a proof. `put-put` shows a merging PUT only in runs where
+  the generated bodies differ in the optional fields they carry: 2 of 20 runs in
+  the test fixture, whose body has one optional field
+- State is observed through GET. What GET does not show is not compared
+- `get-put` sees a PUT that resets a value once, on the state the check found;
+  after the check's own first PUT the value is already reset
+- A resource whose PUT carries a precondition (a version for optimistic
+  concurrency) refuses generated bodies; those runs are refusals
+
+End to end against a live server, with a handler broken on purpose:
+`e2e_tests/resource_laws_test.ts`.
+
 ## API
 
 ### `createApiHandlers(def)`
@@ -1085,6 +1166,7 @@ src/
 │   ├── runtime.ts     # What differs between Deno and Bun (module resolution)
 │   ├── zod_internals.ts # Readers for Zod schema internals
 │   ├── arbitrary.ts   # arbitrary(schema): a seeded, valid value of any schema
+│   ├── laws.ts        # checkResourceLaws(): lens laws of GET/PUT, against a server
 │   ├── dependent.ts   # projection(), expansion(): responses typed by the request
 │   ├── dependent_types.ts # Type-level functions: ResponseFamily, Apply, Resolve
 │   └── openapi.ts     # OpenAPI spec generation (x-pagination)
@@ -2299,7 +2381,10 @@ via `dependentStep()`.
 - [Container Morphisms for Composable Interactive Systems](https://arxiv.org/abs/2407.16713) -
   André Videla (APLAS 2024)
 - [Lenses for Composable Servers](https://arxiv.org/abs/2203.15633) - André
-  Videla (2022)
+  Videla, Matteo Capucci (2022)
+- [Combinators for Bidirectional Tree Transformations](https://doi.org/10.1145/1232420.1232424) -
+  Foster, Greenwald, Moore, Pierce, Schmitt (TOPLAS 2007): the lens laws GetPut,
+  PutGet and PutPut
 - [**Stellar**](https://gitlab.com/avidela/stellar) (TYPES 2025) - Practical
   Idris library for container-based API architecture
 - [RFC 6749: OAuth 2.0 Authorization Framework](https://datatracker.ietf.org/doc/html/rfc6749)

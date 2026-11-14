@@ -41,6 +41,7 @@ src/
 │   ├── runtime.ts  # The only place that knows the runtime (Deno subprocess for import maps)
 │   ├── zod_internals.ts # The only reader of schema._zod (def, type, checks, unwrap, optionality)
 │   ├── arbitrary.ts # arbitrary(schema): a seeded, valid value of any schema
+│   ├── laws.ts     # checkResourceLaws(): lens laws of a GET/PUT route, against a server
 │   ├── dependent.ts # projection(), expansion(): response type depends on the request
 │   ├── selection.ts # selection(), selectOf(), parseSelect(): ?select=id,author(name)
 │   ├── selection_types.ts # Type-level select-string parser (ParseSelect, Selected, Selection)
@@ -154,6 +155,17 @@ schemas and metadata only. The client format writes the metadata into the route
 table; `list.pages()` / `list.items()` read it there and ask for the next page
 by style (`nextPage()` in `client/index.ts`). End to end, one endpoint per
 style: `e2e_tests/pagination_test.ts`.
+
+## Key Concepts (Resource Laws)
+
+A route with GET and PUT is a lens (view, update). `checkResourceLaws()` sends
+generated bodies to a server and checks `get-get`, `get-put`, `put-get` (the
+view contains the body as the schema parses it) and `put-put` (PUT `w`, PUT `u`,
+PUT `w` gives the view after the first PUT `w`; covers idempotence and a PUT
+that merges). PATCH is checked without `put-put`. A non-2xx answer is a refusal
+and a view the body schema rejects is a skip; neither is a violation, and
+neither counts as held. Each broken handler in `src/core/laws_test.ts` fails the
+law named for it and no other; end to end in `e2e_tests/resource_laws_test.ts`.
 
 ## Key Concepts (Request-Dependent Responses)
 

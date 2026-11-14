@@ -540,6 +540,40 @@ Deno.test("fetch: createRouter answers 404, 405 and a custom notFound", async ()
   assertEquals((await custom(new Request("http://x/x"))).status, 418);
 });
 
+Deno.test("fetch: createRouter takes what createApiHandlers returns", async () => {
+  const handlers = fetchRoutes.createApiHandlers({
+    GET: fetchRoutes.endpoint({
+      params: z.object({ id: z.string() }),
+      response: z.object({ id: z.string() }),
+      handler: (_request, { params }) => ({ id: params.id }),
+    }),
+  });
+  // The handlers carry the route's definition; the router takes them as
+  // they are, next to handlers written by hand.
+  const router = fetchRoutes.createRouter({
+    "/users/[id]": handlers,
+    "/ping": { GET: () => new Response("pong") },
+  });
+
+  const found = await router(new Request("http://x/users/7"));
+  assertEquals(await found.json(), { id: "7" });
+
+  // `Allow` lists methods, also for a route object whose definition is an
+  // ordinary, enumerable property.
+  const visible = { GET: handlers.GET, __apiDef: handlers.__apiDef };
+  const other = fetchRoutes.createRouter({ "/users/[id]": visible });
+  const refused = await other(
+    new Request("http://x/users/7", { method: "DELETE" }),
+  );
+  assertEquals(refused.status, 405);
+  assertEquals(refused.headers.get("Allow"), "GET");
+
+  fetchRoutes.createRouter({
+    // @ts-expect-error a route's members are handlers by HTTP method
+    "/users": { GET: "not a handler" },
+  });
+});
+
 Deno.test("fetch: fileRouter serves a directory of route files", async () => {
   const router = await fetchRoutes.fileRouter(`${FIXTURES}/fetch/routes`);
   const get = (path: string) => router(new Request(`http://x${path}`));

@@ -88,6 +88,25 @@ export {
   seededRandom,
 } from "./core/arbitrary.ts";
 
+// Lens laws of a resource, checked against a server
+export {
+  checkResourceLaws,
+  formatResourceLawsReport,
+  type LawDifference,
+  type LawExchange,
+  type LawRefusal,
+  type LawResult,
+  type LawSkip,
+  type LawViolation,
+  type NotAResource,
+  type Resource,
+  RESOURCE_LAWS,
+  type ResourceLaw,
+  type ResourceLawsOptions,
+  type ResourceLawsReport,
+  type UpdateMethod,
+} from "./core/laws.ts";
+
 // Validation
 export {
   parseSearchParams,
