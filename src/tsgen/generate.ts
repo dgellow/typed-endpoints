@@ -126,6 +126,8 @@ interface EndpointType {
   /** The response with request-dependent places as `Dependent<...>`. */
   readonly dependentResponse?: string;
   readonly events?: Readonly<Record<string, string>>;
+  /** Bodies of the declared error responses, by status. */
+  readonly errors?: Readonly<Record<string, string>>;
   readonly pagination?: AnyPaginationMeta;
   readonly operationId?: string;
 }
@@ -201,6 +203,7 @@ function buildEndpoints(extraction: Extraction): EndpointType[] {
         response: def.response,
         dependentResponse: def.dependentResponse,
         events: def.events,
+        errors: def.errors,
         pagination: def.pagination as AnyPaginationMeta | undefined,
         operationId: def.operationId,
       });
@@ -354,6 +357,9 @@ function generateTypesFormat(
       lines.push(
         `export type ${name}Events = ${renderEvents(endpoint.events)};`,
       );
+    }
+    for (const [status, type] of Object.entries(endpoint.errors ?? {})) {
+      lines.push(`export type ${name}Error${status} = ${type};`);
     }
 
     lines.push("");
@@ -583,6 +589,16 @@ function generateClientFormat(
         }
         lines.push(`${indent}  };`);
       }
+      if (endpoint.errors) {
+        // What `method.result()` returns as a value, not an exception.
+        lines.push(
+          `${indent}  errors: { ${
+            Object.entries(endpoint.errors).map(([status, type]) =>
+              `${status}: ${type};`
+            ).join(" ")
+          } };`,
+        );
+      }
       if (endpoint.pagination) {
         lines.push(...renderPagination(endpoint.pagination, `${indent}  `));
       }
@@ -611,12 +627,15 @@ function generateClientFormat(
     const pagination = endpoint.pagination
       ? `, pagination: ${paginationValue(endpoint.pagination)}`
       : "";
+    const errors = endpoint.errors
+      ? `, errors: [${Object.keys(endpoint.errors).join(", ")}]`
+      : "";
     lines.push(
       `  ${JSON.stringify([...segments, methodName].join("."))}: { method: ${
         JSON.stringify(endpoint.method)
       }, path: ${
         JSON.stringify(apiPathToClientTemplate(endpoint.path))
-      }${pagination} },`,
+      }${errors}${pagination} },`,
     );
   }
   lines.push("} as const;");

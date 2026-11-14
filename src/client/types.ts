@@ -50,6 +50,11 @@ export interface MethodDef {
    */
   readonly dependent?: true;
   /**
+   * Bodies of the error responses the endpoint declares, by status code.
+   * Written by the type generator from the endpoint's `responses`.
+   */
+  readonly errors?: Record<number, unknown>;
+  /**
    * Pagination metadata, written by the type generator for an endpoint
    * built with a pagination helper: the style, and the names of the
    * fields and parameters it uses.
@@ -187,8 +192,43 @@ export type CapturedOptionsArg<M, O, TNames extends string = never> =
   NeedsOptions<M, TNames> extends true ? [options: O] : [options?: O];
 
 /**
- * A client method with leading arguments `TLead` and path parameters
- * `TNames` to pass in `options.params`.
+ * What a call ended with, as a value: the response, or one of the error
+ * responses the endpoint declares, told apart by `ok` and `status`.
+ *
+ * ```ts
+ * const result = await client.users.retrieve.result("42");
+ * if (result.ok) result.data;                    // User
+ * else if (result.status === 404) result.error;  // the declared 404 body
+ * ```
+ */
+export type Outcome<M, TResponse> =
+  | {
+    /** The call succeeded. */
+    readonly ok: true;
+    /** The HTTP status, 200 to 299. */
+    readonly status: number;
+    /** The response body. */
+    readonly data: TResponse;
+  }
+  | (M extends { readonly errors: infer E } ? {
+      [S in keyof E]: {
+        /** The server answered with a declared error status. */
+        readonly ok: false;
+        /** The HTTP status. */
+        readonly status: S;
+        /** The error body declared for that status. */
+        readonly error: E[S];
+      };
+    }[keyof E]
+    : never);
+
+/** `TResponse`, or the `Outcome` of the call when `TOutcome` is true. */
+export type Returned<M, TResponse, TOutcome extends boolean> = TOutcome extends
+  true ? Outcome<M, TResponse> : TResponse;
+
+/**
+ * The call signature of a client method with leading arguments `TLead`
+ * and path parameters `TNames` to pass in `options.params`.
  *
  * For an endpoint marked `dependent`, the method is generic in its options
  * and the response type is computed from them: `Resolve` applies the
@@ -201,19 +241,44 @@ export type CapturedOptionsArg<M, O, TNames extends string = never> =
  * The options also have to meet what the families require of them
  * (`Requires`): a select string that names an unknown property is rejected
  * at the call, with the reason in the error.
+ *
+ * With `TOutcome` true, the call resolves with an `Outcome`.
  */
-export type Method<
+export type Call<
   M extends MethodDef,
   TLead extends unknown[],
   TNames extends string = never,
+  TOutcome extends boolean = false,
 > = M extends { dependent: true }
   ? <const O extends ReadonlyDeep<MethodOptions<M, TNames>>>(
     ...args: [
       ...TLead,
       ...CapturedOptionsArg<M, O & Requires<M["response"], O>, TNames>,
     ]
-  ) => Promise<Resolve<M["response"], O>>
-  : (...args: [...TLead, ...OptionsArg<M, TNames>]) => Promise<M["response"]>;
+  ) => Promise<Returned<M, Resolve<M["response"], O>, TOutcome>>
+  : (
+    ...args: [...TLead, ...OptionsArg<M, TNames>]
+  ) => Promise<Returned<M, M["response"], TOutcome>>;
+
+/**
+ * A client method: callable, and with `result()`.
+ *
+ * Called, it resolves with the response and rejects with `ClientError`
+ * for any status outside 200 to 299.
+ *
+ * `result()` takes the same arguments and resolves with an `Outcome`: the
+ * error responses the endpoint declares are values there, typed by status.
+ * A status the endpoint does not declare is still a `ClientError`: what
+ * is declared is a value, what is unexpected is an exception.
+ */
+export type Method<
+  M extends MethodDef,
+  TLead extends unknown[],
+  TNames extends string = never,
+> = Call<M, TLead, TNames> & {
+  /** The same call, with the declared error responses as values. */
+  result: Call<M, TLead, TNames, true>;
+};
 
 /**
  * The element type of the list at the dot-notation path `P` of `T`;

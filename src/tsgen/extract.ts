@@ -43,6 +43,11 @@ export interface ExtractedMethod {
   readonly dependentResponse?: string;
   /** SSE events by name, output side, as JSON carries them. */
   readonly events?: Readonly<Record<string, string>>;
+  /**
+   * Bodies of the error responses the method declares (`responses` with a
+   * status of 400 or above), by status, output side, as JSON carries them.
+   */
+  readonly errors?: Readonly<Record<string, string>>;
   /** Pagination metadata set by the pagination helpers. */
   readonly pagination?: unknown;
   readonly operationId?: string;
@@ -75,6 +80,10 @@ interface MethodDefLike {
   readonly params?: ZodType;
   readonly response?: ZodType;
   readonly events?: Record<string, ZodType>;
+  readonly responses?: Record<
+    string,
+    ZodType | { readonly schema: ZodType; readonly name?: string }
+  >;
   readonly __pagination?: unknown;
   readonly operationId?: string;
 }
@@ -174,6 +183,23 @@ export async function extractRoutes(
       const withFields = (query: string | undefined) =>
         query === undefined || query === "{}" ? {} : { query };
 
+      // Declared error responses: status 400 and above. Other entries of
+      // `responses` describe successes, which `response` already covers.
+      const errors = Object.fromEntries(
+        Object.entries(def.responses ?? {})
+          .filter(([status]) => Number(status) >= 400)
+          .sort(([a], [b]) => Number(a) - Number(b))
+          .map(([status, value]) => [
+            status,
+            render(
+              `response ${status}`,
+              "schema" in value ? value.schema : value,
+              "output",
+              "json",
+            ),
+          ]),
+      );
+
       methods[method] = {
         ...(def.body && { body: render("body", def.body, "input", "json") }),
         ...withFields(def.query && render("query", def.query, "input")),
@@ -190,6 +216,7 @@ export async function extractRoutes(
             ]),
           ),
         }),
+        ...(Object.keys(errors).length > 0 && { errors }),
         ...(def.__pagination !== undefined && {
           pagination: def.__pagination,
         }),

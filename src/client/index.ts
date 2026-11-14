@@ -78,6 +78,7 @@ export type {
 export type {
   AllParams,
   ApiSchema,
+  Call,
   CapturedOptionsArg,
   CreateMethod,
   DeleteMethod,
@@ -91,6 +92,7 @@ export type {
   MethodOptions,
   NeedsOptions,
   OptionsArg,
+  Outcome,
   Paginated,
   ParamName,
   ParamsOption,
@@ -102,6 +104,7 @@ export type {
   ResourceDef,
   ResourceMethod,
   RetrieveMethod,
+  Returned,
   SseEventsDef,
   SseMethodDef,
   SubscribeMethod,
@@ -178,6 +181,8 @@ export type ClientRoutes = Readonly<
     {
       readonly method: string;
       readonly path: string;
+      /** Statuses of the error responses the endpoint declares. */
+      readonly errors?: readonly number[];
       readonly pagination?: RoutePagination;
     }
   >
@@ -603,6 +608,22 @@ export function createClient<Api extends ApiSchema>(
     body?: unknown,
     signal?: AbortSignal,
   ): Promise<unknown> {
+    const answer = await send(method, url, body, signal);
+    if (!answer.ok) {
+      throw new ClientError(answer.status, answer.statusText, answer.body);
+    }
+    return answer.body;
+  }
+
+  /** Send a request and read the answer, whatever its status. */
+  async function send(
+    method: string,
+    url: string,
+    body?: unknown,
+    signal?: AbortSignal,
+  ): Promise<
+    { ok: boolean; status: number; statusText: string; body: unknown }
+  > {
     const headers: Record<string, string> = {
       ...cfg.headers,
     };
@@ -620,7 +641,8 @@ export function createClient<Api extends ApiSchema>(
       signal,
     });
 
-    if (!response.ok) {
+    const { ok, status, statusText } = response;
+    if (!ok) {
       // The body can be read once: take the text, then try it as JSON.
       const text = await response.text();
       let errorBody: unknown = text;
@@ -629,20 +651,51 @@ export function createClient<Api extends ApiSchema>(
       } catch {
         // Not JSON: the text is the body.
       }
-      throw new ClientError(response.status, response.statusText, errorBody);
+      return { ok, status, statusText, body: errorBody };
     }
 
     // No content
-    if (response.status === 204) {
-      return undefined;
+    if (status === 204) {
+      return { ok, status, statusText, body: undefined };
     }
 
     const contentType = response.headers.get("Content-Type") ?? "";
-    if (contentType.includes("application/json")) {
-      return response.json();
-    }
+    return {
+      ok,
+      status,
+      statusText,
+      body: contentType.includes("application/json")
+        ? await response.json()
+        : await response.text(),
+    };
+  }
 
-    return response.text();
+  /**
+   * A call whose declared error responses are values: `{ ok, status, data }`
+   * or `{ ok, status, error }`. A status the route table does not list for
+   * the endpoint is a `ClientError`, as for a plain call.
+   */
+  async function outcome(
+    pathSegments: string[],
+    methodName: string,
+    args: unknown[],
+  ): Promise<unknown> {
+    const { method, path, body, options } = resolveCall(
+      pathSegments,
+      methodName,
+      args,
+    );
+    const url = cfg.baseUrl + path + buildQuery(options.query);
+    const answer = await send(method, url, body, options.signal);
+    if (answer.ok) {
+      return { ok: true, status: answer.status, data: answer.body };
+    }
+    const declared = cfg.routes?.[[...pathSegments, methodName].join(".")]
+      ?.errors;
+    if (declared?.includes(answer.status)) {
+      return { ok: false, status: answer.status, error: answer.body };
+    }
+    throw new ClientError(answer.status, answer.statusText, answer.body);
   }
 
   /**
@@ -820,8 +873,11 @@ export function createClient<Api extends ApiSchema>(
             );
             return request(method, path, body, options);
           };
-          if (prop !== "list") return call;
+          const result = (...args: unknown[]) =>
+            outcome(pathSegments, prop, args);
+          if (prop !== "list") return Object.assign(call, { result });
           return Object.assign(call, {
+            result,
             pages: (...args: unknown[]) => pagesOf(pathSegments, args),
             items: (...args: unknown[]) => itemsOf(pathSegments, args),
           });

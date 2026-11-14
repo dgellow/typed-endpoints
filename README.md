@@ -453,6 +453,51 @@ Without `routes`, the client derives the URL from the property names
 (`basePath/resource[/id]`, always PUT for `update`). That covers the first six
 rows only; a call that passes `params` then throws.
 
+#### Declared error responses
+
+A call rejects with `ClientError` for any status outside 200 to 299; its `body`
+is `unknown`. An endpoint can declare its error responses per status code:
+
+```typescript
+GET: endpoint({
+  params: z.object({ id: z.string() }),
+  response: Item,
+  responses: { 404: NotFound, 409: Conflict },
+  handler: (_ctx, { params }) =>
+    items.get(params.id) ??
+      Response.json({ error: "not_found", id: params.id }, { status: 404 }),
+}),
+```
+
+Every client method then has `result()`. It takes the same arguments and
+resolves with the response or a declared error, as a value typed by its status:
+
+```typescript
+const result = await client.items.update.result("a", { title, version });
+
+if (result.ok) {
+  result.data; // Item
+} else if (result.status === 409) {
+  result.error.current; // the body declared for 409
+} else {
+  result.error.id; // the body declared for 404
+}
+```
+
+- What is declared is a value; what is unexpected is an exception. A status the
+  endpoint does not declare (a 500, a 418) still rejects with `ClientError`,
+  from `result()` as from a plain call
+- A plain call is unchanged: it rejects for a declared status too
+- `result()` works on every method. Without declared errors its type is the
+  success alone: `{ ok: true; status: number; data }`
+- The declared statuses are in the generated route table (`errors: [404, 409]`):
+  types are erased, and the client has to know at run time which statuses to
+  return. Without `routes`, nothing is known to be declared
+- `--format types` names each body: `ItemsByIdPutError409`
+- The client does not validate an error body, as it does not validate a
+  response. A handler sends a declared error as a `Response`, which is not
+  checked against the declared schema
+
 ### Pagination
 
 Define paginated endpoints with automatic query/response schema generation:
