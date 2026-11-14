@@ -81,6 +81,8 @@ const TYPES: Readonly<Record<string, string>> = {
 export class RustContract {
   private readonly statics: string[][] = [];
   private readonly operations: string[][] = [];
+  /** The static of each distinct pattern, by its text. */
+  private readonly patterns = new Map<string, string>();
   /** Documents already written, by content: their static. */
   private readonly written = new Map<string, string>();
   private readonly names = new Set<string>();
@@ -183,11 +185,34 @@ export class RustContract {
       };`,
       ...this.operations.flatMap((lines) => ["", ...lines]),
       ...this.statics.flatMap((lines) => ["", ...lines]),
+      ...this.patternStatics(),
       "}",
     ];
   }
 
+  /** Whether a schema of the contract has a pattern. */
+  get hasPatterns(): boolean {
+    return this.patterns.size > 0;
+  }
+
   // ---------------------------------------------------------------------------
+
+  /** The patterns, and the list the router compiles when it is built. */
+  private patternStatics(): string[] {
+    if (this.patterns.size === 0) return [];
+    const names = [...this.patterns.values()];
+    return [
+      "",
+      "    /// Every pattern of the contract: compiled when the router is built.",
+      `    pub(super) static PATTERNS: &[&Pattern] = &[${
+        names.map((name) => `&${name}`).join(", ")
+      }];`,
+      ...[...this.patterns].flatMap(([source, name]) => [
+        "",
+        `    static ${name}: Pattern = Pattern::new(${rustString(source)});`,
+      ]),
+    ];
+  }
 
   private unique(name: string): string {
     let candidate = name;
@@ -293,7 +318,7 @@ export class RustContract {
     set("min_length", count("minLength"));
     set("max_length", count("maxLength"));
     if (typeof rules.pattern === "string") {
-      set("pattern", [`Some(${rustString(rules.pattern)})`]);
+      set("pattern", [`Some(&${this.pattern(rules.pattern)})`]);
     }
     if (typeof rules.format === "string") {
       set("format", [`Some(${rustString(rules.format)})`]);
@@ -351,6 +376,17 @@ export class RustContract {
       `${" ".repeat(inner)}..Schema::ANY`,
       `${" ".repeat(indent)}}`,
     ].join("\n");
+  }
+
+  /** The static that holds a pattern: one for every distinct text. */
+  private pattern(source: string): string {
+    let name = this.patterns.get(source);
+    if (name === undefined) {
+      name = this.unique(`PATTERN_${this.patterns.size + 1}`);
+      this.patterns.set(source, name);
+      this.used.add("Pattern");
+    }
+    return name;
   }
 
   /** A constant or an option as a `Literal`, if it is a scalar. */

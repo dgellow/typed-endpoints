@@ -755,7 +755,14 @@ pub trait Handlers: Send + Sync + 'static {
 // -----------------------------------------------------------------------------
 
 /// The operations as routes that call the given handlers.
+///
+/// # Panics
+///
+/// If a pattern of the contract is not one this module's regular
+/// expression engine can compile. It is found here, when the server
+/// starts, and not by the first request that reaches it.
 pub fn router<H: Handlers>(handlers: H) -> axum::Router {
+    runtime::compile(contract::PATTERNS);
     axum::Router::new()
         .route("/api/echo/{*path}", get(echo_retrieve::<H>))
         .route("/api/edges", post(edges_create::<H>))
@@ -941,7 +948,7 @@ async fn trees_create<H: Handlers>(
 /// checks their requests and responses against.
 #[rustfmt::skip]
 mod contract {
-    use super::runtime::{Additional, Literal, Operation, Schema, Type};
+    use super::runtime::{Additional, Literal, Operation, Pattern, Schema, Type};
 
     pub(super) static ECHO_RETRIEVE: Operation = Operation {
         name: "GET /api/echo/{+path}",
@@ -1061,9 +1068,9 @@ mod contract {
         types: &[Type::Object],
         properties: Some(&[
             ("short", Schema { types: &[Type::String], max_length: Some(4), ..Schema::ANY }),
-            ("digits", Schema { types: &[Type::String], pattern: Some(r"^\d+$"), ..Schema::ANY }),
-            ("plain", Schema { types: &[Type::String], pattern: Some(r"^[\D]+$"), ..Schema::ANY }),
-            ("word", Schema { types: &[Type::String], pattern: Some(r"^(?!admin)\w+$"), ..Schema::ANY }),
+            ("digits", Schema { types: &[Type::String], pattern: Some(&PATTERN_1), ..Schema::ANY }),
+            ("plain", Schema { types: &[Type::String], pattern: Some(&PATTERN_2), ..Schema::ANY }),
+            ("word", Schema { types: &[Type::String], pattern: Some(&PATTERN_3), ..Schema::ANY }),
             ("count", Schema {
                 types: &[Type::Integer],
                 minimum: Some(-9_007_199_254_740_991.0),
@@ -1075,19 +1082,19 @@ mod contract {
             ("maybe", Schema { types: &[Type::String, Type::Null], ..Schema::ANY }),
             ("when", Schema {
                 types: &[Type::String],
-                pattern: Some(r"^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$"),
+                pattern: Some(&PATTERN_4),
                 format: Some("date-time"),
                 ..Schema::ANY
             }),
             ("id", Schema {
                 types: &[Type::String],
-                pattern: Some("^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"),
+                pattern: Some(&PATTERN_5),
                 format: Some("uuid"),
                 ..Schema::ANY
             }),
             ("email", Schema {
                 types: &[Type::String],
-                pattern: Some(r"^(?:[A-Za-z0-9_'+\-]+\.)*[A-Za-z0-9_'+\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$"),
+                pattern: Some(&PATTERN_6),
                 format: Some("email"),
                 ..Schema::ANY
             }),
@@ -1716,6 +1723,21 @@ mod contract {
         additional: Additional::Refused,
         ..Schema::ANY
     };
+
+    /// Every pattern of the contract: compiled when the router is built.
+    pub(super) static PATTERNS: &[&Pattern] = &[&PATTERN_1, &PATTERN_2, &PATTERN_3, &PATTERN_4, &PATTERN_5, &PATTERN_6];
+
+    static PATTERN_1: Pattern = Pattern::new(r"^\d+$");
+
+    static PATTERN_2: Pattern = Pattern::new(r"^[\D]+$");
+
+    static PATTERN_3: Pattern = Pattern::new(r"^(?!admin)\w+$");
+
+    static PATTERN_4: Pattern = Pattern::new(r"^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$");
+
+    static PATTERN_5: Pattern = Pattern::new("^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$");
+
+    static PATTERN_6: Pattern = Pattern::new(r"^(?:[A-Za-z0-9_'+\-]+\.)*[A-Za-z0-9_'+\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$");
 }
 
 /// Checks requests and responses against the contract. The module's API is
@@ -1726,7 +1748,7 @@ mod contract {
 mod runtime {
     use std::collections::HashMap;
     use std::fmt::Write as _;
-    use std::sync::{LazyLock, Mutex, PoisonError};
+    use std::sync::OnceLock;
 
     use axum::body::Bytes;
     use axum::http::{HeaderMap, StatusCode};
@@ -1824,7 +1846,7 @@ mod runtime {
         pub(super) min_length: Option<u64>,
         pub(super) max_length: Option<u64>,
         /// A regular expression, as JavaScript reads it.
-        pub(super) pattern: Option<&'static str>,
+        pub(super) pattern: Option<&'static Pattern>,
         pub(super) format: Option<&'static str>,
         pub(super) minimum: Option<f64>,
         pub(super) maximum: Option<f64>,
@@ -2038,25 +2060,57 @@ mod runtime {
         out
     }
 
-    /// The patterns of the contract, compiled when first used.
-    static PATTERNS: LazyLock<Mutex<HashMap<&'static str, Option<fancy_regex::Regex>>>> =
-        LazyLock::new(Mutex::default);
+    /// A pattern of the contract: a regular expression as JavaScript reads
+    /// it, compiled once.
+    #[derive(Debug)]
+    pub(super) struct Pattern {
+        source: &'static str,
+        compiled: OnceLock<Result<fancy_regex::Regex, String>>,
+    }
 
-    /// Whether a JavaScript pattern from a schema matches. A pattern this
-    /// engine cannot compile is reported as a mismatch of every value, and
-    /// logged once.
-    fn pattern_matches(pattern: &'static str, text: &str) -> bool {
-        let mut patterns = PATTERNS.lock().unwrap_or_else(PoisonError::into_inner);
-        let compiled = patterns.entry(pattern).or_insert_with(|| {
-            fancy_regex::Regex::new(&from_javascript(pattern))
-                .map_err(|error| {
-                    tracing::error!(pattern, %error, "a pattern of the contract does not compile");
-                })
-                .ok()
-        });
-        compiled
-            .as_ref()
-            .is_some_and(|regex| regex.is_match(text).unwrap_or(false))
+    impl Pattern {
+        pub(super) const fn new(source: &'static str) -> Self {
+            Self {
+                source,
+                compiled: OnceLock::new(),
+            }
+        }
+
+        /// The compiled pattern, or why it does not compile here.
+        fn regex(&self) -> Result<&fancy_regex::Regex, &str> {
+            let compiled = self.compiled.get_or_init(|| {
+                fancy_regex::Regex::new(&from_javascript(self.source))
+                    .map_err(|error| error.to_string())
+            });
+            compiled.as_ref().map_err(String::as_str)
+        }
+
+        /// Whether the text matches. Text the engine gives up on (it
+        /// bounds how far it backtracks) does not match, and is reported.
+        fn matches(&self, text: &str) -> bool {
+            let Ok(regex) = self.regex() else {
+                return false;
+            };
+            regex.is_match(text).unwrap_or_else(|error| {
+                let pattern = self.source;
+                tracing::warn!(pattern, %error, "a pattern could not be matched");
+                false
+            })
+        }
+    }
+
+    /// Compiles every pattern of the contract, so that one this engine
+    /// cannot read is found when the server starts and not by a request,
+    /// which it would refuse whatever its value.
+    ///
+    /// Panics with the pattern if one does not compile.
+    pub(super) fn compile(patterns: &[&Pattern]) {
+        for pattern in patterns {
+            if let Err(error) = pattern.regex() {
+                let source = pattern.source;
+                panic!("the pattern {source:?} of the contract does not compile: {error}");
+            }
+        }
     }
 
     /// A string format, as Zod names it in a message.
@@ -2324,15 +2378,14 @@ mod runtime {
                     format!("Too big: expected string to have <={maximum} characters"),
                 );
             }
-            if let Some(pattern) = schema
-                .pattern
-                .filter(|pattern| !pattern_matches(pattern, text))
-            {
+            if let Some(pattern) = schema.pattern.filter(|pattern| !pattern.matches(text)) {
                 // A format is written as a pattern; its name says what is
                 // wrong.
-                let message = match schema.format {
-                    Some(format) => format!("Invalid {}", format_noun(format)),
-                    None => format!("Invalid string: must match pattern /{pattern}/"),
+                let message = if let Some(format) = schema.format {
+                    format!("Invalid {}", format_noun(format))
+                } else {
+                    let source = pattern.source;
+                    format!("Invalid string: must match pattern /{source}/")
                 };
                 self.issue("invalid_format", message);
             }

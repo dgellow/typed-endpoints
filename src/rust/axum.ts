@@ -276,7 +276,9 @@ export function renderAxum(
     lines.push("");
   }
 
-  lines.push(...banner("Router"), ...router(rendered), "");
+  // Written before the router: what it does depends on the contract.
+  const contractModule = data.render();
+  lines.push(...banner("Router"), ...router(rendered, data.hasPatterns), "");
   for (const item of rendered) lines.push(...route(item), "");
   if (unnamed) {
     lines.push(
@@ -287,7 +289,7 @@ export function renderAxum(
       "",
     );
   }
-  lines.push(...data.render(), "", RUNTIME, "");
+  lines.push(...contractModule, "", RUNTIME, "");
 
   return lines.join("\n");
 }
@@ -488,10 +490,24 @@ function route(item: Rendered): string[] {
   ];
 }
 
-function router(rendered: readonly Rendered[]): string[] {
+function router(
+  rendered: readonly Rendered[],
+  patterns: boolean,
+): string[] {
   return [
     "/// The operations as routes that call the given handlers.",
+    ...(patterns
+      ? [
+        "///",
+        "/// # Panics",
+        "///",
+        "/// If a pattern of the contract is not one this module's regular",
+        "/// expression engine can compile. It is found here, when the server",
+        "/// starts, and not by the first request that reaches it.",
+      ]
+      : []),
     "pub fn router<H: Handlers>(handlers: H) -> axum::Router {",
+    ...(patterns ? ["    runtime::compile(contract::PATTERNS);"] : []),
     "    axum::Router::new()",
     // One line per operation; axum joins the methods of a path.
     ...rendered.flatMap((item) =>
