@@ -1131,7 +1131,8 @@ claim is about those versions. It holds, in this order:
 - `Handlers`, a trait with one method per operation. A method that is missing or
   no longer fits the routes does not compile
 - `router(handlers)`, an `axum::Router` that checks each request, calls the
-  handler and checks what it returns
+  handler and checks what it returns; `router_from_arc(handlers)` for handlers
+  that something else holds as well
 - two private modules: the contract as static data, and the runtime that checks
   values against it
 
@@ -1211,8 +1212,8 @@ What does not cross, or not yet:
 - The contract does not say whether a query member is coerced
   (`z.coerce.number()`) or not (`z.number()`, which no query text satisfies in
   TypeScript): every number and boolean of a query or a path is read from text
-- A request that axum's own extractors refuse (a path that is not UTF-8, a body
-  over the size limit) is answered in plain text, not in the shape of a 400
+- A body over axum's size limit is a 413, which the TypeScript handlers never
+  answer: they read a body of any size
 - A 500 is reported through `tracing`: an application without a subscriber
   writes nothing
 - Not generated yet: event streams (listed in a comment in the module), a
@@ -1223,13 +1224,17 @@ generated module and a hand-written implementation of `Handlers` are formatted
 as rustfmt formats, and clippy has nothing to report on the generated module,
 its pedantic lints included. The hand-written handlers carry one stated
 exception: they keep their notes in memory and so await nothing, which a
-pedantic lint points out; the server runs; and the conformance tests of the
+pedantic lint points out; `cargo test` passes, which also compiles the samples
+in the module's documentation; the server runs; and the conformance tests of the
 Python section, minus the event streams, hold for it with no declared
-difference. Among them: three bodies nested 40 levels deep are checked in
-milliseconds, a handler that fails outside the contract is a 500 that does not
-say why, and `2.0` is accepted where the contract says `2`. One behaviour has no
-permanent test, because the fixture cannot hold it: a pattern that does not
-compile stops the server when the router is built.
+difference. A request axum itself refuses (a path that is not UTF-8 once
+decoded, a body it does not read) is answered as JSON, in the words of the
+TypeScript handlers where they refuse it too. Among them: three bodies nested 40
+levels deep are checked in milliseconds, a handler that fails outside the
+contract is a 500 that does not say why, and `2.0` is accepted where the
+contract says `2`. One behaviour has no permanent test, because the fixture
+cannot hold it: a pattern that does not compile stops the server when the router
+is built.
 
 ## API
 

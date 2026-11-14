@@ -38,6 +38,8 @@ for edition in 2021 2024; do
   rustfmt --check --edition "$edition" src/api_generated.rs
 done
 cargo clippy --locked --quiet --all-targets -- -D warnings -W clippy::pedantic
+# What only Rust can ask of the module: its unit tests.
+cargo test --locked --quiet
 cargo build --locked --quiet
 
 log="$(mktemp)"

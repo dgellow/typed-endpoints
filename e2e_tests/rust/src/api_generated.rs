@@ -13,6 +13,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use axum::body::Bytes;
+use axum::extract::rejection::{BytesRejection, PathRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
@@ -396,8 +397,10 @@ pub type ShapesCreateResponseUnit = ShapesCreateBodyUnit;
 /// second keeps an absent member from being written. Without them an
 /// absent member reads and writes as null.
 ///
-///     #[serde(default, skip_serializing_if = "MaybeAbsent::is_absent")]
-///     pub note: MaybeAbsent<String>,
+/// ~~~text
+/// #[serde(default, skip_serializing_if = "MaybeAbsent::is_absent")]
+/// pub note: MaybeAbsent<String>,
+/// ~~~
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum MaybeAbsent<T> {
     /// The member is not there.
@@ -556,7 +559,9 @@ impl NotesCreateError {
 
     fn respond(&self, operation: &runtime::Operation) -> Response {
         match self {
-            Self::Conflict(body) => operation.fail(self.status(), body),
+            Self::Conflict(body) => {
+                operation.fail(StatusCode::CONFLICT, &contract::NOTES_CREATE_ERROR409, body)
+            }
             Self::Internal(error) => operation.internal(error),
         }
     }
@@ -600,7 +605,11 @@ impl NotesDeleteError {
 
     fn respond(&self, operation: &runtime::Operation) -> Response {
         match self {
-            Self::NotFound(body) => operation.fail(self.status(), body),
+            Self::NotFound(body) => operation.fail(
+                StatusCode::NOT_FOUND,
+                &contract::NOTES_DELETE_ERROR404,
+                body,
+            ),
             Self::Internal(error) => operation.internal(error),
         }
     }
@@ -644,7 +653,11 @@ impl NotesRetrieveError {
 
     fn respond(&self, operation: &runtime::Operation) -> Response {
         match self {
-            Self::NotFound(body) => operation.fail(self.status(), body),
+            Self::NotFound(body) => operation.fail(
+                StatusCode::NOT_FOUND,
+                &contract::NOTES_DELETE_ERROR404,
+                body,
+            ),
             Self::Internal(error) => operation.internal(error),
         }
     }
@@ -742,10 +755,19 @@ pub trait Handlers: Send + Sync + 'static {
 ///
 /// # Panics
 ///
+/// As [`router_from_arc`] does.
+pub fn router<H: Handlers>(handlers: H) -> axum::Router {
+    router_from_arc(Arc::new(handlers))
+}
+
+/// [`router`], for handlers that something else holds as well.
+///
+/// # Panics
+///
 /// If a pattern of the contract is not one this module's regular
 /// expression engine can compile. It is found here, when the server
 /// starts, and not by the first request that reaches it.
-pub fn router<H: Handlers>(handlers: H) -> axum::Router {
+pub fn router_from_arc<H: Handlers>(handlers: Arc<H>) -> axum::Router {
     runtime::compile(contract::PATTERNS);
     axum::Router::new()
         .route("/api/echo/{*path}", get(echo_retrieve::<H>))
@@ -758,174 +780,138 @@ pub fn router<H: Handlers>(handlers: H) -> axum::Router {
         .route("/api/odd", post(odd_create::<H>))
         .route("/api/shapes", post(shapes_create::<H>))
         .route("/api/trees", post(trees_create::<H>))
-        .with_state(Arc::new(handlers))
+        .with_state(handlers)
 }
 
 async fn echo_retrieve<H: Handlers>(
     State(handlers): State<Arc<H>>,
-    Path(path): Path<HashMap<String, String>>,
-) -> Response {
+    path: Result<Path<HashMap<String, String>>, PathRejection>,
+) -> Result<Response, runtime::Refused> {
     let operation = &contract::ECHO_RETRIEVE;
-    let params = match operation.params(path) {
-        Ok(params) => params,
-        Err(response) => return *response,
-    };
-    match handlers.echo_retrieve(params).await {
+    let params = operation.params(path)?;
+    Ok(match handlers.echo_retrieve(params).await {
         Ok(response) => operation.respond(&response),
         Err(error) => operation.internal(&error),
-    }
+    })
 }
 
 async fn edges_create<H: Handlers>(
     State(handlers): State<Arc<H>>,
     headers: HeaderMap,
-    bytes: Bytes,
-) -> Response {
+    bytes: Result<Bytes, BytesRejection>,
+) -> Result<Response, runtime::Refused> {
     let operation = &contract::EDGES_CREATE;
-    let body = match operation.body(&headers, &bytes) {
-        Ok(body) => body,
-        Err(response) => return *response,
-    };
-    match handlers.edges_create(body).await {
+    let body = operation.body(&headers, bytes)?;
+    Ok(match handlers.edges_create(body).await {
         Ok(response) => operation.respond(&response),
         Err(error) => operation.internal(&error),
-    }
+    })
 }
 
 async fn notes_list<H: Handlers>(
     State(handlers): State<Arc<H>>,
     Query(pairs): Query<Vec<(String, String)>>,
-) -> Response {
+) -> Result<Response, runtime::Refused> {
     let operation = &contract::NOTES_LIST;
-    let query = match operation.query(pairs) {
-        Ok(query) => query,
-        Err(response) => return *response,
-    };
-    match handlers.notes_list(query).await {
+    let query = operation.query(pairs)?;
+    Ok(match handlers.notes_list(query).await {
         Ok(response) => operation.respond(&response),
         Err(error) => operation.internal(&error),
-    }
+    })
 }
 
 async fn notes_create<H: Handlers>(
     State(handlers): State<Arc<H>>,
     headers: HeaderMap,
-    bytes: Bytes,
-) -> Response {
+    bytes: Result<Bytes, BytesRejection>,
+) -> Result<Response, runtime::Refused> {
     let operation = &contract::NOTES_CREATE;
-    let body = match operation.body(&headers, &bytes) {
-        Ok(body) => body,
-        Err(response) => return *response,
-    };
-    match handlers.notes_create(body).await {
+    let body = operation.body(&headers, bytes)?;
+    Ok(match handlers.notes_create(body).await {
         Ok(response) => operation.respond(&response),
         Err(error) => error.respond(operation),
-    }
+    })
 }
 
 async fn notes_delete<H: Handlers>(
     State(handlers): State<Arc<H>>,
-    Path(path): Path<HashMap<String, String>>,
+    path: Result<Path<HashMap<String, String>>, PathRejection>,
     headers: HeaderMap,
-    bytes: Bytes,
-) -> Response {
+    bytes: Result<Bytes, BytesRejection>,
+) -> Result<Response, runtime::Refused> {
     let operation = &contract::NOTES_DELETE;
-    let body = match operation.body(&headers, &bytes) {
-        Ok(body) => body,
-        Err(response) => return *response,
-    };
-    let params = match operation.params(path) {
-        Ok(params) => params,
-        Err(response) => return *response,
-    };
-    match handlers.notes_delete(params, body).await {
+    let body = operation.body(&headers, bytes)?;
+    let params = operation.params(path)?;
+    Ok(match handlers.notes_delete(params, body).await {
         Ok(response) => operation.respond(&response),
         Err(error) => error.respond(operation),
-    }
+    })
 }
 
 async fn notes_retrieve<H: Handlers>(
     State(handlers): State<Arc<H>>,
-    Path(path): Path<HashMap<String, String>>,
-) -> Response {
+    path: Result<Path<HashMap<String, String>>, PathRejection>,
+) -> Result<Response, runtime::Refused> {
     let operation = &contract::NOTES_RETRIEVE;
-    let params = match operation.params(path) {
-        Ok(params) => params,
-        Err(response) => return *response,
-    };
-    match handlers.notes_retrieve(params).await {
+    let params = operation.params(path)?;
+    Ok(match handlers.notes_retrieve(params).await {
         Ok(response) => operation.respond(&response),
         Err(error) => error.respond(operation),
-    }
+    })
 }
 
 async fn notes_update<H: Handlers>(
     State(handlers): State<Arc<H>>,
-    Path(path): Path<HashMap<String, String>>,
+    path: Result<Path<HashMap<String, String>>, PathRejection>,
     headers: HeaderMap,
-    bytes: Bytes,
-) -> Response {
+    bytes: Result<Bytes, BytesRejection>,
+) -> Result<Response, runtime::Refused> {
     let operation = &contract::NOTES_UPDATE;
-    let body = match operation.body(&headers, &bytes) {
-        Ok(body) => body,
-        Err(response) => return *response,
-    };
-    let params = match operation.params(path) {
-        Ok(params) => params,
-        Err(response) => return *response,
-    };
-    match handlers.notes_update(params, body).await {
+    let body = operation.body(&headers, bytes)?;
+    let params = operation.params(path)?;
+    Ok(match handlers.notes_update(params, body).await {
         Ok(response) => operation.respond(&response),
         Err(error) => operation.internal(&error),
-    }
+    })
 }
 
 async fn odd_create<H: Handlers>(
     State(handlers): State<Arc<H>>,
     headers: HeaderMap,
-    bytes: Bytes,
-) -> Response {
+    bytes: Result<Bytes, BytesRejection>,
+) -> Result<Response, runtime::Refused> {
     let operation = &contract::ODD_CREATE;
-    let body = match operation.body(&headers, &bytes) {
-        Ok(body) => body,
-        Err(response) => return *response,
-    };
-    match handlers.odd_create(body).await {
+    let body = operation.body(&headers, bytes)?;
+    Ok(match handlers.odd_create(body).await {
         Ok(response) => operation.respond(&response),
         Err(error) => operation.internal(&error),
-    }
+    })
 }
 
 async fn shapes_create<H: Handlers>(
     State(handlers): State<Arc<H>>,
     headers: HeaderMap,
-    bytes: Bytes,
-) -> Response {
+    bytes: Result<Bytes, BytesRejection>,
+) -> Result<Response, runtime::Refused> {
     let operation = &contract::SHAPES_CREATE;
-    let body = match operation.body(&headers, &bytes) {
-        Ok(body) => body,
-        Err(response) => return *response,
-    };
-    match handlers.shapes_create(body).await {
+    let body = operation.body(&headers, bytes)?;
+    Ok(match handlers.shapes_create(body).await {
         Ok(response) => operation.respond(&response),
         Err(error) => operation.internal(&error),
-    }
+    })
 }
 
 async fn trees_create<H: Handlers>(
     State(handlers): State<Arc<H>>,
     headers: HeaderMap,
-    bytes: Bytes,
-) -> Response {
+    bytes: Result<Bytes, BytesRejection>,
+) -> Result<Response, runtime::Refused> {
     let operation = &contract::TREES_CREATE;
-    let body = match operation.body(&headers, &bytes) {
-        Ok(body) => body,
-        Err(response) => return *response,
-    };
-    match handlers.trees_create(body).await {
+    let body = operation.body(&headers, bytes)?;
+    Ok(match handlers.trees_create(body).await {
         Ok(response) => operation.respond(&response),
         Err(error) => operation.internal(&error),
-    }
+    })
 }
 
 /// The contract as data: the operations, and the schemas the runtime
@@ -940,7 +926,6 @@ mod contract {
         query: None,
         body: None,
         response: Some(&ECHO_RETRIEVE_RESPONSE),
-        errors: &[],
     };
 
     pub(super) static EDGES_CREATE: Operation = Operation {
@@ -949,7 +934,6 @@ mod contract {
         query: None,
         body: Some(&EDGES_CREATE_BODY),
         response: Some(&EDGES_CREATE_RESPONSE),
-        errors: &[],
     };
 
     pub(super) static NOTES_LIST: Operation = Operation {
@@ -958,7 +942,6 @@ mod contract {
         query: Some(&NOTES_LIST_QUERY),
         body: None,
         response: Some(&NOTES_LIST_RESPONSE),
-        errors: &[],
     };
 
     pub(super) static NOTES_CREATE: Operation = Operation {
@@ -967,7 +950,6 @@ mod contract {
         query: None,
         body: Some(&NOTES_CREATE_BODY),
         response: Some(&NOTES_CREATE_RESPONSE),
-        errors: &[(409, &NOTES_CREATE_ERROR409)],
     };
 
     pub(super) static NOTES_DELETE: Operation = Operation {
@@ -976,7 +958,6 @@ mod contract {
         query: None,
         body: Some(&NOTES_DELETE_BODY),
         response: Some(&NOTES_DELETE_RESPONSE),
-        errors: &[(404, &NOTES_DELETE_ERROR404)],
     };
 
     pub(super) static NOTES_RETRIEVE: Operation = Operation {
@@ -985,7 +966,6 @@ mod contract {
         query: None,
         body: None,
         response: Some(&NOTES_CREATE_RESPONSE),
-        errors: &[(404, &NOTES_DELETE_ERROR404)],
     };
 
     pub(super) static NOTES_UPDATE: Operation = Operation {
@@ -994,7 +974,6 @@ mod contract {
         query: None,
         body: Some(&NOTES_CREATE_BODY),
         response: Some(&NOTES_CREATE_RESPONSE),
-        errors: &[],
     };
 
     pub(super) static ODD_CREATE: Operation = Operation {
@@ -1003,7 +982,6 @@ mod contract {
         query: None,
         body: Some(&ODD_CREATE_BODY),
         response: Some(&ODD_CREATE_RESPONSE),
-        errors: &[],
     };
 
     pub(super) static SHAPES_CREATE: Operation = Operation {
@@ -1012,7 +990,6 @@ mod contract {
         query: None,
         body: Some(&SHAPES_CREATE_BODY),
         response: Some(&SHAPES_CREATE_RESPONSE),
-        errors: &[],
     };
 
     pub(super) static TREES_CREATE: Operation = Operation {
@@ -1021,7 +998,6 @@ mod contract {
         query: None,
         body: Some(&TREES_CREATE_BODY),
         response: Some(&TREES_CREATE_RESPONSE),
-        errors: &[],
     };
 
     pub(super) static ECHO_RETRIEVE_PARAMS: Schema = Schema {
@@ -1742,6 +1718,7 @@ mod runtime {
     use std::sync::OnceLock;
 
     use axum::body::Bytes;
+    use axum::extract::rejection::{BytesRejection, PathRejection};
     use axum::http::{HeaderMap, StatusCode};
     use axum::response::{IntoResponse, Response};
     use serde::de::DeserializeOwned;
@@ -2613,9 +2590,30 @@ mod runtime {
         (StatusCode::BAD_REQUEST, axum::Json(body)).into_response()
     }
 
+    /// An answer that is a status and a message.
+    fn error(status: StatusCode, message: &str) -> Response {
+        (status, axum::Json(serde_json::json!({ "error": message }))).into_response()
+    }
+
     fn internal_error() -> Response {
-        let body = serde_json::json!({ "error": "Internal Server Error" });
-        (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(body)).into_response()
+        error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
+    }
+
+    /// The answer to a request that does not reach its handler. In a box:
+    /// a response is large, and most requests are not refused.
+    #[derive(Debug)]
+    pub(super) struct Refused(Box<Response>);
+
+    impl From<Response> for Refused {
+        fn from(response: Response) -> Self {
+            Self(Box::new(response))
+        }
+    }
+
+    impl IntoResponse for Refused {
+        fn into_response(self) -> Response {
+            *self.0
+        }
     }
 
     /// A checked value as the type a handler receives.
@@ -2623,7 +2621,7 @@ mod runtime {
         part: Part,
         schema: &'static Schema,
         mut value: Option<Value>,
-    ) -> Result<T, Box<Response>> {
+    ) -> Result<T, Refused> {
         let mut checker = Checker {
             text: part.is_text(),
             ..Checker::default()
@@ -2633,14 +2631,14 @@ mod runtime {
         }
         checker.check(schema, value.as_ref());
         if !checker.issues.is_empty() {
-            return Err(Box::new(invalid(part, &checker.issues)));
+            return Err(invalid(part, &checker.issues).into());
         }
         serde_json::from_value(value.unwrap_or(Value::Null)).map_err(|error| {
             // The schema accepted the value and the type did not: the two
             // were generated from the same contract and disagree.
             let part = part.name();
             tracing::error!(part, %error, "a value its schema accepts does not fit its type");
-            Box::new(internal_error())
+            internal_error().into()
         })
     }
 
@@ -2687,16 +2685,24 @@ mod runtime {
         pub(super) query: Option<&'static Schema>,
         pub(super) body: Option<&'static Schema>,
         pub(super) response: Option<&'static Schema>,
-        /// The error bodies the operation declares, by status.
-        pub(super) errors: &'static [(u16, &'static Schema)],
     }
 
     impl Operation {
         /// The path parameters as the type a handler receives.
         pub(super) fn params<T: DeserializeOwned>(
             &self,
-            values: HashMap<String, String>,
-        ) -> Result<T, Box<Response>> {
+            path: Result<axum::extract::Path<HashMap<String, String>>, PathRejection>,
+        ) -> Result<T, Refused> {
+            let axum::extract::Path(values) = path.map_err(|rejection| {
+                if rejection.status() == StatusCode::BAD_REQUEST {
+                    // Not UTF-8 once decoded: answered as the TypeScript
+                    // handlers answer it.
+                    return error(StatusCode::BAD_REQUEST, "Malformed URL path");
+                }
+                let operation = self.name;
+                tracing::error!(operation, %rejection, "the path parameters cannot be read");
+                internal_error()
+            })?;
             let schema = self.params.unwrap_or(&Schema::ANY);
             let members = values
                 .into_iter()
@@ -2714,7 +2720,7 @@ mod runtime {
         pub(super) fn query<T: DeserializeOwned>(
             &self,
             pairs: Vec<(String, String)>,
-        ) -> Result<T, Box<Response>> {
+        ) -> Result<T, Refused> {
             let schema = self.query.unwrap_or(&Schema::ANY);
             let mut members = Map::new();
             for (name, text) in pairs {
@@ -2740,14 +2746,19 @@ mod runtime {
         pub(super) fn body<T: DeserializeOwned>(
             &self,
             headers: &HeaderMap,
-            bytes: &Bytes,
-        ) -> Result<T, Box<Response>> {
-            let text = String::from_utf8_lossy(bytes);
+            bytes: Result<Bytes, BytesRejection>,
+        ) -> Result<T, Refused> {
+            // A body that cannot be read (it is larger than the server
+            // takes, the connection broke): axum's status, as JSON.
+            let bytes =
+                bytes.map_err(|rejection| error(rejection.status(), &rejection.body_text()))?;
+            // As JavaScript reads a body: a byte that is not UTF-8 is U+FFFD.
+            let text = String::from_utf8_lossy(&bytes);
             let value = if text.trim().is_empty() {
                 // No body: checked as a missing value.
                 None
             } else {
-                let value = serde_json::from_str(&text).map_err(|_| Box::new(not_json(headers)))?;
+                let value = serde_json::from_str(&text).map_err(|_| not_json(headers))?;
                 Some(value)
             };
             typed(Part::Body, self.body.unwrap_or(&Schema::ANY), value)
@@ -2766,13 +2777,15 @@ mod runtime {
             internal_error()
         }
 
-        /// An error a handler returned, as the response of that status.
-        pub(super) fn fail<T: Serialize>(&self, status: StatusCode, body: &T) -> Response {
-            let declared = self
-                .errors
-                .iter()
-                .find(|(code, _)| *code == status.as_u16());
-            self.answer(status, declared.map(|(_, schema)| *schema), body)
+        /// An error a handler returned, as the response of that status,
+        /// checked against the schema the operation declares for it.
+        pub(super) fn fail<T: Serialize>(
+            &self,
+            status: StatusCode,
+            schema: &'static Schema,
+            body: &T,
+        ) -> Response {
+            self.answer(status, Some(schema), body)
         }
 
         /// A value is checked against the schema of its status, then

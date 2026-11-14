@@ -221,11 +221,10 @@ Deno.test("rust contract: the same schema twice is one static; operations name t
   const operation = data.operation("NOTES_RETRIEVE", {
     label: "GET /notes/{id}",
     response: "NOTE",
-    errors: new Map([["404", first]]),
   });
   assertEquals(operation, "NOTES_RETRIEVE");
   const lines = data.render();
-  assertEquals(lines.slice(0, 15), [
+  assertEquals(lines.slice(0, 14), [
     "/// The contract as data: the operations, and the schemas the runtime",
     "/// checks their requests and responses against.",
     "#[rustfmt::skip]",
@@ -239,7 +238,6 @@ Deno.test("rust contract: the same schema twice is one static; operations name t
     "        query: None,",
     "        body: None,",
     "        response: Some(&NOTE),",
-    "        errors: &[(404, &NOTES_RETRIEVE_ERROR_404)],",
     "    };",
     "",
   ]);
