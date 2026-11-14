@@ -15,7 +15,7 @@
 
 import type { Context } from "@fresh/core";
 import type { z } from "zod";
-import type { SseEventDef } from "../core/types.ts";
+import type { ResponsesDef, SseEventDef } from "../core/types.ts";
 import {
   buildHandlers,
   type HandlerMethodDef,
@@ -39,12 +39,14 @@ export type FreshApiMethodDef<
   TQuerySchema extends z.ZodType | undefined = undefined,
   TParamsSchema extends z.ZodType | undefined = undefined,
   TResponseSchema extends z.ZodType | undefined = z.ZodType | undefined,
+  TResponses extends ResponsesDef | undefined = ResponsesDef | undefined,
 > = HandlerMethodDef<
   Context<TState>,
   TBodySchema,
   TQuerySchema,
   TParamsSchema,
-  TResponseSchema
+  TResponseSchema,
+  TResponses
 >;
 
 /**
@@ -63,20 +65,23 @@ export function endpoint<
   TQuerySchema extends z.ZodType | undefined = undefined,
   TParamsSchema extends z.ZodType | undefined = undefined,
   TResponseSchema extends z.ZodType | undefined = undefined,
+  const TResponses extends ResponsesDef | undefined = undefined,
 >(
   def: FreshApiMethodDef<
     TState,
     TBodySchema,
     TQuerySchema,
     TParamsSchema,
-    TResponseSchema
+    TResponseSchema,
+    TResponses
   >,
 ): FreshApiMethodDef<
   TState,
   TBodySchema,
   TQuerySchema,
   TParamsSchema,
-  TResponseSchema
+  TResponseSchema,
+  TResponses
 > {
   return def;
 }

@@ -32,6 +32,7 @@ import type {
   RequestLocation,
   RequestLocations,
   Step,
+  StepOutcome,
   StepRoute,
 } from "./types.ts";
 
@@ -102,6 +103,75 @@ export type EndpointRequestSchema<D> = z.ZodType<
 /** Response schema type of a step created from the method definition `D`. */
 export type EndpointResponseSchema<D> = [SchemaAt<D, "response">] extends
   [never] ? z.ZodUnknown : SchemaAt<D, "response">;
+
+/**
+ * Status codes of the error responses a method definition declares: the
+ * keys of its `responses` from 400 upwards.
+ */
+export type ErrorStatusOf<D> = D extends { readonly responses?: infer R }
+  ? NonNullable<R> extends infer TDeclared ? {
+      [S in keyof TDeclared & number]: `${S}` extends
+        `4${string}` | `5${string}` ? S : never;
+    }[keyof TDeclared & number]
+  : never
+  : never;
+
+/** The schema a method definition declares for status `S`. */
+export type DeclaredSchema<D, S> = D extends { readonly responses?: infer R }
+  ? S extends keyof NonNullable<R>
+    ? NonNullable<R>[S] extends z.ZodType ? NonNullable<R>[S]
+    : NonNullable<R>[S] extends { readonly schema: infer T extends z.ZodType }
+      ? T
+    : never
+  : never
+  : never;
+
+/**
+ * What a call to an endpoint ended with, as a value: the response, or one
+ * of the error responses the endpoint declares, told apart by `ok` and
+ * `status`.
+ */
+export type EndpointOutcome<D> =
+  | {
+    /** The call succeeded. */
+    readonly ok: true;
+    /** The HTTP status, 200 to 299. */
+    readonly status: number;
+    /** The response body. */
+    readonly body: z.output<EndpointResponseSchema<D>>;
+  }
+  | {
+    [S in ErrorStatusOf<D>]: {
+      /** The server answered with a declared error status. */
+      readonly ok: false;
+      /** The HTTP status. */
+      readonly status: S;
+      /** The body declared for that status. */
+      readonly body: z.output<DeclaredSchema<D, S>>;
+    };
+  }[ErrorStatusOf<D>];
+
+/**
+ * Response schema type of a step created from the method definition `D`:
+ * the endpoint's response, or its outcome when the step asks for one.
+ */
+export type StepResponseSchema<D, TOutcome extends boolean> = TOutcome extends
+  true ? z.ZodType<EndpointOutcome<D>> : EndpointResponseSchema<D>;
+
+/** What steps made from an endpoint have in common in their options. */
+export interface OutcomeOption<TOutcome extends boolean = boolean> {
+  /**
+   * Make the step's response the outcome of the call:
+   * `{ ok: true, status, body }` for a success and
+   * `{ ok: false, status, body }` for each error status the endpoint
+   * declares in `responses`. A step that follows can then say which
+   * outcome it follows (`when: (prev) => prev.ok`) and a plan can branch
+   * on it, without `try`/`catch`. The HTTP executor returns a declared
+   * error status as a response; a status the endpoint does not declare is
+   * still an `HttpError`.
+   */
+  readonly outcome?: TOutcome;
+}
 
 /** Options for fromEndpoint */
 export interface FromEndpointOptions<TName extends string = string> {
@@ -194,6 +264,9 @@ interface MethodDefLike {
   readonly query?: z.ZodType;
   readonly params?: z.ZodType;
   readonly response?: z.ZodType;
+  readonly responses?: Readonly<
+    Record<string, z.ZodType | { readonly schema: z.ZodType }>
+  >;
   readonly operationId?: string;
   readonly description?: string;
 }
@@ -243,6 +316,40 @@ function mergeRequestSchemas(
   }
 
   return { schema: z.object(shape), locations };
+}
+
+/**
+ * The response schema of a step made from an endpoint: the endpoint's
+ * response, or, when the step asks for the outcome, a union of
+ * `{ ok: true, status, body }` and one `{ ok: false, status, body }` per
+ * declared error status.
+ */
+function responseOf(
+  def: MethodDefLike,
+  outcome: boolean | undefined,
+): { response: z.ZodType; outcome?: StepOutcome } {
+  const response = def.response ?? z.unknown();
+  if (!outcome) return { response };
+
+  const errors = Object.entries(def.responses ?? {})
+    .map(([status, value]) =>
+      [Number(status), "schema" in value ? value.schema : value] as const
+    )
+    .filter(([status]) => status >= 400)
+    .sort(([a], [b]) => a - b);
+
+  const success = z.object({
+    ok: z.literal(true),
+    status: z.number(),
+    body: response,
+  });
+  const failures = errors.map(([status, schema]) =>
+    z.object({ ok: z.literal(false), status: z.literal(status), body: schema })
+  );
+  return {
+    response: failures.length === 0 ? success : z.union([success, ...failures]),
+    outcome: { errors: errors.map(([status]) => status) },
+  };
 }
 
 /**
@@ -318,14 +425,15 @@ export function fromEndpoint<
   TName extends string,
   H extends HandlerWithApiDef,
   M extends MethodsOf<H>,
+  const TOutcome extends boolean = false,
 >(
   handler: H,
   method: M,
-  options: FromEndpointOptions<TName>,
+  options: FromEndpointOptions<TName> & OutcomeOption<TOutcome>,
 ): Step<
   TName,
   EndpointRequestSchema<H["__apiDef"][M]>,
-  EndpointResponseSchema<H["__apiDef"][M]>
+  StepResponseSchema<H["__apiDef"][M], TOutcome>
 > {
   const def = handler.__apiDef[method] as MethodDefLike | undefined;
   if (!def) {
@@ -338,9 +446,9 @@ export function fromEndpoint<
     name: options.name,
     request: request.schema as EndpointRequestSchema<H["__apiDef"][M]>,
     requestLocations: request.locations,
-    response: (def.response ?? z.unknown()) as EndpointResponseSchema<
-      H["__apiDef"][M]
-    >,
+    ...responseOf(def, options.outcome) as {
+      response: StepResponseSchema<H["__apiDef"][M], TOutcome>;
+    },
     ...routing(handler, method, def, options, request.locations),
     description: options.description ?? def.description,
   };
@@ -375,20 +483,23 @@ export function fromEndpointDependent<
   // deno-lint-ignore no-explicit-any
   TPrevResponse = any,
   TRequest extends z.ZodType = z.ZodType,
+  const TOutcome extends boolean = false,
 >(
   handler: H,
   method: M,
-  options: FromEndpointDependentOptions<
-    TName,
-    TDependsOn,
-    TPrevResponse,
-    TRequest
-  >,
+  options:
+    & FromEndpointDependentOptions<
+      TName,
+      TDependsOn,
+      TPrevResponse,
+      TRequest
+    >
+    & OutcomeOption<TOutcome>,
 ): DependentStep<
   TName,
   TPrevResponse,
   TRequest,
-  EndpointResponseSchema<H["__apiDef"][M]>,
+  StepResponseSchema<H["__apiDef"][M], TOutcome>,
   TDependsOn
 > {
   const def = handler.__apiDef[method] as MethodDefLike | undefined;
@@ -403,9 +514,9 @@ export function fromEndpointDependent<
     dependsOn: options.dependsOn,
     request: options.request,
     requestLocations: locations,
-    response: (def.response ?? z.unknown()) as EndpointResponseSchema<
-      H["__apiDef"][M]
-    >,
+    ...responseOf(def, options.outcome) as {
+      response: StepResponseSchema<H["__apiDef"][M], TOutcome>;
+    },
     ...routing(handler, method, def, options, locations),
     description: options.description ?? def.description,
   };
@@ -435,18 +546,22 @@ export function fromEndpointMapped<
   const TMapping extends Record<string, FieldMapping>,
   H extends HandlerWithApiDef,
   M extends MethodsOf<H>,
+  const TOutcome extends boolean = false,
 >(
   handler: H,
   method: M,
-  options: FromEndpointMappedOptions<TName, TDependsOn, TMapping> & {
-    requestMapping: NoInfer<
-      MappingForRequest<TMapping, EndpointRequestSchema<H["__apiDef"][M]>>
-    >;
-  },
+  options:
+    & FromEndpointMappedOptions<TName, TDependsOn, TMapping>
+    & OutcomeOption<TOutcome>
+    & {
+      requestMapping: NoInfer<
+        MappingForRequest<TMapping, EndpointRequestSchema<H["__apiDef"][M]>>
+      >;
+    },
 ): MappedStep<
   TName,
   EndpointRequestSchema<H["__apiDef"][M]>,
-  EndpointResponseSchema<H["__apiDef"][M]>,
+  StepResponseSchema<H["__apiDef"][M], TOutcome>,
   TDependsOn,
   TMapping
 > {
@@ -463,9 +578,9 @@ export function fromEndpointMapped<
     requestMapping: options.requestMapping,
     requestSchema: request.schema as EndpointRequestSchema<H["__apiDef"][M]>,
     requestLocations: request.locations,
-    response: (def.response ?? z.unknown()) as EndpointResponseSchema<
-      H["__apiDef"][M]
-    >,
+    ...responseOf(def, options.outcome) as {
+      response: StepResponseSchema<H["__apiDef"][M], TOutcome>;
+    },
     ...routing(handler, method, def, options, request.locations),
     description: options.description ?? def.description,
   };

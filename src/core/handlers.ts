@@ -15,6 +15,7 @@ import type { z } from "zod";
 import type {
   ApiMethodDef,
   HttpMethod,
+  ResponsesDef,
   SseEvent,
   SseEventDef,
   SseMethodDef,
@@ -52,8 +53,15 @@ export interface HandlerMethodDef<
   TQuerySchema extends z.ZodType | undefined = undefined,
   TParamsSchema extends z.ZodType | undefined = undefined,
   TResponseSchema extends z.ZodType | undefined = z.ZodType | undefined,
+  TResponses extends ResponsesDef | undefined = ResponsesDef | undefined,
 > extends
-  ApiMethodDef<TBodySchema, TQuerySchema, TParamsSchema, TResponseSchema> {
+  ApiMethodDef<
+    TBodySchema,
+    TQuerySchema,
+    TParamsSchema,
+    TResponseSchema,
+    TResponses
+  > {
   /**
    * Handles the request. Receives the framework's context and the
    * validated body, query and path parameters.
@@ -416,20 +424,23 @@ export interface Integration<TContext, TRest extends unknown[] = []> {
     TQuerySchema extends z.ZodType | undefined = undefined,
     TParamsSchema extends z.ZodType | undefined = undefined,
     TResponseSchema extends z.ZodType | undefined = undefined,
+    const TResponses extends ResponsesDef | undefined = undefined,
   >(
     def: HandlerMethodDef<
       TContext,
       TBodySchema,
       TQuerySchema,
       TParamsSchema,
-      TResponseSchema
+      TResponseSchema,
+      TResponses
     >,
   ): HandlerMethodDef<
     TContext,
     TBodySchema,
     TQuerySchema,
     TParamsSchema,
-    TResponseSchema
+    TResponseSchema,
+    TResponses
   >;
 
   /**

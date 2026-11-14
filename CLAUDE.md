@@ -131,6 +131,18 @@ which the client types compute the arguments: the trailing path parameter is the
 client falls back to deriving URLs from property names. End-to-end coverage:
 `e2e_tests/client_routes_test.ts`.
 
+## Key Concepts (Declared Error Responses)
+
+`responses: { 404: Schema }` on an endpoint declares error bodies per status.
+`endpoint()` keeps the statuses as literal types (`TResponses`, a `const` type
+parameter). The client format writes them as `errors` in `Api` and in the route
+table; `method.result()` returns a declared status as a value and still throws
+`ClientError` for any other. `fromEndpoint(..., { outcome: true })` makes a
+step's response `{ ok, status, body }` with one variant per declared status
+(`EndpointOutcome`), and the HTTP executor answers those statuses as responses.
+End to end: `e2e_tests/error_responses_test.ts`,
+`e2e_tests/protocol_outcome_test.ts`.
+
 ## Key Concepts (Pagination)
 
 A pagination helper (`cursor.paginated()` and four more) returns the query

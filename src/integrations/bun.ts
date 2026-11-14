@@ -36,7 +36,7 @@
  */
 
 import type { z } from "zod";
-import type { SseEventDef } from "../core/types.ts";
+import type { ResponsesDef, SseEventDef } from "../core/types.ts";
 import {
   buildHandlers,
   type HandlerMethodDef,
@@ -72,12 +72,14 @@ export type BunApiMethodDef<
   TQuerySchema extends z.ZodType | undefined = undefined,
   TParamsSchema extends z.ZodType | undefined = undefined,
   TResponseSchema extends z.ZodType | undefined = z.ZodType | undefined,
+  TResponses extends ResponsesDef | undefined = ResponsesDef | undefined,
 > = HandlerMethodDef<
   BunRequest,
   TBodySchema,
   TQuerySchema,
   TParamsSchema,
-  TResponseSchema
+  TResponseSchema,
+  TResponses
 >;
 
 /**
@@ -91,14 +93,22 @@ export function endpoint<
   TQuerySchema extends z.ZodType | undefined = undefined,
   TParamsSchema extends z.ZodType | undefined = undefined,
   TResponseSchema extends z.ZodType | undefined = undefined,
+  const TResponses extends ResponsesDef | undefined = undefined,
 >(
   def: BunApiMethodDef<
     TBodySchema,
     TQuerySchema,
     TParamsSchema,
-    TResponseSchema
+    TResponseSchema,
+    TResponses
   >,
-): BunApiMethodDef<TBodySchema, TQuerySchema, TParamsSchema, TResponseSchema> {
+): BunApiMethodDef<
+  TBodySchema,
+  TQuerySchema,
+  TParamsSchema,
+  TResponseSchema,
+  TResponses
+> {
   return def;
 }
 

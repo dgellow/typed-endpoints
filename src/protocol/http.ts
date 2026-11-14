@@ -188,24 +188,41 @@ export function createHttpExecutor<
       // Execute request
       const response = await fetchFn(url, requestInit);
 
+      // A step whose response is an outcome gets the status with the
+      // body, and its declared error statuses as responses.
+      const outcome = step.outcome;
+      const { status } = response;
+
       if (!response.ok) {
-        const body = await response.text();
-        throw new HttpError(response.status, response.statusText, body);
+        const text = await response.text();
+        if (outcome?.errors.includes(status)) {
+          let body: unknown = text;
+          try {
+            body = JSON.parse(text);
+          } catch {
+            // Not JSON: the text is the body.
+          }
+          return { ok: false, status, body };
+        }
+        throw new HttpError(status, response.statusText, text);
       }
+
+      const wrap = (body: unknown) =>
+        outcome ? { ok: true, status, body } : body;
 
       // Parse response
       const contentType = response.headers.get("content-type") ?? "";
       if (contentType.includes("application/json")) {
-        return response.json();
+        return wrap(await response.json());
       }
 
       // Return empty object for no-content responses
       if (response.status === 204) {
-        return {};
+        return wrap({});
       }
 
       // Return text for non-JSON responses
-      return { text: await response.text() };
+      return wrap({ text: await response.text() });
     },
   };
 }

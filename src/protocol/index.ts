@@ -79,6 +79,7 @@ export type {
   Sequence,
   Step,
   StepName,
+  StepOutcome,
   StepRequest,
   StepResponse,
   StepRoute,
@@ -291,16 +292,21 @@ export {
 
 // Composition types
 export type {
+  DeclaredSchema,
+  EndpointOutcome,
   EndpointRequestSchema,
   EndpointResponseSchema,
+  ErrorStatusOf,
   FromEndpointDependentOptions,
   FromEndpointMappedOptions,
   FromEndpointOptions,
   HandlerWithApiDef,
   MergedRequest,
   MethodsOf,
+  OutcomeOption,
   Override,
   PartType,
   SchemaAt,
   Simplify,
+  StepResponseSchema,
 } from "./compose.ts";

@@ -36,12 +36,24 @@ export interface ValidatedRequest<
   readonly params: TParams;
 }
 
+/**
+ * Response schemas by status code. `{ schema, name }` registers the schema
+ * as a named component of the OpenAPI spec.
+ */
+export type ResponsesDef = Readonly<
+  Record<
+    number,
+    z.ZodType | { readonly schema: z.ZodType; readonly name?: string }
+  >
+>;
+
 /** Schemas and metadata of one HTTP method of a route. */
 export interface ApiMethodDef<
   TBodySchema extends z.ZodType | undefined = undefined,
   TQuerySchema extends z.ZodType | undefined = undefined,
   TParamsSchema extends z.ZodType | undefined = undefined,
   TResponseSchema extends z.ZodType | undefined = z.ZodType | undefined,
+  TResponses extends ResponsesDef | undefined = ResponsesDef | undefined,
 > {
   /** Schema of the JSON request body. Read for POST, PUT and PATCH only. */
   readonly body?: TBodySchema;
@@ -62,13 +74,15 @@ export interface ApiMethodDef<
   /** Component name of the body schema in the OpenAPI spec. */
   readonly bodyName?: string;
   /**
-   * Response schemas by status code, for the OpenAPI spec. `{ schema, name }`
-   * registers the schema as a named component.
+   * Response schemas by status code. `{ schema, name }` registers the
+   * schema as a named component of the OpenAPI spec.
+   *
+   * Entries with a status of 400 or above are the error responses the
+   * endpoint declares: the generated client returns them as typed values
+   * from `method.result()`, and a protocol step made from the endpoint
+   * with `outcome: true` has them as variants of its response.
    */
-  readonly responses?: Record<
-    number,
-    z.ZodType | { schema: z.ZodType; name?: string }
-  >;
+  readonly responses?: TResponses;
   /** Include this method in the OpenAPI spec. Default: false. */
   readonly public?: boolean;
   /** Summary of the OpenAPI operation. */
