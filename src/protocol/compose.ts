@@ -21,7 +21,8 @@
  */
 
 import { z } from "zod";
-import type { ApiDef, HttpMethod } from "../core/types.ts";
+import type { HttpMethod } from "../core/types.ts";
+import type { MappingForRequest } from "./dsl.ts";
 import type { FieldMapping } from "./mapping.ts";
 import type {
   DependentStep,
@@ -37,8 +38,62 @@ import type {
 
 /** Handler object with __apiDef metadata (from createApiHandlers) */
 export interface HandlerWithApiDef {
-  __apiDef: ApiDef;
+  // deno-lint-ignore no-explicit-any
+  __apiDef: Record<string, any>;
 }
+
+// =============================================================================
+// Types derived from an endpoint definition
+// =============================================================================
+
+/** HTTP methods a handler object defines. */
+export type MethodsOf<H extends HandlerWithApiDef> =
+  & keyof H["__apiDef"]
+  & HttpMethod;
+
+/** The schema type at `D[K]`, or `never` when the definition has none. */
+type SchemaAt<D, K extends string> = K extends keyof D
+  ? Extract<D[K], z.ZodType>
+  : never;
+
+/** `B` wins over `A` for keys both have, as `Object.assign` does. */
+type Override<A, B> = Omit<A, keyof B> & B;
+
+type Simplify<T> = { [K in keyof T]: T[K] } & unknown;
+
+/** Input or output type of one request part; `{}` when it is not defined. */
+type PartType<D, K extends string, TSide extends "input" | "output"> =
+  [SchemaAt<D, K>] extends [never] ? Record<never, never>
+    : TSide extends "input" ? z.input<SchemaAt<D, K>>
+    : z.output<SchemaAt<D, K>>;
+
+/**
+ * The flat request of a step made from an endpoint: body, query and params
+ * merged, later ones winning, as `mergeRequestSchemas` does at runtime.
+ *
+ * When a part's type is not known statically (a handler typed as the wide
+ * `ApiDef`), the result is `unknown`.
+ */
+type MergedRequest<D, TSide extends "input" | "output"> = unknown extends
+  PartType<D, "body", TSide> ? unknown
+  : unknown extends PartType<D, "query", TSide> ? unknown
+  : unknown extends PartType<D, "params", TSide> ? unknown
+  : Simplify<
+    Override<
+      Override<PartType<D, "body", TSide>, PartType<D, "query", TSide>>,
+      PartType<D, "params", TSide>
+    >
+  >;
+
+/** Request schema type of a step created from the method definition `D`. */
+export type EndpointRequestSchema<D> = z.ZodType<
+  MergedRequest<D, "output">,
+  MergedRequest<D, "input">
+>;
+
+/** Response schema type of a step created from the method definition `D`. */
+export type EndpointResponseSchema<D> = [SchemaAt<D, "response">] extends
+  [never] ? z.ZodUnknown : SchemaAt<D, "response">;
 
 /** Options for fromEndpoint */
 export interface FromEndpointOptions<TName extends string = string> {
@@ -54,6 +109,9 @@ export interface FromEndpointOptions<TName extends string = string> {
 export interface FromEndpointDependentOptions<
   TName extends string = string,
   TDependsOn extends string = string,
+  // deno-lint-ignore no-explicit-any
+  TPrevResponse = any,
+  TRequest extends z.ZodType = z.ZodType,
 > {
   /** Step name */
   name: TName;
@@ -64,8 +122,7 @@ export interface FromEndpointDependentOptions<
   /** Name of the step this depends on */
   dependsOn: TDependsOn;
   /** Request schema derived from previous step's response */
-  // deno-lint-ignore no-explicit-any
-  request: (prev: any) => z.ZodType;
+  request: (prev: TPrevResponse) => TRequest;
 }
 
 /** Options for fromEndpointMapped */
@@ -170,11 +227,19 @@ function mergeRequestSchemas(
  * const loginStep = fromEndpoint(handler, "POST", { name: "login" });
  * ```
  */
-export function fromEndpoint<TName extends string>(
-  handler: HandlerWithApiDef,
-  method: HttpMethod,
+export function fromEndpoint<
+  TName extends string,
+  H extends HandlerWithApiDef,
+  M extends MethodsOf<H>,
+>(
+  handler: H,
+  method: M,
   options: FromEndpointOptions<TName>,
-): Step<TName, z.ZodType, z.ZodType> {
+): Step<
+  TName,
+  EndpointRequestSchema<H["__apiDef"][M]>,
+  EndpointResponseSchema<H["__apiDef"][M]>
+> {
   const def = handler.__apiDef[method] as MethodDefLike | undefined;
   if (!def) {
     throw new Error(`No ${method} definition found in handler`);
@@ -184,9 +249,11 @@ export function fromEndpoint<TName extends string>(
   return {
     __kind: "step",
     name: options.name,
-    request: request.schema,
+    request: request.schema as EndpointRequestSchema<H["__apiDef"][M]>,
     requestLocations: request.locations,
-    response: def.response ?? z.unknown(),
+    response: (def.response ?? z.unknown()) as EndpointResponseSchema<
+      H["__apiDef"][M]
+    >,
     operationId: options.operationId ?? def.operationId ?? options.name,
     description: options.description ?? def.description,
   };
@@ -216,12 +283,27 @@ export function fromEndpoint<TName extends string>(
 export function fromEndpointDependent<
   TName extends string,
   TDependsOn extends string,
->(
-  handler: HandlerWithApiDef,
-  method: HttpMethod,
-  options: FromEndpointDependentOptions<TName, TDependsOn>,
+  H extends HandlerWithApiDef,
+  M extends MethodsOf<H>,
   // deno-lint-ignore no-explicit-any
-): DependentStep<TName, any, z.ZodType, z.ZodType, TDependsOn> {
+  TPrevResponse = any,
+  TRequest extends z.ZodType = z.ZodType,
+>(
+  handler: H,
+  method: M,
+  options: FromEndpointDependentOptions<
+    TName,
+    TDependsOn,
+    TPrevResponse,
+    TRequest
+  >,
+): DependentStep<
+  TName,
+  TPrevResponse,
+  TRequest,
+  EndpointResponseSchema<H["__apiDef"][M]>,
+  TDependsOn
+> {
   const def = handler.__apiDef[method] as MethodDefLike | undefined;
   if (!def) {
     throw new Error(`No ${method} definition found in handler`);
@@ -233,7 +315,9 @@ export function fromEndpointDependent<
     dependsOn: options.dependsOn,
     request: options.request,
     requestLocations: mergeRequestSchemas(def, method).locations,
-    response: def.response ?? z.unknown(),
+    response: (def.response ?? z.unknown()) as EndpointResponseSchema<
+      H["__apiDef"][M]
+    >,
     operationId: options.operationId ?? def.operationId ?? options.name,
     description: options.description ?? def.description,
   };
@@ -261,11 +345,23 @@ export function fromEndpointMapped<
   TName extends string,
   TDependsOn extends string,
   const TMapping extends Record<string, FieldMapping>,
+  H extends HandlerWithApiDef,
+  M extends MethodsOf<H>,
 >(
-  handler: HandlerWithApiDef,
-  method: HttpMethod,
-  options: FromEndpointMappedOptions<TName, TDependsOn, TMapping>,
-): MappedStep<TName, z.ZodType, z.ZodType, TDependsOn, TMapping> {
+  handler: H,
+  method: M,
+  options: FromEndpointMappedOptions<TName, TDependsOn, TMapping> & {
+    requestMapping: NoInfer<
+      MappingForRequest<TMapping, EndpointRequestSchema<H["__apiDef"][M]>>
+    >;
+  },
+): MappedStep<
+  TName,
+  EndpointRequestSchema<H["__apiDef"][M]>,
+  EndpointResponseSchema<H["__apiDef"][M]>,
+  TDependsOn,
+  TMapping
+> {
   const def = handler.__apiDef[method] as MethodDefLike | undefined;
   if (!def) {
     throw new Error(`No ${method} definition found in handler`);
@@ -277,9 +373,11 @@ export function fromEndpointMapped<
     name: options.name,
     dependsOn: options.dependsOn,
     requestMapping: options.requestMapping,
-    requestSchema: request.schema,
+    requestSchema: request.schema as EndpointRequestSchema<H["__apiDef"][M]>,
     requestLocations: request.locations,
-    response: def.response ?? z.unknown(),
+    response: (def.response ?? z.unknown()) as EndpointResponseSchema<
+      H["__apiDef"][M]
+    >,
     operationId: options.operationId ?? def.operationId ?? options.name,
     description: options.description ?? def.description,
   };

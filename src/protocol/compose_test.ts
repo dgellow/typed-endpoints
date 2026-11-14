@@ -1,6 +1,8 @@
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { z } from "zod";
 import { createApiHandlers, endpoint } from "../integrations/fresh.ts";
+import { createMockExecutor, createSession } from "./client.ts";
+import { protocol } from "./dsl.ts";
 import { fromStep } from "./mapping.ts";
 import {
   fromEndpoint,
@@ -145,6 +147,7 @@ Deno.test("fromEndpoint throws for missing method", () => {
   });
 
   assertThrows(
+    // @ts-expect-error the handler defines no POST
     () => fromEndpoint(handler, "POST", { name: "missing" }),
     Error,
     "No POST definition found in handler",
@@ -242,6 +245,7 @@ Deno.test("fromEndpointDependent throws for missing method", () => {
 
   assertThrows(
     () =>
+      // @ts-expect-error the handler defines no POST
       fromEndpointDependent(handler, "POST", {
         name: "test",
         dependsOn: "prev",
@@ -447,6 +451,7 @@ Deno.test("fromEndpointMapped throws for missing method", () => {
 
   assertThrows(
     () =>
+      // @ts-expect-error the handler defines no POST
       fromEndpointMapped(handler, "POST", {
         name: "test",
         dependsOn: "prev",
@@ -506,4 +511,102 @@ Deno.test("fromEndpointMapped works with fromEndpoint in a protocol", () => {
     email: "a@b.c",
   });
   assertEquals(profileRes.success, true);
+});
+
+// =============================================================================
+// Static types of composed steps
+// =============================================================================
+//
+// Each `@ts-expect-error` is something the compiler must reject. If one of
+// them starts to compile, `deno check` fails with "unused directive".
+
+const typedLoginHandler = createApiHandlers({
+  POST: endpoint({
+    body: z.object({
+      username: z.string(),
+      remember: z.boolean().default(false),
+    }),
+    response: z.object({ accessToken: z.string(), userId: z.string() }),
+    handler: () => Response.json({ accessToken: "t", userId: "u" }),
+  }),
+});
+
+const typedPostsHandler = createApiHandlers({
+  GET: endpoint({
+    params: z.object({ userId: z.string() }),
+    query: z.object({ limit: z.coerce.number().int().optional() }),
+    response: z.array(z.object({ id: z.string() })),
+    handler: () => Response.json([]),
+  }),
+});
+
+Deno.test("fromEndpoint infers the merged request and the response type", async () => {
+  const proto = protocol({
+    name: "Typed",
+    initial: "login",
+    steps: {
+      login: fromEndpoint(typedLoginHandler, "POST", { name: "login" }),
+      posts: fromEndpointMapped(typedPostsHandler, "GET", {
+        name: "posts",
+        dependsOn: "login",
+        requestMapping: { userId: fromStep("login", "userId") },
+      }),
+    },
+  });
+
+  const executor = createMockExecutor(proto, {
+    login: { accessToken: "t", userId: "u1" },
+    posts: [{ id: "p1" }],
+  });
+  const session = createSession(proto, executor);
+
+  // `remember` has a default: optional on input.
+  const { response: login, session: afterLogin } = await session.execute(
+    "login",
+    { username: "ada" },
+  );
+  // The response is typed by the endpoint's response schema.
+  const token: string = login.accessToken;
+  assertEquals(token, "t");
+  // @ts-expect-error the login response has no such field
+  assertEquals(login.nope, undefined);
+
+  // path parameter and query merged into one request object
+  const { response: posts } = await afterLogin.execute("posts", {
+    userId: "u1",
+    limit: 5,
+  });
+  const firstId: string = posts[0].id;
+  assertEquals(firstId, "p1");
+
+  await assertRejects(() =>
+    // @ts-expect-error `username` is required
+    session.execute("login", {})
+  );
+  await assertRejects(() =>
+    // @ts-expect-error `userId` is a string
+    afterLogin.execute("posts", { userId: 1 })
+  );
+});
+
+Deno.test("fromEndpointMapped rejects a mapping key that the endpoint does not take", () => {
+  fromEndpointMapped(typedPostsHandler, "GET", {
+    name: "posts",
+    dependsOn: "login",
+    requestMapping: {
+      userId: fromStep("login", "userId"),
+      // @ts-expect-error the endpoint has no `user` field
+      user: fromStep("login", "userId"),
+    },
+  });
+});
+
+Deno.test("createApiHandlers exposes exactly the defined methods", () => {
+  assertEquals(typeof typedLoginHandler.POST, "function");
+  // @ts-expect-error no GET handler was defined
+  assertEquals(typedLoginHandler.GET, undefined);
+
+  // The schemas are available with their types.
+  const body = typedLoginHandler.__apiDef.POST.body;
+  assertEquals(body?.safeParse({ username: "ada" }).success, true);
 });
