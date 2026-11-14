@@ -5,12 +5,13 @@ import type {
   CursorIdPaginationMeta,
   CursorPaginationConfig,
   CursorPaginationMeta,
+  MergeZodShapes,
   MutableZodShape,
   OffsetPaginationConfig,
   OffsetPaginationMeta,
   PagePaginationConfig,
   PagePaginationMeta,
-  PathToObject,
+  PathToZodShape,
   UrlPaginationConfig,
   UrlPaginationMeta,
 } from "./types.ts";
@@ -214,6 +215,45 @@ function attachPage<TDef extends { __pagination: AnyPaginationMeta }>(
   return def;
 }
 
+/** A shape without fields. */
+type NoShape = Record<never, never>;
+
+/**
+ * The response schema with the shape `TShape`. `Extract` states what the
+ * compiler cannot see through the merge: that the result is a Zod shape.
+ */
+type ResponseObject<TShape> = z.ZodObject<
+  Extract<TShape, Readonly<MutableShape>>
+>;
+
+/** The extra shape a helper was given, if any. */
+type ExtraShape<T> = T extends MutableShape ? T : NoShape;
+
+/** The shape that holds `TSchema` at a dot-notation path, if there is one. */
+type ShapeAt<TPath, TSchema extends z.ZodType> = TPath extends string
+  ? PathToZodShape<TPath, TSchema>
+  : NoShape;
+
+/**
+ * The response shape of a helper: every pagination field at its
+ * dot-notation path, then the extra fields. Objects that share a parent
+ * (`data.items` and `data.next`) are merged.
+ */
+function responseShapeOf(
+  fields: readonly (readonly [string | undefined, z.ZodType])[],
+  extra: MutableShape | undefined,
+): MutableShape {
+  let shape: MutableShape = {};
+  for (const [path, schema] of fields) {
+    if (path !== undefined) {
+      shape = mergeShapes(shape, buildNestedShape(path, schema));
+    }
+  }
+  // Merged, not assigned: an extra field may share a parent object with a
+  // pagination path (`links.self` next to `links.next`).
+  return extra ? mergeShapes(shape, extra) : shape;
+}
+
 /**
  * Build a nested Zod object shape from a dot-notation path.
  * @example
@@ -308,10 +348,14 @@ export const cursor = {
       & { [K in TLimitParam]: z.ZodDefault<z.ZodNumber> }
       & (TExtraQuery extends MutableShape ? TExtraQuery : object)
     >;
-    response: z.ZodObject<
-      & { [K in TItemsField]: z.ZodArray<TItem> }
-      & { [K in TCursorField]: z.ZodOptional<z.ZodString> }
-      & (TExtraResponse extends MutableShape ? TExtraResponse : object)
+    response: ResponseObject<
+      MergeZodShapes<
+        MergeZodShapes<
+          ShapeAt<TItemsField, z.ZodArray<TItem>>,
+          ShapeAt<TCursorField, z.ZodOptional<z.ZodString>>
+        >,
+        ExtraShape<TExtraResponse>
+      >
     >;
     __pagination: CursorPaginationMeta;
   }, CursorPage<TItem, TExtraResponse>> {
@@ -334,14 +378,10 @@ export const cursor = {
       Object.assign(queryShape, config.extraQuery);
     }
 
-    const responseShape: MutableShape = {
-      [itemsField]: z.array(config.item),
-      [cursorField]: z.string().optional(),
-    };
-
-    if (config.extraResponse) {
-      Object.assign(responseShape, config.extraResponse);
-    }
+    const responseShape = responseShapeOf([
+      [itemsField, z.array(config.item)],
+      [cursorField, z.string().optional()],
+    ], config.extraResponse);
 
     return attachPage({
       query: z.object(queryShape),
@@ -396,9 +436,11 @@ export const cursorId = {
       & { [K in TLimitParam]: z.ZodDefault<z.ZodNumber> }
       & (TExtraQuery extends MutableShape ? TExtraQuery : object)
     >;
-    response: z.ZodObject<
-      & { [K in TItemsField]: z.ZodArray<TItem> }
-      & (TExtraResponse extends MutableShape ? TExtraResponse : object)
+    response: ResponseObject<
+      MergeZodShapes<
+        ShapeAt<TItemsField, z.ZodArray<TItem>>,
+        ExtraShape<TExtraResponse>
+      >
     >;
     __pagination: CursorIdPaginationMeta;
   }, ItemsPage<TItem, TExtraResponse>> {
@@ -421,13 +463,9 @@ export const cursorId = {
       Object.assign(queryShape, config.extraQuery);
     }
 
-    const responseShape: MutableShape = {
-      [itemsField]: z.array(config.item),
-    };
-
-    if (config.extraResponse) {
-      Object.assign(responseShape, config.extraResponse);
-    }
+    const responseShape = responseShapeOf([
+      [itemsField, z.array(config.item)],
+    ], config.extraResponse);
 
     return attachPage({
       query: z.object(queryShape),
@@ -482,10 +520,14 @@ export const offset = {
       & { [K in TLimitParam]: z.ZodDefault<z.ZodNumber> }
       & (TExtraQuery extends MutableShape ? TExtraQuery : object)
     >;
-    response: z.ZodObject<
-      & { [K in TItemsField]: z.ZodArray<TItem> }
-      & { [K in TTotalField]: z.ZodNumber }
-      & (TExtraResponse extends MutableShape ? TExtraResponse : object)
+    response: ResponseObject<
+      MergeZodShapes<
+        MergeZodShapes<
+          ShapeAt<TItemsField, z.ZodArray<TItem>>,
+          ShapeAt<TTotalField, z.ZodNumber>
+        >,
+        ExtraShape<TExtraResponse>
+      >
     >;
     __pagination: OffsetPaginationMeta;
   }, OffsetPage<TItem, TExtraResponse>> {
@@ -508,14 +550,10 @@ export const offset = {
       Object.assign(queryShape, config.extraQuery);
     }
 
-    const responseShape: MutableShape = {
-      [itemsField]: z.array(config.item),
-      [totalField]: z.number(),
-    };
-
-    if (config.extraResponse) {
-      Object.assign(responseShape, config.extraResponse);
-    }
+    const responseShape = responseShapeOf([
+      [itemsField, z.array(config.item)],
+      [totalField, z.number()],
+    ], config.extraResponse);
 
     return attachPage({
       query: z.object(queryShape),
@@ -572,14 +610,17 @@ export const page = {
       & { [K in TPerPageParam]: z.ZodDefault<z.ZodNumber> }
       & (TExtraQuery extends MutableShape ? TExtraQuery : object)
     >;
-    response: z.ZodObject<
-      & { [K in TItemsField]: z.ZodArray<TItem> }
-      & (TTotalField extends string ? { [K in TTotalField]: z.ZodNumber }
-        : object)
-      & (TTotalPagesField extends string
-        ? { [K in TTotalPagesField]: z.ZodNumber }
-        : object)
-      & (TExtraResponse extends MutableShape ? TExtraResponse : object)
+    response: ResponseObject<
+      MergeZodShapes<
+        MergeZodShapes<
+          MergeZodShapes<
+            ShapeAt<TItemsField, z.ZodArray<TItem>>,
+            ShapeAt<TTotalField, z.ZodNumber>
+          >,
+          ShapeAt<TTotalPagesField, z.ZodNumber>
+        >,
+        ExtraShape<TExtraResponse>
+      >
     >;
     __pagination: PagePaginationMeta;
   }, NumberedPage<TItem, TTotalField, TTotalPagesField, TExtraResponse>> {
@@ -606,20 +647,11 @@ export const page = {
       Object.assign(queryShape, config.extraQuery);
     }
 
-    const responseShape: MutableShape = {
-      [itemsField]: z.array(config.item),
-    };
-
-    if (totalField) {
-      responseShape[totalField] = z.number();
-    }
-    if (totalPagesField) {
-      responseShape[totalPagesField] = z.number();
-    }
-
-    if (config.extraResponse) {
-      Object.assign(responseShape, config.extraResponse);
-    }
+    const responseShape = responseShapeOf([
+      [itemsField, z.array(config.item)],
+      [totalField, z.number()],
+      [totalPagesField, z.number()],
+    ], config.extraResponse);
 
     return attachPage({
       query: z.object(queryShape),
@@ -672,17 +704,17 @@ export const url = {
     },
   ): WithPage<{
     query: z.ZodObject<MutableShape>;
-    // Response type uses PathToObject for inferred value types (not Zod schema types)
-    // The runtime schema correctly builds nested objects from dot-notation paths
-    response: z.ZodType<
-      & PathToObject<TItemsField, z.infer<TItem>[]>
-      & PathToObject<TNextUrlField, string | undefined>
-      & (TPrevUrlField extends string
-        ? PathToObject<TPrevUrlField, string | undefined>
-        : object)
-      & (TExtraResponse extends MutableShape
-        ? { [K in keyof TExtraResponse]: z.infer<TExtraResponse[K]> }
-        : object)
+    response: ResponseObject<
+      MergeZodShapes<
+        MergeZodShapes<
+          MergeZodShapes<
+            ShapeAt<TItemsField, z.ZodArray<TItem>>,
+            ShapeAt<TNextUrlField, z.ZodOptional<z.ZodString>>
+          >,
+          ShapeAt<TPrevUrlField, z.ZodOptional<z.ZodString>>
+        >,
+        ExtraShape<TExtraResponse>
+      >
     >;
     __pagination: UrlPaginationMeta;
   }, UrlPage<TItem, TPrevUrlField, TExtraResponse>> {
@@ -695,25 +727,11 @@ export const url = {
     // (the URLs are in the response)
     const queryShape: MutableShape = {};
 
-    // Build nested response shape using dot-notation paths
-    let responseShape = buildNestedShape(itemsField, z.array(config.item));
-    responseShape = mergeShapes(
-      responseShape,
-      buildNestedShape(nextUrlField, z.string().optional()),
-    );
-
-    if (prevUrlField) {
-      responseShape = mergeShapes(
-        responseShape,
-        buildNestedShape(prevUrlField, z.string().optional()),
-      );
-    }
-
-    // Merged, not assigned: an extra field may share a parent object with a
-    // pagination path (`links.self` next to `links.next`).
-    if (config.extraResponse) {
-      responseShape = mergeShapes(responseShape, config.extraResponse);
-    }
+    const responseShape = responseShapeOf([
+      [itemsField, z.array(config.item)],
+      [nextUrlField, z.string().optional()],
+      [prevUrlField, z.string().optional()],
+    ], config.extraResponse);
 
     return attachPage({
       query: z.object(queryShape),
