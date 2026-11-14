@@ -514,8 +514,10 @@ export const url = {
       );
     }
 
+    // Merged, not assigned: an extra field may share a parent object with a
+    // pagination path (`links.self` next to `links.next`).
     if (config.extraResponse) {
-      Object.assign(responseShape, config.extraResponse);
+      responseShape = mergeShapes(responseShape, config.extraResponse);
     }
 
     return {
