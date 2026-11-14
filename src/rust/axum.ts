@@ -28,7 +28,7 @@ import type {
   JsonSchema,
 } from "../contract/index.ts";
 import { pascalCase, TypeGraph } from "../contract/types.ts";
-import { RustContract, rustString } from "./contract.ts";
+import { RustContract } from "./contract.ts";
 import {
   constantCase,
   documentation,
@@ -36,7 +36,7 @@ import {
   snakeCase,
   wrapped,
 } from "./models.ts";
-import { MAYBE_ABSENT, RUNTIME } from "./runtime.ts";
+import { INTERNAL_ERROR, MAYBE_ABSENT, RUNTIME } from "./runtime.ts";
 
 /** What the generated module needs to be told. */
 export interface AxumOptions {
@@ -252,11 +252,14 @@ export function renderAxum(
     ...types,
     ...(models.usesMaybeAbsent ? [MAYBE_ABSENT, ""] : []),
     ...banner("Handlers"),
+    INTERNAL_ERROR,
+    "",
     ...failing.flatMap((item) => errorEnum(item, graph)),
     "/// The operations of the API, one method each.",
     "///",
-    "/// A method returns the response. For an operation that declares errors",
-    "/// it returns a `Result`, and the error names the status.",
+    "/// A method returns the response, or fails. What an operation declares as",
+    "/// an error is a variant of its error type, named as the status is; any",
+    "/// other failure is an [`InternalError`], which every error converts into.",
     "pub trait Handlers: Send + Sync + 'static {",
   ];
   rendered.forEach((item, i) => {
@@ -309,7 +312,7 @@ function imports(rendered: readonly Rendered[], models: RustModels): string[] {
       ...(models.usesMap ? ["BTreeMap"] : []),
       ...(any((item) => !!item.params) ? ["HashMap"] : []),
     ]),
-    ...(failing ? ["use std::fmt;"] : []),
+    "use std::fmt;",
     "use std::future::Future;",
     "use std::sync::Arc;",
     "",
@@ -333,30 +336,44 @@ function imports(rendered: readonly Rendered[], models: RustModels): string[] {
   ];
 }
 
-/** What a handler returns: the response, or a `Result` with the errors. */
+/** What a handler returns: the response, or how it failed. */
 function returns(item: Rendered): string {
-  const response = item.response ?? "()";
-  return item.errorEnum ? `Result<${response}, ${item.errorEnum}>` : response;
+  return `Result<${item.response ?? "()"}, ${
+    item.errorEnum ?? "InternalError"
+  }>`;
 }
 
 function errorEnum(item: Rendered, graph: TypeGraph): string[] {
   const name = item.errorEnum!;
-  // The format string of `write!`: braces of the path are text.
-  const label = item.label.replaceAll("{", "{{").replaceAll("}", "}}");
-  // A body type converts into the error when it says which variant.
+  // A body converts into the error when its type says which variant it
+  // is: a type of this module, in one variant only. Anything else (a
+  // string, a number) already converts into `InternalError`.
+  const defined = (type: string) =>
+    graph.definitions.some((definition) => definition.name === type);
   const bodies = item.errors.map((error) =>
     graph.object(error.type)?.name ?? error.type
   );
-  const convertible = new Set(bodies).size === bodies.length;
+  const convertible = item.errors.filter((error, i) =>
+    defined(error.type) && bodies.indexOf(bodies[i]) === bodies.lastIndexOf(
+        bodies[i],
+      )
+  );
 
   return [
-    `/// The errors \`${item.label}\` declares.`,
-    "#[derive(Debug, Clone, PartialEq)]",
+    `/// How \`${item.label}\` fails: the errors it declares, or outside the`,
+    "/// contract.",
+    "///",
+    "/// A declared body converts into its variant and any error into",
+    "/// `Internal`, so the question mark works on both. For that the type is",
+    "/// not an error type itself.",
+    "#[derive(Debug)]",
     `pub enum ${name} {`,
     ...item.errors.flatMap((error) => [
       `    /// ${error.status}, with its body.`,
       `    ${error.variant}(${error.type}),`,
     ]),
+    "    /// Not part of the contract: a 500.",
+    "    Internal(InternalError),",
     "}",
     "",
     `impl ${name} {`,
@@ -367,6 +384,7 @@ function errorEnum(item: Rendered, graph: TypeGraph): string[] {
     ...item.errors.map((error) =>
       `            Self::${error.variant}(_) => ${error.code},`
     ),
+    "            Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,",
     "        }",
     "    }",
     "",
@@ -375,28 +393,25 @@ function errorEnum(item: Rendered, graph: TypeGraph): string[] {
     ...item.errors.map((error) =>
       `            Self::${error.variant}(body) => operation.fail(self.status(), body),`
     ),
+    "            Self::Internal(error) => operation.internal(error),",
     "        }",
     "    }",
     "}",
     "",
-    `impl fmt::Display for ${name} {`,
-    "    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {",
-    `        write!(f, ${rustString(`${label} answered {}`)}, self.status())`,
+    ...convertible.flatMap((error) => [
+      `impl From<${error.type}> for ${name} {`,
+      `    fn from(body: ${error.type}) -> Self {`,
+      `        Self::${error.variant}(body)`,
+      "    }",
+      "}",
+      "",
+    ]),
+    `impl<E: Into<Box<dyn std::error::Error + Send + Sync>>> From<E> for ${name} {`,
+    "    fn from(error: E) -> Self {",
+    "        Self::Internal(InternalError::from(error))",
     "    }",
     "}",
     "",
-    `impl std::error::Error for ${name} {}`,
-    "",
-    ...(convertible
-      ? item.errors.flatMap((error) => [
-        `impl From<${error.type}> for ${name} {`,
-        `    fn from(body: ${error.type}) -> Self {`,
-        `        Self::${error.variant}(body)`,
-        "    }",
-        "}",
-        "",
-      ])
-      : []),
   ];
 }
 
@@ -448,7 +463,6 @@ function route(item: Rendered): string[] {
     ...(item.body ? ["body"] : []),
   ];
   const call = `handlers.${item.method}(${passed.join(", ")}).await`;
-  const taken = passed.length > 0 || item.response || item.errorEnum;
 
   return [
     ...wrapped(
@@ -457,23 +471,19 @@ function route(item: Rendered): string[] {
       extractors,
       ") -> Response {",
     ),
-    ...(taken ? [`    let operation = &contract::${item.constant};`] : []),
+    `    let operation = &contract::${item.constant};`,
     // In the order the TypeScript handlers check: body, query, path.
     ...(item.body ? read("body", "operation.body(&headers, &bytes)") : []),
     ...(item.query ? read("query", "operation.query(pairs)") : []),
     ...(item.params ? read("params", "operation.params(path)") : []),
-    ...(item.errorEnum
-      ? [
-        `    match ${call} {`,
-        item.response
-          ? "        Ok(response) => operation.respond(&response),"
-          : "        Ok(()) => StatusCode::NO_CONTENT.into_response(),",
-        "        Err(error) => error.respond(operation),",
-        "    }",
-      ]
-      : item.response
-      ? [`    operation.respond(&${call})`]
-      : [`    ${call};`, "    StatusCode::NO_CONTENT.into_response()"]),
+    `    match ${call} {`,
+    item.response
+      ? "        Ok(response) => operation.respond(&response),"
+      : "        Ok(()) => StatusCode::NO_CONTENT.into_response(),",
+    item.errorEnum
+      ? "        Err(error) => error.respond(operation),"
+      : "        Err(error) => operation.internal(&error),",
+    "    }",
     "}",
   ];
 }

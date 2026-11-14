@@ -602,6 +602,22 @@ export function conformance(
     }
   });
 
+  test("a handler that fails outside the contract is a 500 that does not say why", async () => {
+    const response = await send("GET", "/api/echo/fail");
+    assertEquals(response.status, 500);
+    // The cause is for the log, not for the client.
+    const text = await response.text();
+    assert(!text.includes("backend"), text);
+    // Not asserted: the shape of the body. Measured on 2026-11-14 it is
+    // plain text from the TypeScript handlers (the error is thrown to
+    // whatever serves them) and from FastAPI, and JSON from axum.
+
+    // The server goes on answering.
+    const after = await send("GET", "/api/echo/a/b");
+    assertEquals(after.status, 200);
+    assertEquals((await after.json()).segments, ["a", "b"]);
+  });
+
   test("a deeply nested value is checked in time that grows with its size", async () => {
     // A union that refers to itself, 40 levels deep. A checker that tries
     // each alternative and then checks the one that fits again doubles

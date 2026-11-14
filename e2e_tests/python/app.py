@@ -81,6 +81,9 @@ class Notes:
     async def echo_retrieve(
         self, params: api.EchoRetrieveParams
     ) -> api.EchoRetrieveResponse | Response:
+        # A failure that is not part of the contract.
+        if params.path == "fail":
+            raise RuntimeError("the backend is down")
         return api.EchoRetrieveResponse(
             path=params.path, segments=params.path.split("/")
         )

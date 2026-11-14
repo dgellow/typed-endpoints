@@ -6,9 +6,10 @@ export const handler = createApiHandlers({
   GET: endpoint({
     params: z.object({ path: z.string() }),
     response: z.object({ path: z.string(), segments: z.array(z.string()) }),
-    handler: (_request, { params }) => ({
-      path: params.path,
-      segments: params.path.split("/"),
-    }),
+    handler: (_request, { params }) => {
+      // A failure that is not part of the contract.
+      if (params.path === "fail") throw new Error("the backend is down");
+      return { path: params.path, segments: params.path.split("/") };
+    },
   }),
 });
