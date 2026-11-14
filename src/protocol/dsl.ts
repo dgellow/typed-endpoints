@@ -109,7 +109,8 @@ export interface DependentStepConfig<
  * const exchange = dependentStep({
  *   name: "exchange",
  *   dependsOn: "authorize",
- *   request: (prev) => z.object({
+ *   // Annotate `prev`: the previous step is known by name only.
+ *   request: (prev: { code: string }) => z.object({
  *     code: z.literal(prev.code), // Use value from authorize response
  *     grant_type: z.literal("authorization_code"),
  *   }),

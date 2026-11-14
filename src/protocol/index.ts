@@ -43,8 +43,9 @@
  * const exchangeStep = dependentStep({
  *   name: "exchange",
  *   dependsOn: "authorize",
- *   request: (prev) => z.object({
- *     code: z.literal(prev.code), // Type-safe dependency!
+ *   // Annotate `prev`: the previous step is known by name only.
+ *   request: (prev: { code: string }) => z.object({
+ *     code: z.literal(prev.code), // Enforced at runtime by the literal
  *   }),
  *   response: z.object({ access_token: z.string() }),
  * });

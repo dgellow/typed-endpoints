@@ -91,7 +91,7 @@ Or programmatically:
 import { generateTypes } from "@dgellow/typed-endpoints";
 
 await generateTypes({
-  routesDir: "routes/api",
+  routesDirs: ["routes/api"],
   output: "src/api-types.ts",
 });
 ```
@@ -572,6 +572,22 @@ import {
 } from "@dgellow/typed-endpoints/protocol";
 import { z } from "zod";
 
+const AuthorizeResponse = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("success"),
+    code: z.string(),
+    state: z.string(),
+  }),
+  z.object({ type: z.literal("error"), error: z.string() }),
+]);
+
+const ExchangeResponse = z.object({
+  access_token: z.string(),
+  token_type: z.literal("Bearer"),
+  expires_in: z.number(),
+  refresh_token: z.string().optional(),
+});
+
 // Step 1: Authorization Request (independent step)
 const authorizeStep = step({
   name: "authorize",
@@ -582,21 +598,16 @@ const authorizeStep = step({
     scope: z.string().optional(),
     state: z.string(),
   }),
-  response: z.discriminatedUnion("type", [
-    z.object({
-      type: z.literal("success"),
-      code: z.string(),
-      state: z.string(),
-    }),
-    z.object({ type: z.literal("error"), error: z.string() }),
-  ]),
+  response: AuthorizeResponse,
 });
 
 // Step 2: Token Exchange - REQUEST DEPENDS ON STEP 1 RESPONSE
+// `prev` is annotated: dependentStep() knows the previous step by name only
+// and cannot infer its response type.
 const exchangeStep = dependentStep({
   name: "exchange",
   dependsOn: "authorize",
-  request: (prev) => {
+  request: (prev: z.infer<typeof AuthorizeResponse>) => {
     // Only valid if authorize succeeded
     if (prev.type !== "success") return z.never();
     return z.object({
@@ -606,19 +617,14 @@ const exchangeStep = dependentStep({
       client_secret: z.string(),
     });
   },
-  response: z.object({
-    access_token: z.string(),
-    token_type: z.literal("Bearer"),
-    expires_in: z.number(),
-    refresh_token: z.string().optional(),
-  }),
+  response: ExchangeResponse,
 });
 
 // Step 3: Token Refresh - depends on exchange response
 const refreshStep = dependentStep({
   name: "refresh",
   dependsOn: "exchange",
-  request: (prev) => {
+  request: (prev: z.infer<typeof ExchangeResponse>) => {
     if (!prev.refresh_token) return z.never();
     return z.object({
       grant_type: z.literal("refresh_token"),
@@ -1171,7 +1177,7 @@ const fileSession = protocol({
     write: dependentStep({
       name: "write",
       dependsOn: "open",
-      request: (prev) =>
+      request: (prev: { handle: string }) =>
         z.object({
           handle: z.literal(prev.handle), // Must use handle from open
           content: z.string(),
@@ -1181,7 +1187,8 @@ const fileSession = protocol({
     close: dependentStep({
       name: "close",
       dependsOn: "open",
-      request: (prev) => z.object({ handle: z.literal(prev.handle) }),
+      request: (prev: { handle: string }) =>
+        z.object({ handle: z.literal(prev.handle) }),
       response: z.object({ success: z.boolean() }),
     }),
   },
