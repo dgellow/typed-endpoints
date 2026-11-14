@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use typed_endpoints_rust_e2e::api_generated as api;
 
@@ -193,6 +194,40 @@ impl api::Handlers for Notes {
     ) -> Result<api::OddCreateResponse, api::InternalError> {
         // The response is the body's type: what it was sent.
         Ok(body)
+    }
+
+    async fn ticks_list(
+        &self,
+        query: api::TicksListQuery,
+        last_event_id: Option<String>,
+    ) -> Result<api::EventStream<api::TicksListEvent>, api::InternalError> {
+        use api::TicksListEvent::{Done, Tick};
+
+        // A client that reconnects continues after the event it has.
+        let resumed = last_event_id.is_some();
+        let start = match last_event_id {
+            Some(id) => id.parse::<i64>()? + 1,
+            None => 0,
+        };
+        let count = i64::try_from(query.count)?;
+        let pause = query.pause.map(u64::try_from).transpose()?;
+        Ok(Box::pin(async_stream::try_stream! {
+            if let Some(pause) = pause {
+                tokio::time::sleep(Duration::from_millis(pause)).await;
+            }
+            for n in start..count {
+                if !resumed && query.fail_at == Some(n) {
+                    Err("backend went away")?;
+                }
+                if query.bad_at == Some(n) {
+                    // An event its schema rejects: an integer JavaScript
+                    // cannot hold. It is not sent, and the stream ends.
+                    yield Tick(api::TicksListTickData { n: i64::MAX }).into();
+                }
+                yield api::Event::new(Tick(api::TicksListTickData { n })).with_id(n.to_string());
+            }
+            yield Done(api::TicksListDoneData { total: count }).into();
+        }))
     }
 
     async fn trees_create(

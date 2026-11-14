@@ -598,6 +598,13 @@ mod runtime {
         checker.issues
     }
 
+    /// What is wrong with a value a handler produced, as text for the log;
+    /// nothing if it fits its schema.
+    pub(super) fn rejected(schema: &'static Schema, value: &Value) -> Option<String> {
+        let issues = issues_of(schema, Some(value), false);
+        (!issues.is_empty()).then(|| serde_json::to_string(&issues).unwrap_or_default())
+    }
+
     /// Checks JSON values against a schema and collects what is wrong.
     struct Checker<'a> {
         issues: Vec<Issue>,
@@ -1306,9 +1313,7 @@ mod runtime {
                     return internal_error();
                 }
             };
-            let issues = issues_of(schema.unwrap_or(&Schema::ANY), Some(&json), false);
-            if !issues.is_empty() {
-                let issues = serde_json::to_string(&issues).unwrap_or_default();
+            if let Some(issues) = rejected(schema.unwrap_or(&Schema::ANY), &json) {
                 tracing::error!(operation, %status, issues, "the returned value does not match its schema");
                 return internal_error();
             }
@@ -1332,6 +1337,191 @@ mod runtime {
     /// A default the contract gives as JSON, as the type of its member.
     pub(super) fn default_value<T: DeserializeOwned>(json: &str) -> T {
         serde_json::from_str(json).expect("a generated default fits its type")
+    }
+}
+`.trim();
+
+/** `Event<T>` and `EventStream<T>`: public types, written when a stream uses them. */
+export const EVENTS = String.raw`
+/// One event of a stream: what it is, and what goes with it on the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Event<T> {
+    /// What the event is.
+    pub event: T,
+    /// The id of the event. A client that reconnects says which id it saw
+    /// last, and the handler continues after it.
+    pub id: Option<String>,
+    /// How long a client waits before it reconnects.
+    pub retry: Option<Duration>,
+}
+
+impl<T> Event<T> {
+    /// An event without an id.
+    #[must_use]
+    pub fn new(event: T) -> Self {
+        Self {
+            event,
+            id: None,
+            retry: None,
+        }
+    }
+
+    /// The event with an id.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    /// The event with the time a client waits before it reconnects.
+    #[must_use]
+    pub fn with_retry(mut self, retry: Duration) -> Self {
+        self.retry = Some(retry);
+        self
+    }
+}
+
+impl<T> From<T> for Event<T> {
+    fn from(event: T) -> Self {
+        Self::new(event)
+    }
+}
+
+/// What the handler of a stream returns: its events, each one an event or
+/// the failure that ends the stream.
+pub type EventStream<T> = Pin<Box<dyn Stream<Item = Result<Event<T>, InternalError>> + Send>>;
+`.trim();
+
+/** The private module that writes event streams, when the contract has one. */
+export const STREAMS = String.raw`
+/// Writes what the handler of a stream yields as server-sent events. Like
+/// the runtime, not part of the module's API.
+mod streams {
+    use std::convert::Infallible;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use std::time::Duration;
+
+    use axum::http::HeaderMap;
+    use axum::response::sse::{self, KeepAlive, Sse};
+    use axum::response::{IntoResponse, Response};
+    use futures_core::Stream;
+    use serde::Serialize;
+
+    use super::runtime::{self, Schema};
+    use super::{Event, EventStream};
+
+    /// An event a stream declares. It is written as its data; its name
+    /// and the schema of that data are known from which event it is.
+    pub(super) trait Declared: Serialize {
+        fn name(&self) -> &'static str;
+        fn schema(&self) -> &'static Schema;
+    }
+
+    /// The id of the last event a client that reconnects has seen.
+    pub(super) fn last_event_id(headers: &HeaderMap) -> Option<String> {
+        let id = headers.get("last-event-id")?.to_str().ok()?;
+        Some(id.to_owned())
+    }
+
+    /// The events a handler yields, as the response of the stream. With an
+    /// interval, a stream that is silent for that long sends a comment.
+    pub(super) fn respond<T: Declared + Send + 'static>(
+        operation: &'static str,
+        events: EventStream<T>,
+        keep_alive: Option<Duration>,
+    ) -> Response {
+        let frames = Sse::new(Frames {
+            operation,
+            events: Some(events),
+        });
+        match keep_alive {
+            Some(interval) => frames
+                .keep_alive(KeepAlive::new().interval(interval).text("keep-alive"))
+                .into_response(),
+            None => frames.into_response(),
+        }
+    }
+
+    /// One event in the framing of text/event-stream, if its data fits
+    /// the schema the stream declares for it. One that does not is
+    /// reported and not written.
+    fn frame<T: Declared>(operation: &'static str, sent: &Event<T>) -> Option<sse::Event> {
+        let event = sent.event.name();
+        // Checked as a value, written from the event: its members in the
+        // order of the type.
+        let written = serde_json::to_value(&sent.event).and_then(|value| {
+            let issues = runtime::rejected(sent.event.schema(), &value);
+            Ok((issues, serde_json::to_string(&sent.event)?))
+        });
+        let data = match written {
+            Ok((None, data)) => data,
+            Ok((Some(issues), _)) => {
+                tracing::error!(
+                    operation,
+                    event,
+                    issues,
+                    "an event does not match its schema"
+                );
+                return None;
+            }
+            Err(error) => {
+                tracing::error!(operation, event, %error, "an event cannot be written as JSON");
+                return None;
+            }
+        };
+        let mut frame = sse::Event::default().event(event);
+        if let Some(id) = &sent.id {
+            // A line break would end the field, and the frame with it.
+            if id.contains(['\n', '\r']) {
+                tracing::error!(operation, event, id, "the id of an event has a line break");
+                return None;
+            }
+            frame = frame.id(id);
+        }
+        if let Some(retry) = sent.retry {
+            frame = frame.retry(retry);
+        }
+        Some(frame.data(data))
+    }
+
+    /// The frames of a stream. A stream has no status once it has begun:
+    /// when the handler fails, or yields an event that is not written, a
+    /// comment tells the client so and the stream ends.
+    struct Frames<T> {
+        operation: &'static str,
+        /// Gone once the stream has ended.
+        events: Option<EventStream<T>>,
+    }
+
+    impl<T: Declared> Stream for Frames<T> {
+        type Item = Result<sse::Event, Infallible>;
+
+        fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            let frames = self.get_mut();
+            let Some(events) = frames.events.as_mut() else {
+                return Poll::Ready(None);
+            };
+            let Poll::Ready(next) = events.as_mut().poll_next(context) else {
+                return Poll::Pending;
+            };
+            let frame = match next {
+                Some(Ok(event)) => frame(frames.operation, &event),
+                Some(Err(error)) => {
+                    let operation = frames.operation;
+                    tracing::error!(operation, %error, "the handler of a stream failed");
+                    None
+                }
+                None => {
+                    frames.events = None;
+                    return Poll::Ready(None);
+                }
+            };
+            Poll::Ready(Some(Ok(frame.unwrap_or_else(|| {
+                frames.events = None;
+                sse::Event::default().comment("error")
+            }))))
+        }
     }
 }
 `.trim();

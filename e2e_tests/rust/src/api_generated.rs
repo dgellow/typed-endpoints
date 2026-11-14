@@ -10,7 +10,8 @@
 //! # Crates
 //!
 //! `axum` 0.8, `serde` with `derive`, `serde_json`, `tracing`, and
-//! `fancy-regex` for the patterns of the contract.
+//! `fancy-regex` for the patterns of the contract; `futures-core` for
+//! the event streams.
 //!
 //! # Types
 //!
@@ -50,16 +51,19 @@
 //! `tracing`, at the error level: an application without a subscriber
 //! sees nothing.
 //!
-//! # Not served
+//! # Event streams
 //!
-//! Server-sent event streams are not generated yet:
-//!
-//! - `GET /api/ticks`
+//! The handler of a stream returns an [`EventStream`] of its events. An
+//! event is written once its data fits the contract. When the handler
+//! fails, or yields an event that does not fit, the stream ends with
+//! the comment `: error`: a stream has no status once it has begun.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::rejection::{BytesRejection, PathRejection};
@@ -67,6 +71,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::routing::{delete, get, post, put};
+use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -355,6 +360,48 @@ pub struct ShapesCreateResponse {
     pub note: Option<String>,
 }
 
+/// The query of `GET /api/ticks`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TicksListQuery {
+    /// `2` when left out.
+    #[serde(default = "default_ticks_list_query_count")]
+    pub count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fail_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bad_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause: Option<i64>,
+}
+
+impl Default for TicksListQuery {
+    fn default() -> Self {
+        Self {
+            count: default_ticks_list_query_count(),
+            fail_at: None,
+            bad_at: None,
+            pause: None,
+        }
+    }
+}
+
+fn default_ticks_list_query_count() -> u64 {
+    2
+}
+
+/// The data of the event `tick` of `GET /api/ticks`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TicksListTickData {
+    pub n: i64,
+}
+
+/// The data of the event `done` of `GET /api/ticks`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TicksListDoneData {
+    pub total: i64,
+}
+
 /// The body of `POST /api/trees`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TreesCreateBody {
@@ -547,6 +594,80 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for MaybeAbsent<T> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // Called for a member that is there.
         Option::<T>::deserialize(deserializer).map(Self::from)
+    }
+}
+
+/// One event of a stream: what it is, and what goes with it on the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Event<T> {
+    /// What the event is.
+    pub event: T,
+    /// The id of the event. A client that reconnects says which id it saw
+    /// last, and the handler continues after it.
+    pub id: Option<String>,
+    /// How long a client waits before it reconnects.
+    pub retry: Option<Duration>,
+}
+
+impl<T> Event<T> {
+    /// An event without an id.
+    #[must_use]
+    pub fn new(event: T) -> Self {
+        Self {
+            event,
+            id: None,
+            retry: None,
+        }
+    }
+
+    /// The event with an id.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    /// The event with the time a client waits before it reconnects.
+    #[must_use]
+    pub fn with_retry(mut self, retry: Duration) -> Self {
+        self.retry = Some(retry);
+        self
+    }
+}
+
+impl<T> From<T> for Event<T> {
+    fn from(event: T) -> Self {
+        Self::new(event)
+    }
+}
+
+/// What the handler of a stream returns: its events, each one an event or
+/// the failure that ends the stream.
+pub type EventStream<T> = Pin<Box<dyn Stream<Item = Result<Event<T>, InternalError>> + Send>>;
+
+/// The events of `GET /api/ticks`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum TicksListEvent {
+    /// The event `tick`.
+    Tick(TicksListTickData),
+    /// The event `done`.
+    Done(TicksListDoneData),
+}
+
+impl streams::Declared for TicksListEvent {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Tick(_) => "tick",
+            Self::Done(_) => "done",
+        }
+    }
+
+    fn schema(&self) -> &'static runtime::Schema {
+        match self {
+            Self::Tick(_) => &contract::TICKS_LIST_TICK_DATA,
+            Self::Done(_) => &contract::TICKS_LIST_DONE_DATA,
+        }
     }
 }
 
@@ -788,6 +909,16 @@ pub trait Handlers: Send + Sync + 'static {
         body: ShapesCreateBody,
     ) -> impl Future<Output = Result<ShapesCreateResponse, InternalError>> + Send;
 
+    /// `GET /api/ticks`: a stream of events.
+    ///
+    /// A client that reconnects says which event it saw last: its id is
+    /// `last_event_id`, and `None` on a first connection.
+    fn ticks_list(
+        &self,
+        query: TicksListQuery,
+        last_event_id: Option<String>,
+    ) -> impl Future<Output = Result<EventStream<TicksListEvent>, InternalError>> + Send;
+
     /// `POST /api/trees`
     fn trees_create(
         &self,
@@ -827,6 +958,7 @@ pub fn router_from_arc<H: Handlers>(handlers: Arc<H>) -> axum::Router {
         .route("/api/notes/{id}", put(notes_update::<H>))
         .route("/api/odd", post(odd_create::<H>))
         .route("/api/shapes", post(shapes_create::<H>))
+        .route("/api/ticks", get(ticks_list::<H>))
         .route("/api/trees", post(trees_create::<H>))
         .with_state(handlers)
 }
@@ -949,6 +1081,20 @@ async fn shapes_create<H: Handlers>(
     })
 }
 
+async fn ticks_list<H: Handlers>(
+    State(handlers): State<Arc<H>>,
+    Query(pairs): Query<Vec<(String, String)>>,
+    headers: HeaderMap,
+) -> Result<Response, runtime::Refused> {
+    let operation = &contract::TICKS_LIST;
+    let query = operation.query(pairs)?;
+    let last_event_id = streams::last_event_id(&headers);
+    Ok(match handlers.ticks_list(query, last_event_id).await {
+        Ok(events) => streams::respond(operation.name, events, Some(Duration::from_millis(40))),
+        Err(error) => operation.internal(&error),
+    })
+}
+
 async fn trees_create<H: Handlers>(
     State(handlers): State<Arc<H>>,
     headers: HeaderMap,
@@ -1038,6 +1184,14 @@ mod contract {
         query: None,
         body: Some(&SHAPES_CREATE_BODY),
         response: Some(&SHAPES_CREATE_RESPONSE),
+    };
+
+    pub(super) static TICKS_LIST: Operation = Operation {
+        name: "GET /api/ticks",
+        params: None,
+        query: Some(&TICKS_LIST_QUERY),
+        body: None,
+        response: None,
     };
 
     pub(super) static TREES_CREATE: Operation = Operation {
@@ -1703,6 +1857,67 @@ mod contract {
         ..Schema::ANY
     };
 
+    pub(super) static TICKS_LIST_QUERY: Schema = Schema {
+        types: &[Type::Object],
+        properties: Some(&[
+            ("count", Schema {
+                types: &[Type::Integer],
+                minimum: Some(0.0),
+                maximum: Some(9_007_199_254_740_991.0),
+                ..Schema::ANY
+            }),
+            ("failAt", Schema {
+                types: &[Type::Integer],
+                minimum: Some(-9_007_199_254_740_991.0),
+                maximum: Some(9_007_199_254_740_991.0),
+                ..Schema::ANY
+            }),
+            ("badAt", Schema {
+                types: &[Type::Integer],
+                minimum: Some(-9_007_199_254_740_991.0),
+                maximum: Some(9_007_199_254_740_991.0),
+                ..Schema::ANY
+            }),
+            ("pause", Schema {
+                types: &[Type::Integer],
+                minimum: Some(-9_007_199_254_740_991.0),
+                maximum: Some(9_007_199_254_740_991.0),
+                ..Schema::ANY
+            }),
+        ]),
+        ..Schema::ANY
+    };
+
+    pub(super) static TICKS_LIST_TICK_DATA: Schema = Schema {
+        types: &[Type::Object],
+        properties: Some(&[
+            ("n", Schema {
+                types: &[Type::Integer],
+                minimum: Some(-9_007_199_254_740_991.0),
+                maximum: Some(9_007_199_254_740_991.0),
+                ..Schema::ANY
+            }),
+        ]),
+        required: &["n"],
+        additional: Additional::Refused,
+        ..Schema::ANY
+    };
+
+    pub(super) static TICKS_LIST_DONE_DATA: Schema = Schema {
+        types: &[Type::Object],
+        properties: Some(&[
+            ("total", Schema {
+                types: &[Type::Integer],
+                minimum: Some(-9_007_199_254_740_991.0),
+                maximum: Some(9_007_199_254_740_991.0),
+                ..Schema::ANY
+            }),
+        ]),
+        required: &["total"],
+        additional: Additional::Refused,
+        ..Schema::ANY
+    };
+
     pub(super) static TREES_CREATE_BODY: Schema = Schema {
         types: &[Type::Object],
         properties: Some(&[
@@ -2185,6 +2400,13 @@ mod runtime {
         };
         checker.check(schema, value);
         checker.issues
+    }
+
+    /// What is wrong with a value a handler produced, as text for the log;
+    /// nothing if it fits its schema.
+    pub(super) fn rejected(schema: &'static Schema, value: &Value) -> Option<String> {
+        let issues = issues_of(schema, Some(value), false);
+        (!issues.is_empty()).then(|| serde_json::to_string(&issues).unwrap_or_default())
     }
 
     /// Checks JSON values against a schema and collects what is wrong.
@@ -2895,9 +3117,7 @@ mod runtime {
                     return internal_error();
                 }
             };
-            let issues = issues_of(schema.unwrap_or(&Schema::ANY), Some(&json), false);
-            if !issues.is_empty() {
-                let issues = serde_json::to_string(&issues).unwrap_or_default();
+            if let Some(issues) = rejected(schema.unwrap_or(&Schema::ANY), &json) {
                 tracing::error!(operation, %status, issues, "the returned value does not match its schema");
                 return internal_error();
             }
@@ -2921,5 +3141,136 @@ mod runtime {
     /// A default the contract gives as JSON, as the type of its member.
     pub(super) fn default_value<T: DeserializeOwned>(json: &str) -> T {
         serde_json::from_str(json).expect("a generated default fits its type")
+    }
+}
+
+/// Writes what the handler of a stream yields as server-sent events. Like
+/// the runtime, not part of the module's API.
+mod streams {
+    use std::convert::Infallible;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use std::time::Duration;
+
+    use axum::http::HeaderMap;
+    use axum::response::sse::{self, KeepAlive, Sse};
+    use axum::response::{IntoResponse, Response};
+    use futures_core::Stream;
+    use serde::Serialize;
+
+    use super::runtime::{self, Schema};
+    use super::{Event, EventStream};
+
+    /// An event a stream declares. It is written as its data; its name
+    /// and the schema of that data are known from which event it is.
+    pub(super) trait Declared: Serialize {
+        fn name(&self) -> &'static str;
+        fn schema(&self) -> &'static Schema;
+    }
+
+    /// The id of the last event a client that reconnects has seen.
+    pub(super) fn last_event_id(headers: &HeaderMap) -> Option<String> {
+        let id = headers.get("last-event-id")?.to_str().ok()?;
+        Some(id.to_owned())
+    }
+
+    /// The events a handler yields, as the response of the stream. With an
+    /// interval, a stream that is silent for that long sends a comment.
+    pub(super) fn respond<T: Declared + Send + 'static>(
+        operation: &'static str,
+        events: EventStream<T>,
+        keep_alive: Option<Duration>,
+    ) -> Response {
+        let frames = Sse::new(Frames {
+            operation,
+            events: Some(events),
+        });
+        match keep_alive {
+            Some(interval) => frames
+                .keep_alive(KeepAlive::new().interval(interval).text("keep-alive"))
+                .into_response(),
+            None => frames.into_response(),
+        }
+    }
+
+    /// One event in the framing of text/event-stream, if its data fits
+    /// the schema the stream declares for it. One that does not is
+    /// reported and not written.
+    fn frame<T: Declared>(operation: &'static str, sent: &Event<T>) -> Option<sse::Event> {
+        let event = sent.event.name();
+        // Checked as a value, written from the event: its members in the
+        // order of the type.
+        let written = serde_json::to_value(&sent.event).and_then(|value| {
+            let issues = runtime::rejected(sent.event.schema(), &value);
+            Ok((issues, serde_json::to_string(&sent.event)?))
+        });
+        let data = match written {
+            Ok((None, data)) => data,
+            Ok((Some(issues), _)) => {
+                tracing::error!(
+                    operation,
+                    event,
+                    issues,
+                    "an event does not match its schema"
+                );
+                return None;
+            }
+            Err(error) => {
+                tracing::error!(operation, event, %error, "an event cannot be written as JSON");
+                return None;
+            }
+        };
+        let mut frame = sse::Event::default().event(event);
+        if let Some(id) = &sent.id {
+            // A line break would end the field, and the frame with it.
+            if id.contains(['\n', '\r']) {
+                tracing::error!(operation, event, id, "the id of an event has a line break");
+                return None;
+            }
+            frame = frame.id(id);
+        }
+        if let Some(retry) = sent.retry {
+            frame = frame.retry(retry);
+        }
+        Some(frame.data(data))
+    }
+
+    /// The frames of a stream. A stream has no status once it has begun:
+    /// when the handler fails, or yields an event that is not written, a
+    /// comment tells the client so and the stream ends.
+    struct Frames<T> {
+        operation: &'static str,
+        /// Gone once the stream has ended.
+        events: Option<EventStream<T>>,
+    }
+
+    impl<T: Declared> Stream for Frames<T> {
+        type Item = Result<sse::Event, Infallible>;
+
+        fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            let frames = self.get_mut();
+            let Some(events) = frames.events.as_mut() else {
+                return Poll::Ready(None);
+            };
+            let Poll::Ready(next) = events.as_mut().poll_next(context) else {
+                return Poll::Pending;
+            };
+            let frame = match next {
+                Some(Ok(event)) => frame(frames.operation, &event),
+                Some(Err(error)) => {
+                    let operation = frames.operation;
+                    tracing::error!(operation, %error, "the handler of a stream failed");
+                    None
+                }
+                None => {
+                    frames.events = None;
+                    return Poll::Ready(None);
+                }
+            };
+            Poll::Ready(Some(Ok(frame.unwrap_or_else(|| {
+                frames.events = None;
+                sse::Event::default().comment("error")
+            }))))
+        }
     }
 }

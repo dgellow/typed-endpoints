@@ -36,7 +36,13 @@ import {
   snakeCase,
   wrapped,
 } from "./models.ts";
-import { INTERNAL_ERROR, MAYBE_ABSENT, RUNTIME } from "./runtime.ts";
+import {
+  EVENTS,
+  INTERNAL_ERROR,
+  MAYBE_ABSENT,
+  RUNTIME,
+  STREAMS,
+} from "./runtime.ts";
 
 /** What the generated module needs to be told. */
 export interface AxumOptions {
@@ -122,6 +128,22 @@ interface Rendered {
   readonly errors: readonly DeclaredError[];
   /** Name of the error enum, when the operation declares errors. */
   readonly errorEnum?: string;
+  /** For an event stream: its events. */
+  readonly stream?: {
+    /** Name of the enum of its events. */
+    readonly events: string;
+    readonly variants: readonly {
+      /** The name of the event on the wire. */
+      readonly name: string;
+      readonly variant: string;
+      /** The type of its data. */
+      readonly type: string;
+      /** The static that holds the schema of its data. */
+      readonly schema: string;
+    }[];
+    /** Milliseconds of silence before a keep-alive comment. */
+    readonly keepAlive?: number;
+  };
 }
 
 /** `/files/{+path}` as axum writes it: `/files/{*path}`. */
@@ -138,8 +160,8 @@ function banner(title: string): string[] {
 /**
  * Render a contract as the source of a Rust module.
  *
- * Operations that stream server-sent events are listed in the module's
- * documentation and left out.
+ * An operation that streams server-sent events has a handler that
+ * returns a stream of typed events.
  */
 export function renderAxum(
   contract: Contract,
@@ -150,13 +172,8 @@ export function renderAxum(
   const models = new RustModels(graph);
   const data = new RustContract();
   const rendered: Rendered[] = [];
-  const skipped: ContractOperation[] = [];
 
   for (const operation of contract.operations) {
-    if (operation.events) {
-      skipped.push(operation);
-      continue;
-    }
     const label = `${operation.method} ${operation.path}`;
     const base = pascalCase(operation.operationId);
     const constant = constantCase(operation.operationId);
@@ -203,6 +220,30 @@ export function renderAxum(
       },
     );
 
+    // An event stream: an enum with a variant per event, each with the
+    // type of that event's data.
+    const used = new Set<string>();
+    const stream = operation.events && {
+      events: `${base}Event`,
+      variants: Object.entries(operation.events).map(([name, schema], i) => {
+        let variant = pascalCase(name).replace(/^_/, "Event");
+        if (variant === "" || used.has(variant)) variant = `Event${i + 1}`;
+        used.add(variant);
+        return {
+          name,
+          variant,
+          ...part(
+            `${pascalCase(name)}Data`,
+            `data of the event \`${name}\``,
+            schema,
+            false,
+          )!,
+        };
+      }),
+      ...(operation.keepAlive !== undefined &&
+        { keepAlive: operation.keepAlive }),
+    };
+
     rendered.push({
       operation,
       label,
@@ -220,12 +261,14 @@ export function renderAxum(
       ...(response && { response: response.type }),
       errors,
       ...(errors.length > 0 && { errorEnum: `${base}Error` }),
+      ...(stream && { stream }),
     });
   }
 
   // Rendered first: what the types use decides what is imported.
   const types = models.render();
   const failing = rendered.filter((item) => item.errorEnum);
+  const streaming = rendered.filter((item) => item.stream);
   const unnamed = failing.some((item) =>
     item.errors.some((error) => error.code.startsWith("status("))
   );
@@ -245,7 +288,12 @@ export function renderAxum(
     "//! # Crates",
     "//!",
     "//! `axum` 0.8, `serde` with `derive`, `serde_json`, `tracing`, and",
-    "//! `fancy-regex` for the patterns of the contract.",
+    ...(streaming.length > 0
+      ? [
+        "//! `fancy-regex` for the patterns of the contract; `futures-core` for",
+        "//! the event streams.",
+      ]
+      : ["//! `fancy-regex` for the patterns of the contract."]),
     "//!",
     "//! # Types",
     "//!",
@@ -284,16 +332,15 @@ export function renderAxum(
     "//! The cause of a 500 is not in its body. It is reported through",
     "//! `tracing`, at the error level: an application without a subscriber",
     "//! sees nothing.",
-    ...(skipped.length > 0
+    ...(streaming.length > 0
       ? [
         "//!",
-        "//! # Not served",
+        "//! # Event streams",
         "//!",
-        "//! Server-sent event streams are not generated yet:",
-        "//!",
-        ...skipped.map((operation) =>
-          `//! - \`${operation.method} ${operation.path}\``
-        ),
+        "//! The handler of a stream returns an [`EventStream`] of its events. An",
+        "//! event is written once its data fits the contract. When the handler",
+        "//! fails, or yields an event that does not fit, the stream ends with",
+        "//! the comment `: error`: a stream has no status once it has begun.",
       ]
       : []),
     "",
@@ -302,6 +349,8 @@ export function renderAxum(
     ...banner("Types"),
     ...types,
     ...(models.usesMaybeAbsent ? [MAYBE_ABSENT, ""] : []),
+    ...(streaming.length > 0 ? [EVENTS, ""] : []),
+    ...streaming.flatMap((item) => eventEnum(item)),
     ...banner("Handlers"),
     INTERNAL_ERROR,
     "",
@@ -333,6 +382,7 @@ export function renderAxum(
     );
   }
   lines.push(...contractModule, "", RUNTIME, "");
+  if (streaming.length > 0) lines.push(STREAMS, "");
 
   return lines.join("\n");
 }
@@ -347,7 +397,8 @@ function imports(rendered: readonly Rendered[], models: RustModels): string[] {
       : [`use ${path}::{${names.sort().join(", ")}};`];
   const any = (test: (item: Rendered) => boolean) => rendered.some(test);
   const failing = any((item) => item.errorEnum !== undefined);
-  const silent = any((item) => !item.response);
+  const streaming = any((item) => item.stream !== undefined);
+  const silent = any((item) => !item.response && !item.stream);
   const methods = [
     ...new Set(rendered.map((item) => item.operation.method.toLowerCase())),
   ];
@@ -359,7 +410,9 @@ function imports(rendered: readonly Rendered[], models: RustModels): string[] {
     ]),
     "use std::fmt;",
     "use std::future::Future;",
+    ...(streaming ? ["use std::pin::Pin;"] : []),
     "use std::sync::Arc;",
+    ...(streaming ? ["use std::time::Duration;"] : []),
     "",
     ...(any((item) => !!item.body) ? ["use axum::body::Bytes;"] : []),
     ...group("axum::extract::rejection", [
@@ -372,7 +425,7 @@ function imports(rendered: readonly Rendered[], models: RustModels): string[] {
       "State",
     ]),
     ...group("axum::http", [
-      ...(any((item) => !!item.body) ? ["HeaderMap"] : []),
+      ...(any((item) => !!item.body) || streaming ? ["HeaderMap"] : []),
       ...(failing || silent ? ["StatusCode"] : []),
     ]),
     ...group("axum::response", [
@@ -380,6 +433,7 @@ function imports(rendered: readonly Rendered[], models: RustModels): string[] {
       "Response",
     ]),
     ...group("axum::routing", methods),
+    ...(streaming ? ["use futures_core::Stream;"] : []),
     "use serde::{Deserialize, Serialize};",
     ...(models.usesValue ? ["use serde_json::Value;"] : []),
   ];
@@ -503,9 +557,62 @@ function handlerArguments(item: Rendered): string[] {
   ];
 }
 
+/** The enum of a stream's events, and what the stream writer asks of it. */
+function eventEnum(item: Rendered): string[] {
+  const { events, variants } = item.stream!;
+  const match = (value: (variant: typeof variants[number]) => string) => [
+    "        match self {",
+    ...variants.map((variant) =>
+      `            Self::${variant.variant}(_) => ${value(variant)},`
+    ),
+    "        }",
+  ];
+  return [
+    `/// The events of \`${item.label}\`.`,
+    "#[derive(Debug, Clone, PartialEq, Serialize)]",
+    // Written as its data: the name of an event is not part of it.
+    "#[serde(untagged)]",
+    `pub enum ${events} {`,
+    ...variants.flatMap((variant) => [
+      `    /// The event \`${variant.name}\`.`,
+      `    ${variant.variant}(${variant.type}),`,
+    ]),
+    "}",
+    "",
+    `impl streams::Declared for ${events} {`,
+    "    fn name(&self) -> &'static str {",
+    ...match((variant) => JSON.stringify(variant.name)),
+    "    }",
+    "",
+    "    fn schema(&self) -> &'static runtime::Schema {",
+    ...match((variant) => `&contract::${variant.schema}`),
+    "    }",
+    "}",
+    "",
+  ];
+}
+
 function handlerSignature(item: Rendered): string[] {
   const { operation } = item;
   const summary = operation.summary ?? operation.description;
+  if (item.stream) {
+    return [
+      ...documentation(
+        `\`${item.label}\`: a stream of events.${
+          summary ? ` ${summary.split("\n")[0]}` : ""
+        }\n\n` +
+          "A client that reconnects says which event it saw last: its id is " +
+          "`last_event_id`, and `None` on a first connection.",
+        4,
+      ),
+      ...wrapped(
+        4,
+        `fn ${item.method}(`,
+        ["&self", ...handlerArguments(item), "last_event_id: Option<String>"],
+        `) -> impl Future<Output = Result<EventStream<${item.stream.events}>, InternalError>> + Send;`,
+      ),
+    ];
+  }
   return [
     ...documentation(
       `\`${item.label}\`${summary ? `: ${summary.split("\n")[0]}` : ""}`,
@@ -537,6 +644,8 @@ function route(item: Rendered): string[] {
       "headers: HeaderMap",
       "bytes: Result<Bytes, BytesRejection>",
     );
+  } else if (item.stream) {
+    extractors.push("headers: HeaderMap");
   }
 
   const read = (name: string, expression: string) => [
@@ -547,7 +656,9 @@ function route(item: Rendered): string[] {
     ...(item.query ? ["query"] : []),
     ...(item.body ? ["body"] : []),
   ];
+  if (item.stream) passed.push("last_event_id");
   const call = `handlers.${item.method}(${passed.join(", ")}).await`;
+  const { keepAlive } = item.stream ?? {};
 
   return [
     ...wrapped(
@@ -561,10 +672,23 @@ function route(item: Rendered): string[] {
     ...(item.body ? read("body", "operation.body(&headers, bytes)") : []),
     ...(item.query ? read("query", "operation.query(pairs)") : []),
     ...(item.params ? read("params", "operation.params(path)") : []),
+    ...(item.stream
+      ? ["    let last_event_id = streams::last_event_id(&headers);"]
+      : []),
     `    Ok(match ${call} {`,
-    item.response
-      ? "        Ok(response) => operation.respond(&response),"
-      : "        Ok(()) => StatusCode::NO_CONTENT.into_response(),",
+    ...(item.stream
+      ? arm(8, "Ok(events)", "streams::respond(", [
+        "operation.name",
+        "events",
+        keepAlive === undefined
+          ? "None"
+          : `Some(Duration::from_millis(${keepAlive}))`,
+      ])
+      : [
+        item.response
+          ? "        Ok(response) => operation.respond(&response),"
+          : "        Ok(()) => StatusCode::NO_CONTENT.into_response(),",
+      ]),
     item.errorEnum
       ? "        Err(error) => error.respond(operation),"
       : "        Err(error) => operation.internal(&error),",

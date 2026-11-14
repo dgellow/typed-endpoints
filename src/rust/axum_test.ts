@@ -294,23 +294,102 @@ Deno.test("rust axum: the router compiles the contract's patterns, and says that
   assertEquals(without.includes("/// # Panics"), false);
 });
 
-Deno.test("rust axum: an event stream is listed and left out", () => {
+Deno.test("rust axum: an event stream is an enum of its events and a handler that returns a stream", () => {
   const lines = render(
     operation({ operationId: "notesList", response: NOTE }),
     operation({
       operationId: "ticksList",
       path: "/ticks",
-      events: { tick: { type: "object" } },
+      query: {
+        type: "object",
+        properties: { count: { type: "integer" } },
+      },
+      events: {
+        tick: { type: "object", properties: { n: { type: "integer" } } },
+        "all-done": {
+          type: "object",
+          properties: { total: { type: "integer" } },
+        },
+      },
+      keepAlive: 40,
     }),
   );
-  assertEquals(lines.some((line) => line.includes("ticks_list")), false);
-  // In the module's documentation, where rustdoc shows it.
-  const at = lines.indexOf("//! # Not served");
-  assertEquals(lines.slice(at + 2, at + 5), [
-    "//! Server-sent event streams are not generated yet:",
-    "//!",
-    "//! - `GET /ticks`",
+
+  // A variant per event, with the type of its data. Written as that
+  // data: the name is not part of it.
+  assertEquals(block(lines, "pub enum TicksListEvent"), [
+    "pub enum TicksListEvent {",
+    "    /// The event `tick`.",
+    "    Tick(TicksListTickData),",
+    "    /// The event `all-done`.",
+    "    AllDone(TicksListAllDoneData),",
+    "}",
   ]);
+  const at = lines.indexOf("pub enum TicksListEvent {");
+  assertEquals(lines.slice(at - 2, at), [
+    "#[derive(Debug, Clone, PartialEq, Serialize)]",
+    "#[serde(untagged)]",
+  ]);
+  // What the stream writer asks of an event: its name and its schema.
+  assertEquals(
+    lines.filter((line) => line.startsWith("            Self::AllDone")),
+    [
+      '            Self::AllDone(_) => "all-done",',
+      "            Self::AllDone(_) => &contract::TICKS_LIST_ALL_DONE_DATA,",
+    ],
+  );
+
+  // The handler takes the id a client resumes after, and returns the
+  // stream; it can still fail before the stream begins.
+  const method = lines.findIndex((line) => line === "    fn ticks_list(");
+  assertEquals(lines.slice(method, method + 5), [
+    "    fn ticks_list(",
+    "        &self,",
+    "        query: TicksListQuery,",
+    "        last_event_id: Option<String>,",
+    "    ) -> impl Future<Output = Result<EventStream<TicksListEvent>, InternalError>> + Send;",
+  ]);
+
+  // The request is checked before the stream begins.
+  assertEquals(block(lines, "async fn ticks_list<H: Handlers>"), [
+    "async fn ticks_list<H: Handlers>(",
+    "    State(handlers): State<Arc<H>>,",
+    "    Query(pairs): Query<Vec<(String, String)>>,",
+    "    headers: HeaderMap,",
+    ") -> Result<Response, runtime::Refused> {",
+    "    let operation = &contract::TICKS_LIST;",
+    "    let query = operation.query(pairs)?;",
+    "    let last_event_id = streams::last_event_id(&headers);",
+    "    Ok(match handlers.ticks_list(query, last_event_id).await {",
+    "        Ok(events) => streams::respond(operation.name, events, Some(Duration::from_millis(40))),",
+    "        Err(error) => operation.internal(&error),",
+    "    })",
+    "}",
+  ]);
+
+  // What streams need is there, and named in the documentation.
+  for (
+    const line of [
+      "pub struct Event<T> {",
+      "mod streams {",
+      "use futures_core::Stream;",
+      "//! # Event streams",
+    ]
+  ) {
+    assertEquals(lines.includes(line), true, line);
+  }
+
+  // Without a stream none of it is.
+  const without = render(
+    operation({ operationId: "notesList", response: NOTE }),
+  );
+  for (const line of ["pub struct Event<T> {", "mod streams {"]) {
+    assertEquals(without.includes(line), false, line);
+  }
+  assertEquals(
+    without.some((line) => line.includes("futures")),
+    false,
+  );
 
   // The documentation names what a crate with the module needs and what
   // a client is answered.

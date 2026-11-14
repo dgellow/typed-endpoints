@@ -277,6 +277,12 @@ error is a variant of the operation's error type, anything else an
 of a union, where it would not be read. Python's models do not use `TypeGraph`
 yet.
 
+An API with an event stream gets a third private module, `streams`, and two
+public types: the handler of a stream returns an `EventStream<T>` (a boxed
+stream of `Result<Event<T>, InternalError>`), `T` an enum with a variant per
+event. The frames are axum's `Sse`; an event is checked against the contract
+before it is written, and a failure ends the stream with `: error`.
+
 ## Key Concepts (Request-Dependent Responses)
 
 A response type can be a function of the request (`?fields=`, `?expand=`).
