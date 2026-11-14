@@ -883,6 +883,48 @@ const { response: tokens, session: s2 } = await granted.execute("exchange", {
 const refreshable = s2.narrow("exchange", present("refresh_token"));
 ```
 
+#### Revocation and single use
+
+A session's state can also shrink. `revoking()` declares that a step ends what
+earlier steps established:
+
+```typescript
+// Logging out ends the login.
+const logout = revoking(
+  dependentStep({ name: "logout", dependsOn: login, ... }),
+  ["login", "profile"],
+);
+
+// An authorization code can be exchanged once (RFC 6749, section 4.1.2):
+// the step revokes its own dependency.
+const exchange = revoking(
+  dependentStep({ name: "exchange", dependsOn: authorize, ... }),
+  ["authorize"],
+);
+
+const { session: s2 } = await granted.execute("exchange", request);
+s2.execute("exchange", request); // compile error: authorize is spent
+s2.responses.authorize; // compile error: the response left the session
+```
+
+After the step, the revoked steps count as not executed: they leave the session
+type and the stored responses, and steps that depend on them are unavailable
+until they run again.
+
+The types follow the session value `execute()` returns. The value it was called
+on still exists with its earlier type, and TypeScript cannot retire it. A
+single-use session closes that gap at runtime:
+
+```typescript
+const session = createSession(oauth2Protocol, executor, { singleUse: true });
+
+const { session: s2 } = await granted.execute("exchange", request);
+await granted.execute("exchange", request); // throws SessionSpentError
+```
+
+Each session value then executes one step; a failed `execute()` does not spend
+it.
+
 Key features:
 
 - **Compile-time step enforcement**: Can only execute steps whose dependencies
@@ -908,6 +950,7 @@ Key features:
   | `InvalidRequestError`   | The request does not match the step's schema (`issues`)               |
   | `InvalidResponseError`  | The response does not match the step's schema (`issues`)              |
   | `UnknownStepError`      | The protocol has no such step                                         |
+  | `SessionSpentError`     | Single-use session: this value already executed a step (`spentBy`)    |
 
 ### HTTP Executor
 
