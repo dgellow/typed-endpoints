@@ -13,6 +13,11 @@
 /** A schema definition: `schema._zod.def`. */
 export type ZodDef = Record<string, unknown>;
 
+/** Whether the value is a Zod v4 schema. */
+export function isZodSchema(value: unknown): boolean {
+  return typeof value === "object" && value !== null && "_zod" in value;
+}
+
 /** `schema._zod`, or an empty object for a value that is not a Zod schema. */
 export function zodInternals(schema: unknown): Record<string, unknown> {
   const zod = (schema as { _zod?: Record<string, unknown> } | null | undefined)
