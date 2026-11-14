@@ -16,6 +16,16 @@ fi
 
 cd "$project"
 
+# What follows is checked with one rustfmt and one clippy: the toolchain
+# this crate pins. With another, the result would say nothing about it.
+pinned="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+active="$(cargo --version | awk '{print $2}')"
+if [ "$active" != "$pinned" ]; then
+  echo "error: cargo is $active; e2e_tests/rust/rust-toolchain.toml pins $pinned" >&2
+  echo "       (run cargo through rustup, which installs and selects it)" >&2
+  exit 1
+fi
+
 # The generated module and the hand-written handlers read as Rust does:
 # formatted as rustfmt formats (the generated module under both style
 # editions, so that it is in any crate), and nothing for clippy to say,

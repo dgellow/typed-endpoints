@@ -44,6 +44,11 @@ impl Notes {
     }
 }
 
+#[expect(
+    clippy::unused_async_trait_impl,
+    reason = "the notes are kept in memory, so no handler here has anything to await; \
+              a handler of a real service does, and is written the same way"
+)]
 impl api::Handlers for Notes {
     async fn notes_list(
         &self,

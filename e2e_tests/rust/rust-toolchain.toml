@@ -1,0 +1,9 @@
+# The toolchain `./scripts/test-rust` checks with. "Formatted as rustfmt
+# formats" and "nothing for clippy to report" are statements about one
+# rustfmt and one clippy: clippy's pedantic group gains lints with every
+# release. Raising the version is a change of its own, with what the new
+# lints find.
+[toolchain]
+channel = "1.100.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
