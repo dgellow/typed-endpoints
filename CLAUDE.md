@@ -40,6 +40,32 @@ permissions):
   `e2e_tests/rust/rust-toolchain.toml` pins: pedantic lints are added with every
   Rust release, so a newer clippy is a change of its own
 
+## Environment
+
+Every tool is pinned: a file of the repository names its version, the tool or
+its installer reads that file on every machine, and a script that depends on the
+version stops on another one. CI installs what the files name. A check says
+something about the tools it ran with, so a result from an unnamed version is
+not a result.
+
+| Tool                   | Pinned in                                                                                                                         | Enforced by                                                                |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Deno, Bun              | `.tool-versions` (read by mise and asdf)                                                                                          | `scripts/pinned`, sourced by every script                                  |
+| Deno dependencies      | `deno.lock`                                                                                                                       | `deno install --frozen`                                                    |
+| uv                     | `required-version` in `e2e_tests/python/pyproject.toml`                                                                           | uv                                                                         |
+| Python                 | `e2e_tests/python/.python-version`                                                                                                | uv, which installs it                                                      |
+| Python packages        | `e2e_tests/python/uv.lock`                                                                                                        | `uv run --frozen`                                                          |
+| Rust, clippy, rustfmt  | `e2e_tests/rust/rust-toolchain.toml`                                                                                              | rustup; `scripts/test-rust` checks                                         |
+| Rust crates            | `e2e_tests/rust/Cargo.lock`                                                                                                       | `cargo --locked`                                                           |
+| Frameworks             | exact versions in `scripts/check-framework-types` (Next.js, SvelteKit, Astro, TypeScript) and `scripts/bun-package.ts` (Hono, h3) | the scripts install them                                                   |
+| npm packages under Bun | `e2e_tests/bun/bun.lock`, `e2e_tests/framework-types/bun.lock`; the library's own dependencies at the versions `deno.lock` has    | `bun install --frozen-lockfile`; `UPDATE_LOCK=1` writes the lockfile again |
+| CI runner              | `runs-on: ubuntu-24.04`                                                                                                           | GitHub                                                                     |
+
+Raising a version is a change of its own: change the file, run the checks, fix
+what the new version finds. A new tool gets a row here before it gets a check.
+Not pinned: the GitHub Actions themselves, which are named by major tag, not by
+commit.
+
 ## Project Structure
 
 ```

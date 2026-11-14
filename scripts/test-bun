@@ -9,10 +9,8 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
-if ! command -v bun >/dev/null 2>&1; then
-  echo "error: bun is not installed (https://bun.sh)" >&2
-  exit 1
-fi
+source "$root/scripts/pinned"
+require_pinned bun
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -31,5 +29,19 @@ bun "$root/scripts/bun-package.ts" "$root/deno.json" "$pkg/package.json" "$work/
 cp -R "$root/e2e_tests/bun/." "$work/"
 
 cd "$work"
-bun install --silent
+# e2e_tests/bun/bun.lock (copied with the tests) fixes every package that
+# is installed, also the ones the dependencies depend on. An install that
+# would not match it fails. UPDATE_LOCK=1 writes the lockfile again.
+if [ "${UPDATE_LOCK:-}" = 1 ]; then
+  rm -f bun.lock
+  bun install --silent
+  cp bun.lock "$root/e2e_tests/bun/bun.lock"
+else
+  # Quiet when it fits the lockfile; Bun's own words when it does not.
+  if ! output="$(bun install --frozen-lockfile 2>&1)"; then
+    printf '%s\n' "$output" >&2
+    echo "to write the lockfile again: UPDATE_LOCK=1 ./scripts/test-bun" >&2
+    exit 1
+  fi
+fi
 bun test "$@"
