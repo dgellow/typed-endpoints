@@ -138,44 +138,78 @@ export function sseEndpoint<
   return def;
 }
 
+/** One event in `text/event-stream` framing. */
+function formatSseEvent<TEvents extends SseEventDef>(
+  event: SseEvent<TEvents>,
+): string {
+  let message = "";
+  if (event.event) {
+    message += `event: ${String(event.event)}\n`;
+  }
+  // An empty id is meaningful: it resets the client's last event ID.
+  if (event.id !== undefined) {
+    message += `id: ${event.id}\n`;
+  }
+  if (event.retry !== undefined) {
+    message += `retry: ${event.retry}\n`;
+  }
+  return message + `data: ${JSON.stringify(event.data)}\n\n`;
+}
+
 /**
  * Create SSE response from async generator.
+ *
+ * The generator is advanced only when the consumer reads, and it stops
+ * when the response body is cancelled or `abort` fires, whichever is first:
+ * the handler's signal aborts and its `finally` blocks run.
  */
 function createSseResponse<TEvents extends SseEventDef>(
   generator: AsyncGenerator<SseEvent<TEvents>, void, unknown>,
-  signal: AbortSignal,
+  abort: AbortController,
 ): Response {
   const encoder = new TextEncoder();
+  const { signal } = abort;
+  let finished = false;
 
-  const stream = new ReadableStream({
-    async start(controller) {
+  // Ends the generator once. A handler that throws while it winds down has
+  // nowhere to report to, so the error is logged.
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    generator.return(undefined).catch((error) => {
+      console.error("SSE stream error:", error);
+    });
+  };
+
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
       try {
-        for await (const event of generator) {
-          if (signal.aborted) break;
-
-          let message = "";
-          if (event.event) {
-            message += `event: ${String(event.event)}\n`;
-          }
-          if (event.id) {
-            message += `id: ${event.id}\n`;
-          }
-          if (event.retry !== undefined) {
-            message += `retry: ${event.retry}\n`;
-          }
-          message += `data: ${JSON.stringify(event.data)}\n\n`;
-
-          controller.enqueue(encoder.encode(message));
+        const next = signal.aborted
+          ? { done: true as const }
+          : await generator.next();
+        // The body was cancelled while the handler was working.
+        if (finished) return;
+        if (next.done || signal.aborted) {
+          finish();
+          controller.close();
+          return;
         }
+        controller.enqueue(encoder.encode(formatSseEvent(next.value)));
       } catch (error) {
+        if (finished) return;
+        finished = true;
         if (!signal.aborted) {
           console.error("SSE stream error:", error);
         }
-      } finally {
         controller.close();
       }
     },
-  });
+    cancel() {
+      abort.abort();
+      finish();
+    },
+    // Nothing is produced ahead of the consumer.
+  }, { highWaterMark: 0 });
 
   return new Response(stream, {
     headers: {
@@ -265,7 +299,7 @@ export function createApiHandlers<TState, TDef extends Record<string, unknown>>(
           abortController.signal,
         );
 
-        return createSseResponse(generator, abortController.signal);
+        return createSseResponse(generator, abortController);
       };
     } else {
       // Handle regular REST endpoints
