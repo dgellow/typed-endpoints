@@ -154,9 +154,11 @@ N. TypeScript can't express dependent types, so:
   type (`ResultOf`) by recursion on the node; `runPlan()` interprets it. The
   request to a sequence is `{ first, rest }` with `rest` a function of the first
   result; to a repetition, `undefined` or `{ next, rest }`. No plan member is
-  called `then` (a thenable would be called by `await`). A branch predicate is
-  asked about the result before it in the enclosing sequence; a mismatch makes
-  `PlanOf` uninhabited (`BranchMismatch`)
+  called `then` (a thenable would be called by `await`). `PlanOf` threads what
+  is known (`Known`: step name to the type its latest response is known to have;
+  `After<Node, Known>`) and gives a step that cannot run there the uninhabited
+  type `NotReady`. `branch(step, predicate, sides)` names the step it asks about
+  and narrows what is known on each side
 - **Revocation**: `revoking(step, names)` removes steps from `TDone`/`TSeen` and
   their responses from the session. The types follow the returned session;
   `createSession(..., { singleUse: true })` refuses the earlier value at runtime

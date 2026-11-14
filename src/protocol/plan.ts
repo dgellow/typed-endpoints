@@ -15,17 +15,23 @@
  * - A request to `a ⊗ b` (parallel) is a request to each; so is the
  *   response.
  *
- * `branch` is the one node that reads a value on its own: its predicate is
- * asked about the result of the node before it in the enclosing sequence
- * (through any `repeat`, `choice` or `parallel` around it), and the plan
- * supplies one side each. A sequence whose branch cannot be asked about
- * the result before it has no plan: the mismatch is a compile error.
+ * `branch` chooses a side by a predicate on the latest response of a step
+ * it names; the plan supplies both sides.
  *
  * `PlanOf<Node>` is the request type of a node and `ResultOf<Node>` its
  * response type, both by recursion on the node. `runPlan()` interprets a
  * plan: it validates every request and response against the steps'
  * schemas and applies the rules a session applies (`when`, forwarded
  * values, revocation).
+ *
+ * `PlanOf` also computes, at every point of the node, what is known there
+ * (`Known`): which steps have certainly run, and what their latest
+ * response is known to be. A step whose dependency has not run, was
+ * revoked, or is not known to be the variant the step can follow has no
+ * plan at that point: its plan type is `NotReady`, which no value has.
+ * So `sequence(exchange, authorize)` cannot be run, `sequence(authorize,
+ * exchange, exchange)` cannot when `exchange` revokes `authorize`, and
+ * `exchange` after an `authorize` that may have failed needs a `branch`.
  *
  * No plan has a member called `then`. A continuation may be async, and
  * JavaScript treats a value with a `then` method as a promise: such a plan
@@ -68,7 +74,11 @@ import type {
 } from "./types.ts";
 import {
   type ExecutionContext,
+  type HasPath,
+  type NeedsOf,
+  type PrevOf,
   requestSchemaOf,
+  type RevokedBy,
   type StepExecutor,
   type StepInput,
 } from "./client.ts";
@@ -76,6 +86,7 @@ import {
   InvalidRequestError,
   InvalidResponseError,
   ProtocolError,
+  StepNotAvailableError,
 } from "./errors.ts";
 
 // =============================================================================
@@ -114,106 +125,235 @@ export type ResultOf<N> = N extends AnyStep ? StepResponse<N>
         readonly result: ResultOf<T[I]>;
       };
     }[IndexOf<T>]
-  : N extends Branch<infer _P, infer TThen, infer TElse> ?
+  : N extends
+    Branch<string, infer _TTrue, infer _TFalse, infer TThen, infer TElse> ?
       | { readonly holds: true; readonly result: ResultOf<TThen> }
       | { readonly holds: false; readonly result: ResultOf<TElse> }
   : N extends Parallel<infer T> ? { -readonly [I in keyof T]: ResultOf<T[I]> }
   : never;
 
+// -----------------------------------------------------------------------------
+// What is known at a point of a plan
+// -----------------------------------------------------------------------------
+
 /**
- * The request type of a node: what a caller passes to `runPlan()`.
- *
- * - step: its request
- * - sequence: `{ first, rest }`, see `SequencePlan`
- * - repeat: `undefined` or `{ next, rest }`, see `RepeatPlan`
- * - choice: `{ choose, plan }` for one option
- * - branch: one plan per side, each a function of the value the predicate
- *   was asked about, see `BranchPlan`
- * - parallel: the tuple of plans
+ * What is known at a point of a plan: for each step that has certainly
+ * run and was not revoked since, the type its latest response is known to
+ * have.
  */
-export type PlanOf<N> = N extends AnyStep ? StepInput<N>
-  : N extends Sequence<infer T> ? SequencePlan<T>
-  : N extends Repeat<infer S> ? RepeatPlan<S>
-  : N extends Choice<infer T> ? {
-      [I in IndexOf<T>]: {
-        readonly choose: OptionKey<T[I], I>;
-        readonly plan: PlanOf<T[I]>;
-      };
-    }[IndexOf<T>]
-  : N extends Branch<infer P, infer TThen, infer TElse>
-    ? BranchPlan<P, TThen, TElse>
-  : N extends Parallel<infer T> ? { readonly [I in keyof T]: PlanOf<T[I]> }
+export type Known = Readonly<Record<string, unknown>>;
+
+/** Nothing has run. */
+export type NothingKnown = Readonly<Record<never, never>>;
+
+/** What two paths agree on: the steps known on both, by either type. */
+export type Meet<A extends Known, B extends Known> = {
+  readonly [P in keyof A & keyof B]: A[P] | B[P];
+};
+
+/** `K` with the response of `TName` known as `K[TName] & TNarrow`. */
+export type Narrow<K extends Known, TName extends string, TNarrow> = {
+  readonly [P in keyof K]: P extends TName ? K[P] & TNarrow : K[P];
+};
+
+/** Names of the steps revoked by any step inside a node. */
+export type RevokesIn<N> = N extends AnyStep ? RevokedBy<N>
+  : N extends Sequence<infer T> ? RevokesIn<T[number]>
+  : N extends Repeat<infer S> ? RevokesIn<S>
+  : N extends Choice<infer T> ? RevokesIn<T[number]>
+  : N extends
+    Branch<string, infer _TTrue, infer _TFalse, infer TThen, infer TElse>
+    ? RevokesIn<TThen> | RevokesIn<TElse>
+  : N extends Parallel<infer T> ? RevokesIn<T[number]>
   : never;
 
 /**
- * What a node asks of the result before it: the parameter type of the
- * branch predicates that would be called with it. `unknown` for a node
- * without such a branch.
+ * What is known after a node has run, given what was known before it.
+ *
+ * - step: its response becomes known, the steps it revokes are forgotten
+ * - sequence: each element in turn
+ * - repeat: what holds whether it ran or not (it may run zero times)
+ * - choice, branch: what every option agrees on
+ * - parallel: what any arm establishes, without what any arm revokes
  */
-export type Asks<N> = N extends Branch<infer P, infer _TThen, infer _TElse>
-  ? Asked<P>
-  : N extends Repeat<infer S> ? Asks<S>
-  : N extends Sequence<infer T>
-    ? T extends readonly [infer H, ...unknown[]] ? Asks<H> : unknown
-  : N extends Choice<infer T> ? AsksAll<T>
-  : N extends Parallel<infer T> ? AsksAll<T>
-  : unknown;
+export type After<N, K extends Known = NothingKnown> = N extends AnyStep
+  ? AfterStep<N, K>
+  : N extends Sequence<infer T> ? AfterEach<T, K>
+  : N extends Repeat<infer S> ? Meet<K, After<S, K>>
+  : N extends Choice<infer T> ? AfterAny<T, K>
+  : N extends
+    Branch<infer TOn, infer TTrue, infer TFalse, infer TThen, infer TElse>
+    ? Meet<
+      After<TThen, Narrow<K, TOn, TTrue>>,
+      After<TElse, Narrow<K, TOn, TFalse>>
+    >
+  : N extends Parallel<infer T> ? AfterAll<T, K>
+  : K;
 
-/** What every node of a list asks of the result before it. */
-export type AsksAll<T extends readonly unknown[]> = T extends
-  readonly [infer H, ...infer R] ? Asks<H> & AsksAll<R> : unknown;
+/** `After` for a step. */
+export type AfterStep<N, K extends Known> = N extends
+  { readonly name: infer TName extends string } ? {
+    readonly [P in Exclude<keyof K | TName, RevokedBy<N>>]: P extends TName
+      ? StepResponse<N>
+      : P extends keyof K ? K[P]
+      : never;
+  }
+  : K;
+
+/** `After` for the elements of a sequence, in order. */
+export type AfterEach<T extends readonly unknown[], K extends Known> = T extends
+  readonly [infer H, ...infer R] ? AfterEach<R, After<H, K>> : K;
+
+/** `After` for the options of a choice: what every option agrees on. */
+export type AfterAny<T extends readonly unknown[], K extends Known> = T extends
+  readonly [infer H] ? After<H, K>
+  : T extends readonly [infer H, ...infer R] ? Meet<After<H, K>, AfterAny<R, K>>
+  : K;
+
+/** `After` for the arms of a parallel node, each of which starts from `K`. */
+export type AfterAll<T extends readonly unknown[], K extends Known> =
+  After<T[number], K> extends infer TArms ? {
+      readonly [
+        P in Exclude<
+          TArms extends unknown ? keyof TArms : never,
+          RevokesIn<T[number]>
+        >
+      ]: TArms extends unknown ? P extends keyof TArms ? TArms[P] : never
+        : never;
+    }
+    : never;
 
 /**
- * The plan type of a node whose branch cannot be asked about the result
- * before it. No value has this type.
+ * Whether a step can run with what is known: its dependency has run and
+ * its response is of the type the step can follow; for a mapped step,
+ * every forwarded field is known to have a value.
  */
-export interface BranchMismatch<TAsked, TGiven> {
-  /** What the predicate accepts. */
-  readonly "a branch predicate asks about": TAsked;
-  /** What it would be called with. */
-  readonly "but the result before it is": TGiven;
+export type IsReady<N, K extends Known> = N extends {
+  readonly __kind: "dependent_step";
+  readonly dependsOn: infer D extends string;
+} ? string extends D ? true
+  : D extends keyof K ? [K[D]] extends [PrevOf<N>] ? true : false
+  : false
+  : N extends {
+    readonly __kind: "mapped_step";
+    readonly dependsOn: infer D extends string;
+    readonly requestMapping: infer M;
+  } ? string extends D ? true
+    : D extends keyof K ? [
+        {
+          [F in keyof M]: M[F] extends {
+            readonly __kind: "field_mapping";
+            readonly step: infer S extends string;
+            readonly path: infer P extends string;
+          } ? string extends S ? true
+            : S extends keyof K ? HasPath<K[S], P>
+            : false
+            : true;
+        }[keyof M],
+      ] extends [true] ? true
+      : false
+    : false
+  : true;
+
+/**
+ * The plan type of a step that cannot run where it stands. No value has
+ * this type; its members say why.
+ */
+export interface NotReady<TStep, TNeeds, TKnown> {
+  /** The step that cannot run. */
+  readonly "this step cannot run here": TStep;
+  /** What it needs to be known about earlier responses. */
+  readonly "it needs": TNeeds;
+  /** What is known where it stands. */
+  readonly "known here": TKnown;
   /** Makes the type uninhabited. */
   readonly "no plan exists": never;
 }
 
+/** The plan type of a branch on a step that has not run where it stands. */
+export interface BranchNotReady<TOn, TKnown> {
+  /** The step the branch asks about. */
+  readonly "this branch asks about a step that has not run": TOn;
+  /** What is known where it stands. */
+  readonly "known here": TKnown;
+  /** Makes the type uninhabited. */
+  readonly "no plan exists": never;
+}
+
+// -----------------------------------------------------------------------------
+// Plans
+// -----------------------------------------------------------------------------
+
+/**
+ * The request type of a node: what a caller passes to `runPlan()`.
+ *
+ * - step: its request; `NotReady` when the step cannot run with what is
+ *   known at that point
+ * - sequence: `{ first, rest }`, see `SequencePlan`
+ * - repeat: `undefined` or `{ next, rest }`, see `RepeatPlan`
+ * - choice: `{ choose, plan }` for one option
+ * - branch: `{ ifTrue, ifFalse }`, a plan per side as a function of the
+ *   response the predicate was asked about, see `BranchPlan`
+ * - parallel: the tuple of plans
+ *
+ * `K` is what is known before the node; nothing, for the node passed to
+ * `runPlan()`.
+ */
+export type PlanOf<N, K extends Known = NothingKnown> = N extends AnyStep
+  ? IsReady<N, K> extends true ? StepInput<N>
+  : NotReady<N["name"], NeedsOf<N>, K>
+  : N extends Sequence<infer T> ? SequencePlan<T, K>
+  : N extends Repeat<infer S> ? RepeatPlan<S, Meet<K, After<S, K>>>
+  : N extends Choice<infer T> ? {
+      [I in IndexOf<T>]: {
+        readonly choose: OptionKey<T[I], I>;
+        readonly plan: PlanOf<T[I], K>;
+      };
+    }[IndexOf<T>]
+  : N extends
+    Branch<infer TOn, infer TTrue, infer TFalse, infer TThen, infer TElse>
+    ? BranchPlan<TOn, TTrue, TFalse, TThen, TElse, K>
+  : N extends Parallel<infer T> ? { readonly [I in keyof T]: PlanOf<T[I], K> }
+  : never;
+
 /**
  * The plan of a sequence: the plan of its first element, and a
  * continuation that receives that element's result and returns the plan
- * of the rest. A sequence of one element is that element's plan.
+ * of the rest. A sequence of one element is that element's plan; the
+ * empty sequence has the plan `undefined`.
  *
  * The continuation is where a later request uses an earlier response:
  * the dependency is a closure.
  */
-export type SequencePlan<T extends readonly unknown[]> = T extends readonly []
-  ? undefined
-  : T extends readonly [infer H] ? PlanOf<H>
-  : T extends readonly [infer H, ...infer R]
-    ? [ResultOf<H>] extends [AsksAll<FirstOf<R>>] ? {
-        /** The plan of the first element. */
-        readonly first: PlanOf<H>;
-        /** From the first element's result to the plan of the rest. */
-        readonly rest: (
-          result: ResultOf<H>,
-        ) => SequencePlan<R> | Promise<SequencePlan<R>>;
-      }
-    : BranchMismatch<AsksAll<FirstOf<R>>, ResultOf<H>>
+export type SequencePlan<
+  T extends readonly unknown[],
+  K extends Known = NothingKnown,
+> = T extends readonly [] ? undefined
+  : T extends readonly [infer H] ? PlanOf<H, K>
+  : T extends readonly [infer H, ...infer R] ? {
+      /** The plan of the first element. */
+      readonly first: PlanOf<H, K>;
+      /** From the first element's result to the plan of the rest. */
+      readonly rest: (
+        result: ResultOf<H>,
+      ) => SequencePlan<R, After<H, K>> | Promise<SequencePlan<R, After<H, K>>>;
+    }
   : never;
-
-/** The first element of a list, as a list. */
-export type FirstOf<T extends readonly unknown[]> = T extends
-  readonly [infer H, ...unknown[]] ? [H] : [];
 
 /**
  * The plan of a repetition: `undefined` to stop, or the plan of one run
  * and a continuation that receives its result and decides what follows.
+ *
+ * `K` is what is known at the start of every run: what was known before
+ * the repetition, less what a run revokes.
  */
-export type RepeatPlan<S> = undefined | {
+export type RepeatPlan<S, K extends Known = NothingKnown> = undefined | {
   /** The plan of the next run. */
-  readonly next: PlanOf<S>;
+  readonly next: PlanOf<S, K>;
   /** From that run's result to the plan of the remaining runs. */
   readonly rest: (
     result: ResultOf<S>,
-  ) => RepeatPlan<S> | Promise<RepeatPlan<S>>;
+  ) => RepeatPlan<S, K> | Promise<RepeatPlan<S, K>>;
 };
 
 /** What `each()` returns: a repeat plan that ignores the results. */
@@ -224,30 +364,45 @@ export type EachPlan<TPlan> = undefined | {
   readonly rest: () => EachPlan<TPlan>;
 };
 
-/** The type a predicate is asked about. */
-export type Asked<P> = P extends (prev: infer T) => boolean ? T : never;
-
-/** The type a predicate narrows to; the asked type if it is no guard. */
-export type Narrowed<P> =
-  // deno-lint-ignore no-explicit-any
-  P extends (prev: any) => prev is infer T ? T : Asked<P>;
-
 /**
- * The plan of a branch: a plan for each side, as a function of the value
- * the predicate was asked about. When the predicate is a type guard, the
- * `then` side (`ifTrue`) receives the narrowed type and the `else` side
- * (`ifFalse`) what remains.
+ * The plan of a branch: a plan for each side, as a function of the
+ * response the predicate was asked about. Each side receives the response
+ * as the type it is known to have there, and its plan is typed with that
+ * knowledge: on the `then` side of a type guard, a step that can only
+ * follow the narrowed response is ready.
  */
-export interface BranchPlan<P, TThen, TElse> {
-  /** The plan of the `then` side: the predicate holds. */
-  readonly ifTrue: (
-    prev: Narrowed<P>,
-  ) => PlanOf<TThen> | Promise<PlanOf<TThen>>;
-  /** The plan of the `else` side: it does not. */
-  readonly ifFalse: (
-    prev: Exclude<Asked<P>, Narrowed<P>>,
-  ) => PlanOf<TElse> | Promise<PlanOf<TElse>>;
-}
+export type BranchPlan<
+  TOn extends string,
+  TTrue,
+  TFalse,
+  TThen,
+  TElse,
+  K extends Known = NothingKnown,
+> = TOn extends keyof K ? {
+    /** The plan of the `then` side: the predicate holds. */
+    readonly ifTrue: (
+      prev: K[TOn] & TTrue,
+    ) =>
+      | PlanOf<TThen, Narrow<K, TOn, TTrue>>
+      | Promise<PlanOf<TThen, Narrow<K, TOn, TTrue>>>;
+    /** The plan of the `else` side: it does not. */
+    readonly ifFalse: (
+      prev: K[TOn] & TFalse,
+    ) =>
+      | PlanOf<TElse, Narrow<K, TOn, TFalse>>
+      | Promise<PlanOf<TElse, Narrow<K, TOn, TFalse>>>;
+  }
+  : string extends TOn ? {
+      /** The plan of the `then` side: the predicate holds. */
+      readonly ifTrue: (
+        prev: TTrue,
+      ) => PlanOf<TThen, K> | Promise<PlanOf<TThen, K>>;
+      /** The plan of the `else` side: it does not. */
+      readonly ifFalse: (
+        prev: TFalse,
+      ) => PlanOf<TElse, K> | Promise<PlanOf<TElse, K>>;
+    }
+  : BranchNotReady<TOn, K>;
 
 // =============================================================================
 // Errors
@@ -414,8 +569,6 @@ async function runNode(
   plan: unknown,
   run: Run,
   at: string,
-  /** The result before this node in its sequence: what a branch is asked. */
-  previous: unknown,
 ): Promise<unknown> {
   if (isStep(node)) return await runStep(node, plan, run);
 
@@ -433,7 +586,6 @@ async function runNode(
           last ? current : (current as { first: unknown }).first,
           run,
           here,
-          i === 0 ? previous : results[i - 1],
         );
         results.push(result);
         if (!last) {
@@ -469,7 +621,7 @@ async function runNode(
           );
         }
         const current = shape(rest, ["next", "rest"], run, here);
-        const result = await runNode(step, current.next, run, here, previous);
+        const result = await runNode(step, current.next, run, here);
         results.push(result);
         if (typeof current.rest !== "function") {
           throw new PlanError("`rest` is not a function", run.name, here);
@@ -509,7 +661,6 @@ async function runNode(
         chosenPlan,
         run,
         `${at}<${String(choose)}>`,
-        previous,
       );
       return { choice: choose, result };
     }
@@ -517,9 +668,16 @@ async function runNode(
     case "branch": {
       const branchNode = node as Branch;
       const sides = shape(plan, ["ifTrue", "ifFalse"], run, at);
-      const holds = (branchNode.predicate as (prev: unknown) => boolean)(
-        previous,
-      ) === true;
+      if (!(branchNode.on in run.responses)) {
+        throw new StepNotAvailableError(
+          `A branch asks about "${branchNode.on}", which has not been executed`,
+          run.name,
+          at,
+          branchNode.on,
+        );
+      }
+      const asked = run.responses[branchNode.on];
+      const holds = branchNode.predicate(asked) === true;
       const key = holds ? "ifTrue" : "ifFalse";
       const side = holds ? "then" : "else";
       const planOf = sides[key];
@@ -528,10 +686,9 @@ async function runNode(
       }
       const result = await runNode(
         branchNode[side],
-        await planOf(previous),
+        await planOf(asked),
         run,
         `${at}.${side}`,
-        previous,
       );
       return { holds, result };
     }
@@ -556,9 +713,7 @@ async function runNode(
         events: [],
       }));
       const settled = await Promise.allSettled(
-        steps.map((step, i) =>
-          runNode(step, plan[i], arms[i], `${at}[${i}]`, previous)
-        ),
+        steps.map((step, i) => runNode(step, plan[i], arms[i], `${at}[${i}]`)),
       );
       for (const arm of arms) {
         for (const event of arm.events) record(run, event);
@@ -591,8 +746,9 @@ async function runNode(
  * The arms of a `parallel` node each start from what was known before the
  * node and do not see each other's responses.
  *
- * That a dependent step's dependency ran earlier in the plan is checked at
- * run time (`StepNotAvailableError`), not by `PlanOf`.
+ * `PlanOf` rejects a plan in which a step would run before what it depends
+ * on is known. The same conditions are checked when the plan runs, for a
+ * plan that got past the types.
  *
  * Rejects with the errors a session raises (`InvalidRequestError`,
  * `StepRefusedError`, ...), with `PlanError` when the plan does not have
@@ -604,8 +760,7 @@ async function runNode(
  */
 export async function runPlan<const N extends ProtocolNode>(
   node: N,
-  plan: [undefined] extends [Asks<N>] ? PlanOf<N>
-    : BranchMismatch<Asks<N>, undefined>,
+  plan: PlanOf<N>,
   executor: StepExecutor,
   options: RunPlanOptions = {},
 ): Promise<ResultOf<N>> {
@@ -618,5 +773,5 @@ export async function runPlan<const N extends ProtocolNode>(
     events: [],
   };
   const at = isStep(node) ? node.name : node.__kind;
-  return await runNode(node, plan, run, at, undefined) as ResultOf<N>;
+  return await runNode(node, plan, run, at) as ResultOf<N>;
 }

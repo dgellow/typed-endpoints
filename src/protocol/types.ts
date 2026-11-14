@@ -206,24 +206,36 @@ export interface Choice<
 }
 
 /**
- * Conditional branching based on previous response.
+ * Conditional branching on the response of an earlier step.
  *
- * Like Choice but the branch is determined by a predicate on the response.
+ * Like Choice, but the side is determined by a predicate on the latest
+ * response of the step named by `on`, not by the caller.
+ *
+ * `TTrue` and `TFalse` are what the response is known to be on each side:
+ * for a type-guard predicate the narrowed type and the rest, for a plain
+ * boolean predicate the response type twice.
  */
 export interface Branch<
-  // `never`: a predicate may ask for any parameter type.
-  TPredicate extends (prev: never) => boolean = (prev: never) => boolean,
+  TOn extends string = string,
+  // deno-lint-ignore no-explicit-any
+  TTrue = any,
+  // deno-lint-ignore no-explicit-any
+  TFalse = any,
   TThen extends ProtocolNode = ProtocolNode,
   TElse extends ProtocolNode = ProtocolNode,
 > {
   /** Discriminant. */
   readonly __kind: "branch";
-  /** Decides the branch from the previous response. */
-  readonly predicate: TPredicate;
-  /** Step taken when the predicate holds. */
+  /** Name of the step whose latest response the predicate is asked about. */
+  readonly on: TOn;
+  /** Decides the side from that response. */
+  readonly predicate: (prev: TTrue | TFalse) => boolean;
+  /** Node run when the predicate holds. */
   readonly then: TThen;
-  /** Step taken otherwise. */
+  /** Node run otherwise. */
   readonly else: TElse;
+  /** Type-level only, never set: the response type on each side. */
+  readonly "~sides"?: { readonly then: TTrue; readonly else: TFalse };
 }
 
 /**
@@ -325,97 +337,3 @@ export type StepName<T extends AnyStep> = T extends
   // deno-lint-ignore no-explicit-any
   : T extends MappedStep<infer N, any, any, any, any> ? N
   : never;
-
-/**
- * Infer the accumulated state after a sequence of steps.
- *
- * For a sequence [A, B, C], the state after each step is:
- * - After A: { a: ResponseA }
- * - After B: { a: ResponseA, b: ResponseB }
- * - After C: { a: ResponseA, b: ResponseB, c: ResponseC }
- */
-export type SequenceState<
-  TSteps extends readonly AnyStep[],
-  TAcc extends Record<string, unknown> = Record<string, never>,
-> = TSteps extends readonly [
-  infer First extends AnyStep,
-  ...infer Rest extends readonly AnyStep[],
-] ? SequenceState<
-    Rest,
-    TAcc & { [K in StepName<First>]: StepResponse<First> }
-  >
-  : TAcc;
-
-/**
- * Get valid next steps from a protocol state.
- *
- * This enables compile-time enforcement of protocol sequences.
- */
-export type ValidNextSteps<
-  TProtocol extends Protocol,
-  TCurrentState extends keyof TProtocol["steps"],
-> = TProtocol["steps"][TCurrentState] extends AnyStep
-  ? TProtocol["steps"][TCurrentState]
-  : never;
-
-// =============================================================================
-// State Machine Types
-// =============================================================================
-
-/**
- * Protocol state - tracks where we are in the protocol.
- *
- * This is used for runtime validation and compile-time type narrowing.
- */
-export interface ProtocolState<
-  TProtocol extends Protocol,
-  TCurrentStep extends keyof TProtocol["steps"] = keyof TProtocol["steps"],
-> {
-  /** Name of the protocol. */
-  readonly protocol: TProtocol["name"];
-  /** The step the protocol is at. */
-  readonly currentStep: TCurrentStep;
-  /** Results of the executed steps, in order. */
-  readonly history: readonly StepResult[];
-  /** Values collected so far. */
-  readonly data: Record<string, unknown>;
-}
-
-/**
- * Result of executing a step.
- */
-export interface StepResult<TResponse = unknown> {
-  /** Name of the executed step. */
-  readonly step: string;
-  /** When the step completed. */
-  readonly timestamp: number;
-  /** The step's response. */
-  readonly response: TResponse;
-}
-
-// =============================================================================
-// Morphism Types (for middleware/transformation)
-// =============================================================================
-
-/**
- * A protocol morphism - transforms one protocol into another.
- *
- * Corresponds to container morphism: f ⊲ f' : (a ⊳ a') → (b ⊳ b')
- * - forward: transforms requests (a → b)
- * - backward: transforms responses (b' → a')
- */
-export interface ProtocolMorphism<
-  TSource extends Protocol = Protocol,
-  TTarget extends Protocol = Protocol,
-> {
-  /** Discriminant. */
-  readonly __kind: "morphism";
-  /** Protocol the morphism maps from. */
-  readonly source: TSource;
-  /** Protocol the morphism maps to. */
-  readonly target: TTarget;
-  /** Transforms a request of the source into a request of the target. */
-  readonly forward: (req: unknown) => unknown;
-  /** Transforms a response of the target into a response of the source. */
-  readonly backward: (res: unknown) => unknown;
-}
