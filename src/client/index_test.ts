@@ -769,3 +769,119 @@ Deno.test("createClient types the query from the Api definition", async () => {
     "http://localhost:3000/api/users/1?expand=posts",
   ]);
 });
+
+// =============================================================================
+// Request and response edge cases
+// =============================================================================
+
+Deno.test("createClient reports a non-JSON error body as text", async () => {
+  const client = createClient<TestApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: createMockFetch(() =>
+      new Response("<html>Bad Gateway</html>", {
+        status: 502,
+        statusText: "Bad Gateway",
+        headers: { "Content-Type": "text/html" },
+      })
+    ),
+  });
+
+  const error = await assertRejects(() => client.users.list(), ClientError);
+  assertEquals(error.status, 502);
+  assertEquals(error.statusText, "Bad Gateway");
+  assertEquals(error.body, "<html>Bad Gateway</html>");
+});
+
+Deno.test("createClient reports an empty error body as an empty string", async () => {
+  const client = createClient<TestApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: createMockFetch(() => new Response(null, { status: 404 })),
+  });
+
+  const error = await assertRejects(() => client.users.list(), ClientError);
+  assertEquals(error.status, 404);
+  assertEquals(error.body, "");
+});
+
+Deno.test("createClient returns a non-JSON success body as text", async () => {
+  const client = createClient<TestApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: createMockFetch(() =>
+      new Response("pong", { headers: { "Content-Type": "text/plain" } })
+    ),
+  });
+
+  assertEquals(await client.users.list() as unknown, "pong");
+});
+
+Deno.test("createClient returns undefined for 204", async () => {
+  const client = createClient<TestApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: createMockFetch(() => new Response(null, { status: 204 })),
+  });
+
+  assertEquals(await client.users.delete("1"), undefined);
+});
+
+Deno.test("createClient repeats the key for an array query value and skips null", async () => {
+  const urls: string[] = [];
+  const client = createClient<TestApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: createMockFetch((url) => {
+      urls.push(url);
+      return Response.json([]);
+    }),
+  });
+
+  await client.users.list({
+    query: { tag: ["a", "b c"], page: 2, empty: null, missing: undefined },
+  });
+
+  assertEquals(urls, ["http://localhost:3000/api/users?tag=a&tag=b+c&page=2"]);
+});
+
+Deno.test("createClient.update sends PUT with id and body", async () => {
+  type Api = {
+    users: {
+      update: { body: { name: string }; response: { id: string } };
+    };
+  };
+  const requests: { url: string; method?: string; body?: string }[] = [];
+  const client = createClient<Api>({
+    baseUrl: "http://localhost:3000",
+    fetch: createMockFetch((url, init) => {
+      requests.push({ url, method: init?.method, body: init?.body as string });
+      return Response.json({ id: "a/b" });
+    }),
+  });
+
+  const result = await client.users.update("a/b", { name: "Ada" });
+
+  assertEquals(result, { id: "a/b" });
+  assertEquals(requests, [{
+    url: "http://localhost:3000/api/users/a%2Fb",
+    method: "PUT",
+    body: '{"name":"Ada"}',
+  }]);
+});
+
+Deno.test("createClient sends default headers and Content-Type only with a body", async () => {
+  const seen: Record<string, string>[] = [];
+  const client = createClient<TestApi>({
+    baseUrl: "http://localhost:3000",
+    headers: { Authorization: "Bearer t" },
+    fetch: createMockFetch((_url, init) => {
+      seen.push({ ...(init?.headers as Record<string, string>) });
+      return Response.json({});
+    }),
+  });
+
+  await client.users.list();
+  await client.users.create({ name: "Ada" });
+
+  assertEquals(seen[0], { Authorization: "Bearer t" });
+  assertEquals(seen[1], {
+    Authorization: "Bearer t",
+    "Content-Type": "application/json",
+  });
+});
