@@ -31,8 +31,23 @@ uv run --frozen ruff check --quiet
 # The generated module and the hand-written handlers, in strict mode.
 uv run --frozen pyright
 
-# What the generated router does with a handler that breaks its types.
+# The same for APIs that use only a part of what the generator can write:
+# their modules carry only the parts they use, and stand by themselves.
+partial() {
+  rm -f "$project"/partial_*.py
+}
+trap partial EXIT
+(cd "$root" && deno run --allow-write="$project" e2e_tests/python/partial_modules.ts "$project")
+uv run --frozen ruff format --check --quiet partial_*.py
+uv run --frozen ruff check --quiet partial_*.py
+uv run --frozen pyright partial_*.py
+partial
+trap - EXIT
+
+# What the generated router does with a handler that breaks its types, and
+# with a request, where the conformance tests do not reach.
 uv run --frozen python -m unittest --quiet test_runtime
+uv run --frozen python -m unittest --quiet test_requests
 
 # Where the generated client finds the next page, for every pagination style.
 uv run --frozen python -m unittest --quiet test_pagination

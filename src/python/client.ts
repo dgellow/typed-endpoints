@@ -53,6 +53,7 @@ export interface PythonClientOptions {
 /** What the module may import: the names its source uses are imported. */
 const IMPORTS: readonly ImportTable[] = [
   [
+    ["functools", []],
     ["re", []],
     ["collections.abc", ["AsyncIterator", "Iterator", "Mapping"]],
     ["dataclasses", ["dataclass"]],

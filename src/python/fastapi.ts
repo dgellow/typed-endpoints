@@ -9,14 +9,17 @@
  *   models. The application implements it in a file of its own, so
  *   generating again never overwrites application code, and a type
  *   checker reports a handler that no longer fits the routes
- * - `create_router(handlers)`: an `APIRouter` that validates each request,
- *   calls the handler and checks what it returns, as the TypeScript
- *   handlers do: a value the response model rejects is a 500 and is
- *   logged, never sent
- * - `install_error_handlers(app)`: answers a request that fails
- *   validation in the shape the TypeScript server uses, a 400 with
- *   `{ error, in, issues }`
- * - `create_app(handlers)`: the three together
+ * - the contract's schema of every request part, as Python data, and
+ *   the checker for them (`fastapi_runtime.ts`)
+ * - `create_router(handlers)`: an `APIRouter` whose routes check each
+ *   request against the contract, call the handler and check what it
+ *   returns, as the TypeScript handlers do: a request the contract
+ *   refuses is a 400 with `{ error, in, issues }`, in Zod's words; a
+ *   value the response model rejects is a 500 and is logged, never sent
+ * - `create_app(handlers)`: an application with that router
+ *
+ * A route function takes the request as it is. FastAPI would validate
+ * typed arguments with Pydantic, by other rules than the contract's.
  *
  * @module
  */
@@ -34,7 +37,18 @@ import {
   type ImportTable,
   signature,
 } from "./format.ts";
-import { argumentName, pascalCase, PythonModels, snakeCase } from "./models.ts";
+import {
+  BODY,
+  CHECKING,
+  CONTRACT,
+  DESCRIBED,
+  PARAMS,
+  QUERY,
+  REFUSING,
+  TEXT,
+} from "./fastapi_runtime.ts";
+import { pascalCase, PythonModels, snakeCase } from "./models.ts";
+import { schemaLiteral } from "./schema.ts";
 
 /** What the generated module needs to be told. */
 export interface FastApiOptions {
@@ -46,17 +60,27 @@ export interface FastApiOptions {
 const IMPORTS: readonly ImportTable[] = [
   [
     ["asyncio", []],
+    ["functools", []],
     ["json", []],
     ["logging", []],
+    ["math", []],
+    ["operator", []],
     ["re", []],
-    ["collections.abc", ["AsyncIterator", "Awaitable"]],
+    [
+      "collections.abc",
+      ["AsyncIterator", "Awaitable", "Callable", "Coroutine"],
+    ],
     ["dataclasses", ["dataclass"]],
-    ["typing", ["Annotated", "Any", "Literal", "Protocol", "cast"]],
+    [
+      "typing",
+      ["Annotated", "Any", "Final", "Literal", "Protocol", "cast", "override"],
+    ],
+    ["urllib.parse", ["unquote_to_bytes"]],
   ],
   [
-    ["fastapi", ["APIRouter", "Body", "FastAPI", "Path", "Query", "Request"]],
-    ["fastapi.exceptions", ["RequestValidationError"]],
+    ["fastapi", ["APIRouter", "FastAPI", "Request"]],
     ["fastapi.responses", ["JSONResponse", "Response", "StreamingResponse"]],
+    ["fastapi.routing", ["APIRoute"]],
     [
       "pydantic",
       ["BaseModel", "ConfigDict", "Field", "TypeAdapter", "ValidationError"],
@@ -93,82 +117,29 @@ class InvalidRequestIssue(BaseModel):
 
 
 class InvalidRequest(BaseModel):
-    """The body of the 400 that answers a request that fails validation."""
+    """The answer to a request that is refused before it reaches its handler.
+
+    A 400 for a part the contract does not accept, or for a body that is not
+    JSON; a 415 for a body that does not claim to be.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
 
     error: str
-    part: Literal["body", "query", "params", "json"] = Field(
+    part: Literal["body", "query", "params", "json", "content-type"] = Field(
         validation_alias="in", serialization_alias="in"
     )
     issues: list[InvalidRequestIssue]
 `.trim();
 
-/** Fixed part of the module: what runs around every handler. */
-const RUNTIME = `
-_PARTS = {"path": "params", "query": "query", "body": "body"}
-_PREFIX = {
-    "params": "Params validation error",
-    "query": "Query validation error",
-    "body": "Validation error",
-}
-
-
-class EventError(ValueError):
-    """A handler yielded an event that cannot be written to its stream."""
-
-
-# What the task that runs a handler's generator puts after its last event.
-_END = object()
-_FAILED = object()
-
-
-def _describe(issue: dict[str, Any]) -> str:
-    path: list[Any] = issue["path"]
-    message: str = issue["message"]
-    where = ".".join(str(key) for key in path)
-    return f"{where}: {message}" if path else message
-
-
-def _invalid_request(errors: list[dict[str, Any]]) -> JSONResponse:
-    """Answer with a 400 in the shape the TypeScript server uses."""
-    if any(error.get("type") == "json_invalid" for error in errors):
-        return JSONResponse(
-            {"error": "Invalid JSON body", "in": "json", "issues": []},
-            status_code=400,
-        )
-    # The part that failed first; its issues, each with the path below it.
-    part = _PARTS.get(str(errors[0]["loc"][0]), "body") if errors else "body"
-    issues: list[dict[str, Any]] = [
-        {
-            "path": list(error["loc"][1:]),
-            "message": error["msg"],
-            "code": error["type"],
-        }
-        for error in errors
-        if _PARTS.get(str(error["loc"][0]), "body") == part
-    ]
-    listed = ", ".join(_describe(issue) for issue in issues)
-    return JSONResponse(
-        {"error": f"{_PREFIX[part]}: {listed}", "in": part, "issues": issues},
-        status_code=400,
-    )
-
-
-def _parse[ModelT: BaseModel](
-    model: type[ModelT], values: dict[str, Any], part: str
-) -> ModelT:
-    """Read path parameters as their model; a failure is a request error."""
-    try:
-        return model.model_validate(values)
-    except ValidationError as error:
-        raise RequestValidationError(
-            [{**issue, "loc": (part, *issue["loc"])} for issue in error.errors()]
-        ) from error
-
-
+/** Fixed part of the module: the 500 that says nothing about its cause. */
+const INTERNAL_ERROR = `
 def _internal_error() -> JSONResponse:
     return JSONResponse({"error": "Internal Server Error"}, status_code=500)
+`.trim();
 
-
+/** Fixed part of the module: a value as JSON, after its model checked it. */
+const DUMP = `
 def _dump(adapter: TypeAdapter[Any], value: object) -> object:
     """Write a value as JSON, after its model checked it.
 
@@ -186,8 +157,10 @@ def _dump(adapter: TypeAdapter[Any], value: object) -> object:
         by_alias=True,
         exclude_unset=True,
     )
+`.trim();
 
-
+/** Fixed part of the module: what a handler returned, as the response. */
+const RESPONSES = `
 def _failure(
     where: str, failure: Fail[int, object], errors: dict[int, TypeAdapter[Any]]
 ) -> Response:
@@ -233,6 +206,17 @@ async def _respond(
             "%s: the returned value does not match the response schema", where
         )
         return _internal_error()
+`.trim();
+
+/** Fixed part of the module: what the handler of a stream yields, as frames. */
+const STREAMS = `
+class EventError(ValueError):
+    """A handler yielded an event that cannot be written to its stream."""
+
+
+# What the task that runs a handler's generator puts after its last event.
+_END = object()
+_FAILED = object()
 
 
 def _frame(event: object, events: dict[str, TypeAdapter[Any]]) -> str:
@@ -341,41 +325,13 @@ def _stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache"},
     )
+`.trim();
 
-
-def install_error_handlers(app: FastAPI) -> None:
-    """Answer a request that fails validation with a 400.
-
-    The 400 names the part that failed and each issue.
-    """
-
-    async def invalid_request(_request: Request, error: Exception) -> Response:
-        failed = cast("RequestValidationError", error)
-        return _invalid_request(list(failed.errors()))
-
-    app.add_exception_handler(RequestValidationError, invalid_request)
-
-    # The description FastAPI gives of the application says the same: no
-    # operation answers the 422 FastAPI would send by itself.
-    describe = app.openapi
-
-    def openapi() -> dict[str, Any]:
-        schema = describe()
-        for path in schema.get("paths", {}).values():
-            for operation in path.values():
-                if isinstance(operation, dict):
-                    responses = cast("dict[str, Any]", operation).get("responses")
-                    if isinstance(responses, dict):
-                        cast("dict[str, Any]", responses).pop("422", None)
-        return schema
-
-    app.openapi = openapi
-
-
+/** Fixed part of the module: the application. */
+const APP = `
 def create_app(handlers: Handlers) -> FastAPI:
     """Make an application that serves the operations with the given handlers."""
     app = FastAPI()
-    install_error_handlers(app)
     app.include_router(create_router(handlers))
     return app
 `.trim();
@@ -390,6 +346,15 @@ interface Rendered {
   readonly params?: string;
   readonly query?: string;
   readonly body?: string;
+  /**
+   * The constant that holds each request part: the contract's schema of
+   * it and its type.
+   */
+  readonly parts: {
+    readonly params?: string;
+    readonly query?: string;
+    readonly body?: string;
+  };
   readonly response?: string;
   /** Declared error bodies by status: their type expressions. */
   readonly errors: ReadonlyMap<string, string>;
@@ -433,6 +398,10 @@ export function renderFastApi(
   const eventClasses: string[] = [];
   /** What each handler returns: defined after the models. */
   const results: string[] = [];
+  /** The request parts as the contract has them: defined after the models. */
+  const parts: string[] = [];
+  /** The constant of each part already written, by its schema. */
+  const written = new Map<string, string>();
 
   for (const operation of contract.operations) {
     const base = pascalCase(operation.operationId);
@@ -511,6 +480,44 @@ export function renderFastApi(
     const params = part("Params", "path parameters", paramsSchema, false);
     const query = part("Query", "query", operation.query, false);
     const body = part("Body", "body", operation.body, true);
+
+    // What the contract says each part is, beside its type. Operations
+    // that take the same part share it, as they share the type.
+    const constant = (
+      suffix: string,
+      type: string | undefined,
+      schema: JsonSchema | undefined,
+    ): string | undefined => {
+      if (!type || !schema) return undefined;
+      // A body keeps its JSON types and the other parts are coerced: the
+      // same schema is two types.
+      const key = `${suffix === "BODY"}:${JSON.stringify(schema)}`;
+      const name = `_${
+        snakeCase(operation.operationId).toUpperCase()
+      }_${suffix}`;
+      const known = written.get(key);
+      if (known !== undefined) {
+        // The same part under this operation's name, as the models have
+        // the same class under a name per operation.
+        parts.push(`${name} = ${known}`);
+        return name;
+      }
+      written.set(key, name);
+      parts.push(
+        ...assignment(
+          0,
+          name,
+          `_Part[${type}]`,
+          `_Part(${schemaLiteral(schema, models)}, TypeAdapter(${type}))`,
+        ),
+      );
+      return name;
+    };
+    const constants = {
+      params: constant("PARAMS", params, paramsSchema),
+      query: constant("QUERY", query, operation.query),
+      body: constant("BODY", body, operation.body),
+    };
     const response = part("Response", "response", operation.response, true);
     const errors = new Map(
       Object.entries(operation.errors ?? {}).map(([status, schema]) => [
@@ -545,12 +552,29 @@ export function renderFastApi(
       ...(params && { params }),
       ...(query && { query }),
       ...(body && { body }),
+      parts: {
+        ...(constants.params && { params: constants.params }),
+        ...(constants.query && { query: constants.query }),
+        ...(constants.body && { body: constants.body }),
+      },
       ...(response && { response }),
       errors,
       result,
       ...(stream && { stream }),
     });
   }
+
+  // What the module needs of its fixed part: a block that nothing uses
+  // is not written.
+  const takes = (part: "params" | "query" | "body") =>
+    rendered.some((item) => item.parts[part] !== undefined);
+  const reads = takes("params") || takes("query") || takes("body");
+  const streams = rendered.some((item) => item.stream);
+  const answers = rendered.some((item) => !item.stream);
+
+  // The checker compiles the patterns of the contract, with what the
+  // models compile theirs with.
+  if (reads) models.compilesPatterns();
 
   const body: string[] = [
     PRELUDE,
@@ -578,6 +602,20 @@ export function renderFastApi(
     body.push("", ...handlerSignature(item));
   }
 
+  if (reads) {
+    body.push(
+      "",
+      "",
+      ...banner("Contract"),
+      CONTRACT,
+      "",
+      "",
+      "# What the contract says each part of a request is, and the type the part",
+      "# has once the contract accepts it.",
+      ...parts,
+    );
+  }
+
   body.push("", "", ...banner("Router"));
   for (const item of rendered) body.push(...adapters(item));
   // A function per operation adds its route: one function with every
@@ -599,19 +637,43 @@ export function renderFastApi(
     "",
     "",
     "def create_router(handlers: Handlers) -> APIRouter:",
-    '    """Make a router whose routes call the given handlers.',
-    "",
-    "    An application that includes it also needs `install_error_handlers()`,",
-    "    which `create_app()` calls: without it, a request that fails validation",
-    "    is answered by FastAPI, as a 422 in its own shape.",
-    '    """',
-    "    router = APIRouter()",
+    ...docstring(
+      4,
+      reads
+        ? [
+          "Make a router whose routes call the given handlers.",
+          "",
+          "It needs nothing of the application it is included in: a request " +
+          "the contract refuses is answered by the router itself.",
+        ].join("\n")
+        : "Make a router whose routes call the given handlers.",
+    ),
+    `    router = APIRouter(${reads ? "route_class=_Route" : ""})`,
     ...rendered.map((item) => `    _add_${item.method}(router, handlers)`),
     "    return router",
     "",
     "",
-    RUNTIME,
+    APP,
   );
+
+  const requests = [
+    ...(reads ? [CHECKING, REFUSING] : []),
+    ...(takes("params") || takes("query") ? [TEXT] : []),
+    ...(takes("body") ? [BODY] : []),
+    ...(takes("query") ? [QUERY] : []),
+    ...(takes("params") ? [PARAMS] : []),
+    ...(reads ? [DESCRIBED] : []),
+  ];
+  if (requests.length > 0) {
+    body.push("", "", ...banner("Requests"), requests.join("\n\n\n"));
+  }
+  const responses = [
+    ...(reads || answers ? [INTERNAL_ERROR] : []),
+    DUMP,
+    ...(answers ? [RESPONSES] : []),
+    ...(streams ? [STREAMS] : []),
+  ];
+  body.push("", "", ...banner("Responses"), responses.join("\n\n\n"));
 
   const source = body.join("\n");
   const lines: string[] = [
@@ -729,48 +791,42 @@ function route(item: Rendered): string[] {
   const name = item.method.toUpperCase();
   const decorator = operation.method.toLowerCase();
 
-  const taken: string[] = [];
-  const passed: string[] = [];
+  // Read in the order the TypeScript handlers check a request: the body,
+  // the query, the path. The first part that is refused is the answer.
   const before: string[] = [];
-  if (item.params) {
-    for (const { name: param } of operation.pathParams) {
-      const argument = argumentName(param);
-      // An argument that cannot have the parameter's name says which
-      // parameter it is.
-      taken.push(
-        argument === param
-          ? `${argument}: str`
-          : `${argument}: Annotated[str, Path(alias=${JSON.stringify(param)})]`,
-      );
-    }
-    const values = operation.pathParams
-      .map(({ name: param }) =>
-        `${JSON.stringify(param)}: ${argumentName(param)}`
-      )
-      .join(", ");
+  if (item.parts.body) {
     before.push(
-      ...fit(8, "params = ", `_parse(${item.params}, {${values}}, "path")`),
+      ...fit(8, "body = ", `await _body(request, ${item.parts.body})`),
     );
-    passed.push("params=params");
   }
-  if (item.query) {
-    taken.push(`query: Annotated[${item.query}, Query()]`);
-    passed.push("query=query");
+  if (item.parts.query) {
+    before.push(...fit(8, "query = ", `_query(request, ${item.parts.query})`));
   }
-  if (item.body) {
-    taken.push(`body: Annotated[${item.body}, Body()]`);
-    passed.push("body=body");
+  if (item.parts.params) {
+    before.push(
+      ...fit(8, "params = ", `_params(request, ${item.parts.params})`),
+    );
   }
+  const read = Object.keys(item.parts) as ("params" | "query" | "body")[];
+  const passed = (["params", "query", "body"] as const)
+    .filter((part) => item.parts[part])
+    .map((part) => `${part}=${part}`);
 
   // What the operation answers, for the description FastAPI serves: the
-  // success, the declared errors, and the 400 of a failed validation.
-  const documented = [
-    ...(item.response ? [`200: {"model": ${item.response}}`] : []),
-    ...(taken.length > 0 ? ['400: {"model": InvalidRequest}'] : []),
+  // success, the declared errors, and the refusals of a request.
+  const documented = new Map<number, string>([
+    ...(item.response && !item.stream
+      ? [[200, item.response] as [number, string]]
+      : []),
     ...[...item.errors].map(([status, type]) =>
-      `${status}: {"model": ${type}}`
+      [Number(status), type] as [number, string]
     ),
-  ];
+    ...(read.length > 0 ? [[400, "InvalidRequest"] as [number, string]] : []),
+    ...(item.parts.body ? [[415, "InvalidRequest"] as [number, string]] : []),
+  ]);
+  const responses = [...documented]
+    .sort(([a], [b]) => a - b)
+    .map(([status, type]) => `${status}: {"model": ${type}}`);
 
   const options = [
     JSON.stringify(fastApiPath(operation.path)),
@@ -782,21 +838,28 @@ function route(item: Rendered): string[] {
     ...(operation.tags && operation.tags.length > 0
       ? [`tags=${JSON.stringify(operation.tags).replaceAll('","', '", "')}`]
       : []),
-    ...(item.stream
-      ? (taken.length > 0 ? ['responses={400: {"model": InvalidRequest}}'] : [])
-      : [`responses={${documented.join(", ")}}`]),
+    ...(item.stream && responses.length === 0
+      ? []
+      : [`responses={${responses.join(", ")}}`]),
+    // FastAPI describes a request from the arguments of the route
+    // function, which takes the request as it is: the contract says what
+    // it has to be.
+    ...(read.length > 0
+      ? [`openapi_extra=_described(${
+        (["params", "query", "body"] as const)
+          .filter((part) => item.parts[part])
+          .map((part) => `${part}=${item.parts[part]}`)
+          .join(", ")
+      })`]
+      : []),
   ];
   const where = JSON.stringify(item.label);
+  const taken = read.length > 0 || item.stream ? ["request: Request"] : [];
 
   if (item.stream) {
     return [
       ...fit(4, "@", `router.${decorator}(${options.join(", ")})`),
-      ...signature(
-        4,
-        `async def ${item.method}`,
-        ["request: Request", ...taken],
-        "Response",
-      ),
+      ...signature(4, `async def ${item.method}`, taken, "Response"),
       ...before,
       ...fit(
         8,

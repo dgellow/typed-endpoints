@@ -190,34 +190,6 @@ function attributeName(wireName: string): string {
     : named;
 }
 
-/**
- * A JavaScript pattern as Python's `re` reads it the same way: `$` is the
- * end of the text there, and before a last line break here, where `\Z` is
- * the end. (The classes are made ASCII by a flag, where the pattern is
- * compiled.)
- */
-export function pythonPattern(pattern: string): string {
-  let out = "";
-  let inClass = false;
-  for (let i = 0; i < pattern.length; i++) {
-    const c = pattern[i];
-    if (c === "\\") {
-      out += c + (pattern[++i] ?? "");
-    } else if (c === "[") {
-      inClass = true;
-      out += c;
-    } else if (c === "]") {
-      inClass = false;
-      out += c;
-    } else if (c === "$" && !inClass) {
-      out += "\\Z";
-    } else {
-      out += c;
-    }
-  }
-  return out;
-}
-
 /** What Pydantic's `to_camel` makes of an attribute it is sure about. */
 function camelCase(attribute: string): string | undefined {
   if (/^[a-z]+$/.test(attribute)) return attribute;
@@ -233,6 +205,31 @@ function listed(items: readonly string[]): string {
 }
 
 type Schema = Readonly<Record<string, unknown>>;
+
+/**
+ * `_pattern()`, written when a member has a pattern. A pattern of the
+ * contract is JavaScript's and stays as it is written there: the module
+ * shows it in messages and descriptions. It is compiled once, as Python
+ * reads it the same way. (The text is raw: it has no backtick.)
+ */
+const PATTERN = String.raw`
+@functools.cache
+def _pattern(source: str) -> re.Pattern[str]:
+    r"""Compile a pattern of the API as JavaScript reads it.
+
+    There the classes for digits and for word characters are ASCII, and $ is
+    the end of the text. Here $ is also before a line break that ends the
+    text, and \Z is the end.
+    """
+    # An escape and a class are kept as they are: a $ in one is no end.
+    ends = re.sub(
+        r"\\.|\[(?:\\.|[^\]])*\]|\$",
+        lambda found: r"\Z" if found[0] == "$" else found[0],
+        source,
+        flags=re.DOTALL,
+    )
+    return re.compile(ends, re.ASCII)
+`.trim();
 
 /** A member of a model class. */
 interface FieldInfo {
@@ -397,20 +394,9 @@ export class PythonModels {
     const classes = this.definitions.filter((d) => d.kind === "class");
     const generated = this.camelCase(classes);
     const lines: string[] = [];
-    if (this.usesPatterns) {
-      lines.push(
-        "def _pattern(source: str) -> re.Pattern[str]:",
-        '    """Compile a pattern of the API as JavaScript reads it.',
-        "",
-        "    There the classes for digits and for word characters are ASCII.",
-        '    """',
-        "    return re.compile(source, re.ASCII)",
-        "",
-        "",
-      );
-    }
+    if (this.usesPatterns) lines.push(PATTERN, "", "");
     for (const [text, name] of this.patterns) {
-      lines.push(...stringConstant(0, name, text, "_pattern"));
+      lines.push(...stringConstant(0, name, text));
     }
     if (this.patterns.size > 0) lines.push("", "");
 
@@ -695,16 +681,31 @@ export class PythonModels {
   }
 
   /**
-   * A pattern as `Field(pattern=...)` takes it: the text, or the name of
-   * a constant when the text is long or is what a format means.
+   * A pattern as `Field(pattern=...)` takes it: compiled as JavaScript
+   * reads it.
    */
   private pattern(source: string, format: unknown): string {
+    return `_pattern(${this.patternText(source, format)})`;
+  }
+
+  /**
+   * Has `_pattern()` written, for a module that compiles patterns that
+   * are not in a model.
+   */
+  compilesPatterns(): void {
     this.usesPatterns = true;
-    const text = pythonPattern(source);
-    if (typeof format !== "string" && text.length <= 40) {
-      return `_pattern(${stringLiteral(text)})`;
+  }
+
+  /**
+   * The text of a pattern, as JavaScript writes it: a literal, or the name
+   * of a constant when the text is long or is what a format means.
+   */
+  patternText(source: string, format: unknown): string {
+    this.usesPatterns = true;
+    if (typeof format !== "string" && source.length <= 40) {
+      return stringLiteral(source);
     }
-    const known = this.patterns.get(text);
+    const known = this.patterns.get(source);
     if (known !== undefined) return known;
     const base = typeof format === "string"
       ? `_${format.replace(/[^A-Za-z0-9]+/g, "_").toUpperCase()}_PATTERN`
@@ -712,7 +713,7 @@ export class PythonModels {
     const taken = new Set(this.patterns.values());
     let name = typeof format === "string" ? base : `${base}_1`;
     for (let i = 2; taken.has(name); i++) name = `${base}_${i}`;
-    this.patterns.set(text, name);
+    this.patterns.set(source, name);
     return name;
   }
 

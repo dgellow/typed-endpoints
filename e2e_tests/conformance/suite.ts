@@ -37,33 +37,11 @@ interface Invalid {
  * then asserts the different answer, so the list stays true.
  */
 export type Difference =
-  /** `\\d` in a pattern matches every Unicode digit. */
-  | "unicode-digits"
-  /** A number written with a fraction of zero (2.0) is not an integer. */
-  | "whole-float-is-not-integer"
-  /** `null` is accepted for a field that is optional and not nullable. */
-  | "null-for-optional"
-  /** A scalar query parameter given twice takes one of the values. */
-  | "repeated-query-key"
-  /** A JSON body sent as text/plain is refused. */
-  | "json-as-text"
-  /** A form body is a 400, not a 415. */
-  | "form-is-400"
   /**
-   * The issues of a refusal (their order, codes and messages) are the
-   * validator's own, not Zod's.
+   * An encoded slash (`%2F`) in a path is a slash: the path has a segment
+   * more, and is another route's or no route's.
    */
-  | "issues-in-other-words"
-  /**
-   * A value that fits no member of a union is reported once per member,
-   * the member named in the path, not once at the union.
-   */
-  | "issue-per-union-member"
-  /**
-   * A path that is not UTF-8 once decoded reaches the handler, with
-   * U+FFFD where the bytes were.
-   */
-  | "malformed-path-is-decoded";
+  "encoded-slash-is-a-slash";
 
 /** A request a server has to refuse. */
 export interface Refusal {
@@ -593,17 +571,8 @@ export function conformance(
       assertEquals(response.status, 400, JSON.stringify(change));
       const body = await response.json() as Invalid;
       const paths = body.issues.map((issue) => issue.path);
-      const union = "loose" in change || "expr" in change;
-      if (union && differs("issue-per-union-member")) {
-        // An issue for each member, under the union.
-        assert(paths.length > 1, JSON.stringify(paths));
-        assert(
-          paths.every((at) => at.length > 1 && at[0] === path[0]),
-          JSON.stringify(paths),
-        );
-      } else {
-        assertEquals(paths, [path], JSON.stringify(body.issues));
-      }
+      // Also for a union: one issue, at the union.
+      assertEquals(paths, [path], JSON.stringify(body.issues));
     }
   });
 
@@ -659,23 +628,9 @@ export function conformance(
     const answers = await refusals(baseUrl());
     assertEquals(answers.length, recorded.length);
 
-    if (!differs("issues-in-other-words")) {
-      for (const [i, answer] of answers.entries()) {
-        assertEquals(answer, recorded[i], answer.request);
-      }
-      return;
+    for (const [i, answer] of answers.entries()) {
+      assertEquals(answer, recorded[i], answer.request);
     }
-    // Refused all the same, and not in the same words.
-    for (const answer of answers) {
-      assert(
-        answer.status >= 400 && answer.status < 500,
-        `${answer.request}: ${answer.status}`,
-      );
-    }
-    const same = answers.filter((answer, i) =>
-      JSON.stringify(answer) === JSON.stringify(recorded[i])
-    );
-    assert(same.length < answers.length, "every answer is the recorded one");
   });
 
   /** POST one field to /api/edges; the status, and what came back. */
@@ -722,18 +677,10 @@ export function conformance(
     await accepted({ digits: "2026" });
     await refused({ digits: "20x6" }, "digits");
     // An Arabic-Indic digit is not 0-9.
-    if (differs("unicode-digits")) {
-      await accepted({ digits: "\u0663" });
-    } else {
-      await refused({ digits: "\u0663" }, "digits");
-    }
+    await refused({ digits: "\u0663" }, "digits");
     // So it is in the complement, also when that is written in a class.
     await refused({ plain: "a3" }, "plain");
-    if (differs("unicode-digits")) {
-      await refused({ plain: "\u0663" }, "plain");
-    } else {
-      await accepted({ plain: "\u0663" });
-    }
+    await accepted({ plain: "\u0663" });
 
     // A lookahead: any word that does not begin with "admin".
     await accepted({ word: "ada" });
@@ -757,13 +704,8 @@ export function conformance(
     const whole = await edge(JSON.parse('{"count": 2}'));
     assertEquals(whole.answer.count, 2);
     const written = await send("POST", "/api/edges", '{"count": 2.0}');
-    if (differs("whole-float-is-not-integer")) {
-      assertEquals(written.status, 400);
-      await written.body?.cancel();
-    } else {
-      assertEquals(written.status, 200);
-      assertEquals((await written.json()).count, 2);
-    }
+    assertEquals(written.status, 200);
+    assertEquals((await written.json()).count, 2);
     await refused({ count: 2.5 }, "count");
 
     // Also where the schema names the number: 2.0 is the constant 2.
@@ -772,8 +714,6 @@ export function conformance(
       "/api/odd",
       JSON.stringify(ODD).replace('"version":2', '"version":2.0'),
     );
-    // On every server: the difference a server may declare is about
-    // members that are integers, not about constants.
     assertEquals(constant.status, 200, "version: 2.0");
     await constant.body?.cancel();
 
@@ -785,12 +725,10 @@ export function conformance(
     assertEquals(huge.status, 400);
     const [issue] = (await huge.json() as Invalid).issues;
     assertEquals(issue.path, ["huge"]);
-    if (!differs("issues-in-other-words")) {
-      assertEquals(
-        issue.message,
-        "Too big: expected number to be <=9007199254740991",
-      );
-    }
+    assertEquals(
+      issue.message,
+      "Too big: expected number to be <=9007199254740991",
+    );
 
     // A number JSON does not have is not a number of a body: neither the
     // words some parsers read, nor a literal too large to be one.
@@ -821,11 +759,7 @@ export function conformance(
     assertEquals(something.answer.maybe, "x");
 
     // Optional is not nullable.
-    if (differs("null-for-optional")) {
-      await accepted({ flag: null });
-    } else {
-      await refused({ flag: null }, "flag");
-    }
+    await refused({ flag: null }, "flag");
     // A member the schema does not name is dropped, not refused.
     const extra = await edge({ flag: true, extra: 1 });
     assertEquals(extra.status, 200);
@@ -847,28 +781,31 @@ export function conformance(
 
   test("edge: a scalar query parameter given twice", async () => {
     const response = await send("GET", "/api/notes?limit=1&limit=2");
-    if (differs("repeated-query-key")) {
-      assertEquals(response.status, 200);
-      await response.body?.cancel();
-    } else {
-      assertEquals(response.status, 400);
-      const body = await response.json() as Invalid;
-      assertEquals(body.in, "query");
-      assertEquals(body.issues.map((issue) => issue.path), [["limit"]]);
-    }
+    assertEquals(response.status, 400);
+    const body = await response.json() as Invalid;
+    assertEquals(body.in, "query");
+    assertEquals(body.issues.map((issue) => issue.path), [["limit"]]);
   });
 
   test("edge: a path that is not UTF-8 once decoded is refused", async () => {
     for (const id of ["%FF", "%E0%A4%A"]) {
       const response = await send("GET", `/api/notes/${id}`);
-      if (differs("malformed-path-is-decoded")) {
-        assertEquals(response.status, 404);
-        assertEquals((await response.json()).error, "not_found");
-        continue;
-      }
       assertEquals(response.status, 400);
       // JSON, as every refusal is.
       assertEquals(await response.json(), { error: "Malformed URL path" });
+    }
+  });
+
+  test("edge: an encoded slash is part of a path parameter", async () => {
+    const response = await send("GET", "/api/notes/a%2Fb");
+    assertEquals(response.status, 404);
+    const body = await response.json();
+    if (differs("encoded-slash-is-a-slash")) {
+      // No route has that many segments: the handler is not reached.
+      assertEquals(body.error === "not_found", false, JSON.stringify(body));
+    } else {
+      // The handler looked for that note.
+      assertEquals(body, { error: "not_found", id: "a/b" });
     }
   });
 
@@ -876,7 +813,7 @@ export function conformance(
     // JSON under text/plain: what fetch() sends for a string body when no
     // header is set.
     const plain = await edge('{"flag": true}', "text/plain;charset=UTF-8");
-    assertEquals(plain.status, differs("json-as-text") ? 400 : 200);
+    assertEquals(plain.status, 200);
 
     // A form body is not JSON and says so.
     const form = await send(
@@ -885,7 +822,7 @@ export function conformance(
       "flag=true",
       "application/x-www-form-urlencoded",
     );
-    assertEquals(form.status, differs("form-is-400") ? 400 : 415);
+    assertEquals(form.status, 415);
     await form.body?.cancel();
 
     // No body at all: a missing value, reported at the root.

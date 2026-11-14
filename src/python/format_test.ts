@@ -88,6 +88,140 @@ Deno.test("python format: the items of a dict or a list never share a line once 
   );
 });
 
+Deno.test("python format: one item has no comma after it, however deep it breaks", () => {
+  // A dict of one member whose value is a list: the list breaks, and
+  // neither it nor the member gets a comma it did not have.
+  assertEquals(
+    assignment(
+      0,
+      "_SCHEMA",
+      "dict[str, Any]",
+      '{"loose": {"anyOf": [{"type": "string"}, {"type": "number"}, {"type": "array", "items": {"type": "string"}}]}, "required": ["loose"]}',
+    ),
+    [
+      "_SCHEMA: dict[str, Any] = {",
+      '    "loose": {',
+      '        "anyOf": [',
+      '            {"type": "string"},',
+      '            {"type": "number"},',
+      '            {"type": "array", "items": {"type": "string"}},',
+      "        ]",
+      "    },",
+      '    "required": ["loose"],',
+      "}",
+    ],
+  );
+  // One argument of a call.
+  assertEquals(
+    assignment(
+      0,
+      "_PART",
+      undefined,
+      '_described({"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}}, "required": ["id"]})',
+    ),
+    [
+      "_PART = _described(",
+      "    {",
+      '        "type": "object",',
+      '        "properties": {"id": {"type": "string"}, "name": {"type": "string"}},',
+      '        "required": ["id"],',
+      "    }",
+      ")",
+    ],
+  );
+});
+
+Deno.test("python format: a string too long for its line is pieces in parentheses", () => {
+  const long =
+    "A description that is long enough not to fit on a line of the module, whatever is done to it.";
+  const pieces = [
+    '"A description that is long enough not to fit on a line of the module, "',
+    '"whatever is done to it."',
+  ];
+  // The value of a member, an item of a list, an argument.
+  assertEquals(
+    assignment(
+      0,
+      "_A",
+      "dict[str, Any]",
+      `{"type": "string", "description": ${JSON.stringify(long)}}`,
+    ),
+    [
+      "_A: dict[str, Any] = {",
+      '    "type": "string",',
+      '    "description": (',
+      ...pieces.map((piece) => `        ${piece}`),
+      "    ),",
+      "}",
+    ],
+  );
+  assertEquals(
+    assignment(
+      0,
+      "_B",
+      "dict[str, Any]",
+      `{"enum": [${JSON.stringify(long)}, "b"]}`,
+    ),
+    [
+      "_B: dict[str, Any] = {",
+      '    "enum": [',
+      "        (",
+      ...pieces.map((piece) => `            ${piece}`),
+      "        ),",
+      '        "b",',
+      "    ]",
+      "}",
+    ],
+  );
+  assertEquals(
+    fit(4, "@", `router.get("/notes", summary=${JSON.stringify(long)})`),
+    [
+      "    @router.get(",
+      '        "/notes",',
+      "        summary=(",
+      ...pieces.map((piece) => `            ${piece}`),
+      "        ),",
+      "    )",
+    ],
+  );
+
+  // A piece does not end inside an escape, a raw piece stays raw, and each
+  // piece has the quotes that need no escape in it.
+  assertEquals(
+    assignment(
+      0,
+      "_C",
+      "dict[str, Any]",
+      '{"pattern": r"^(alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|lambda|mu)-\\d{4}-[0-9]{4}$"}',
+    ),
+    [
+      "_C: dict[str, Any] = {",
+      '    "pattern": (',
+      '        r"^(alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|lambda|mu)-\\d{4}-["',
+      '        r"0-9]{4}$"',
+      "    )",
+      "}",
+    ],
+  );
+  assertEquals(
+    assignment(
+      0,
+      "_D",
+      "dict[str, Any]",
+      '{"a": 1, "text": "tab\\there and a \\"quote\\" and \\u00e9 and more text so that it is long enough to break here"}',
+    ),
+    [
+      "_D: dict[str, Any] = {",
+      '    "a": 1,',
+      '    "text": (',
+      "        'tab\\there and a \"quote\" and \\u00e9 and more text so that it is long enough '",
+      '        "to break here"',
+      "    ),",
+      "}",
+    ],
+  );
+});
+
 Deno.test("python format: a union with no bracket around it is put in parentheses", () => {
   assertEquals(
     assignment(

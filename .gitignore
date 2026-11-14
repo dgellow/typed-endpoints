@@ -7,6 +7,8 @@ recombine/
 # Python (e2e_tests/python, run through uv)
 .venv/
 __pycache__/
+# Written and removed by scripts/test-python
+e2e_tests/python/partial_*.py
 
 # Rust (e2e_tests/rust)
 target/

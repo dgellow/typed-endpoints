@@ -23,7 +23,7 @@ required-version = "==0.11.32"
 python-preference = "only-managed"
 
 [tool.pyright]
-include = ["api_generated.py", "app.py", "client_generated.py", "test_client.py", "test_client_offline.py", "test_pagination.py", "test_runtime.py", "test_streams.py"]
+include = ["api_generated.py", "app.py", "client_generated.py", "test_client.py", "test_client_offline.py", "test_pagination.py", "test_requests.py", "test_runtime.py", "test_streams.py"]
 typeCheckingMode = "strict"
 
 # The generated modules and the code written against them are formatted as
@@ -41,6 +41,10 @@ ignore = [
     "COM812",
     # No file of this project carries a copyright notice.
     "CPY001",
+    # A route function of the generated module takes the request as it is:
+    # it reads the path parameters from it and checks them against the
+    # contract, where FastAPI would validate arguments by Pydantic's rules.
+    "FAST003",
 ]
 
 [tool.ruff.lint.per-file-ignores]
