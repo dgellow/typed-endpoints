@@ -8,6 +8,13 @@
  */
 
 import type { ZodType } from "zod";
+import {
+  isOptionalField,
+  type ZodDef as Def,
+  zodDef,
+  zodInternals,
+  zodType,
+} from "../core/zod_internals.ts";
 
 // =============================================================================
 // Options
@@ -86,8 +93,6 @@ export class TypeDeclarations {
 // Internals
 // =============================================================================
 
-type Def = Record<string, unknown>;
-
 /** Precedence of a type expression, lowest binds loosest. */
 const Prec = { Function: 0, Union: 1, Intersection: 2, Atom: 3 } as const;
 type Prec = (typeof Prec)[keyof typeof Prec];
@@ -107,16 +112,8 @@ interface State {
   readonly path: string[];
 }
 
-function internals(schema: unknown): Def {
-  return ((schema as Def)?._zod ?? {}) as Def;
-}
-
-function getDef(schema: unknown): Def {
-  return (internals(schema).def ?? {}) as Def;
-}
-
 function getType(schema: unknown): string {
-  return (getDef(schema).type ?? "unknown") as string;
+  return zodType(schema) ?? "unknown";
 }
 
 const atom = (text: string): Node => ({ text, prec: Prec.Atom });
@@ -132,8 +129,14 @@ function literalText(value: unknown): string {
   return String(value);
 }
 
-function propertyKey(key: string): string {
-  return /^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key);
+/** Whether `name` can be written as a bare identifier or property name. */
+export function isIdentifier(name: string): boolean {
+  return /^[A-Za-z_$][\w$]*$/.test(name);
+}
+
+/** `key` as it is written in an object type: quoted unless an identifier. */
+export function propertyKey(key: string): string {
+  return isIdentifier(key) ? key : JSON.stringify(key);
 }
 
 function templateText(text: string): string {
@@ -148,18 +151,6 @@ function unionOf(nodes: Node[]): Node {
   };
 }
 
-function isOptionalKey(schema: unknown, state: State): boolean {
-  const zod = internals(schema);
-  const flag = state.io === "input" ? zod.optin : zod.optout;
-  // "defaulted" is how newer Zod 4 releases flag a default on the input
-  // side; older ones use "optional" for it.
-  if (flag !== undefined) return flag === "optional" || flag === "defaulted";
-  // Fallback for schemas that do not carry the flag.
-  const type = getType(schema);
-  if (type === "optional") return true;
-  return state.io === "input" && (type === "default" || type === "prefault");
-}
-
 function description(schema: unknown): string | undefined {
   const value = (schema as { description?: unknown })?.description;
   return typeof value === "string" && value !== "" ? value : undefined;
@@ -172,9 +163,7 @@ function preferredName(schema: unknown, state: State): string {
   } catch {
     // Not a schema with a registry; fall through to the generated name.
   }
-  const base = typeof id === "string" && /^[A-Za-z_$][\w$]*$/.test(id)
-    ? id
-    : "Recursive";
+  const base = typeof id === "string" && isIdentifier(id) ? id : "Recursive";
   return state.io === "input" ? `${base}Input` : base;
 }
 
@@ -222,7 +211,7 @@ function convertObject(def: Def, state: State): Node {
   const props = Object.keys(shape).map((key) => {
     state.path.push(key);
     const value = shape[key];
-    const optional = isOptionalKey(value, state) ? "?" : "";
+    const optional = isOptionalField(value, state.io) ? "?" : "";
     const doc = description(value);
     const docText = doc ? `/** ${doc.replace(/\*\//g, "*\\/")} */ ` : "";
     const text = `${docText}${propertyKey(key)}${optional}: ${
@@ -253,7 +242,9 @@ function convertTuple(def: Def, state: State): Node {
   const items = def.items as unknown[];
   // Trailing optional elements are optional tuple members.
   let firstOptional = items.length;
-  while (firstOptional > 0 && isOptionalKey(items[firstOptional - 1], state)) {
+  while (
+    firstOptional > 0 && isOptionalField(items[firstOptional - 1], state.io)
+  ) {
     firstOptional--;
   }
 
@@ -280,7 +271,7 @@ function convertRecord(def: Def, state: State): Node {
   const keyType = getType(def.keyType);
   const enumerable = keyType === "enum" || keyType === "literal";
   const partial = def.partial === true ||
-    (enumerable && internals(def.keyType).values === undefined);
+    (enumerable && zodInternals(def.keyType).values === undefined);
   return atom(partial ? `Partial<${record}>` : record);
 }
 
@@ -313,7 +304,7 @@ function convertTemplateLiteral(def: Def, state: State): Node {
 }
 
 function convertInner(schema: unknown, state: State): Node {
-  const def = getDef(schema);
+  const def = zodDef(schema);
   const json = state.wire === "json";
 
   switch (getType(schema)) {
@@ -429,7 +420,7 @@ function convertInner(schema: unknown, state: State): Node {
     case "nonoptional": {
       const inner = def.innerType;
       return convert(
-        getType(inner) === "optional" ? getDef(inner).innerType : inner,
+        getType(inner) === "optional" ? zodDef(inner).innerType : inner,
         state,
       );
     }

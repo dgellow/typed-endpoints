@@ -7,6 +7,7 @@
 
 import type { AnyStep, Protocol, RequestLocations } from "./types.ts";
 import type { ExecutionContext, StepExecutor } from "./client.ts";
+import { getNestedValue } from "./mapping.ts";
 
 // =============================================================================
 // Types
@@ -133,7 +134,7 @@ export function createHttpExecutor<
       if (config.auth) {
         const prevResponse = ctx.responses[config.auth.fromStep];
         if (prevResponse !== undefined) {
-          const token = getPath(prevResponse, config.auth.tokenPath);
+          const token = getNestedValue(prevResponse, config.auth.tokenPath);
           if (token !== undefined && token !== null) {
             const headerName = config.auth.headerName ?? "Authorization";
             const prefix = config.auth.headerPrefix ?? "Bearer ";
@@ -262,22 +263,4 @@ function splitRequest(
     query: queryString ? `?${queryString}` : "",
     body: withBody ? body : undefined,
   };
-}
-
-/**
- * Get a nested value from an object by path.
- *
- * @example
- * getPath({ data: { token: "abc" } }, "data.token") // Returns: "abc"
- */
-function getPath(obj: unknown, path: string): unknown {
-  return path.split(".").reduce<unknown>(
-    (current, key) => {
-      if (current !== null && typeof current === "object") {
-        return (current as Record<string, unknown>)[key];
-      }
-      return undefined;
-    },
-    obj,
-  );
 }

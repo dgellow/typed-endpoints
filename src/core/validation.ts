@@ -1,5 +1,11 @@
 import type { z } from "zod";
 import type { ApiMethodDef, ValidatedRequest } from "./types.ts";
+import {
+  isOptionalField,
+  unwrapSchema,
+  zodDef,
+  zodType,
+} from "./zod_internals.ts";
 
 /** Format Zod validation errors into a readable string */
 function formatZodErrors(error: z.ZodError): string {
@@ -51,42 +57,6 @@ export function parseSearchParams(
 // list, and cannot express an empty list at all. The schema knows which one
 // is meant, so the raw query is shaped by it before validation.
 
-type ZodDef = Record<string, unknown>;
-
-function zodDef(schema: unknown): ZodDef {
-  const zod = (schema as { _zod?: { def?: ZodDef } } | undefined)?._zod;
-  return zod?.def ?? {};
-}
-
-/** Wrapper schema types that carry the described type in `innerType`. */
-const WRAPPERS = new Set([
-  "optional",
-  "nullable",
-  "default",
-  "prefault",
-  "catch",
-  "readonly",
-  "nonoptional",
-]);
-
-/** The schema that describes the raw input, with wrappers removed. */
-function unwrapInput(schema: unknown): unknown {
-  let current = schema;
-  while (true) {
-    const def = zodDef(current);
-    if (WRAPPERS.has(def.type as string)) current = def.innerType;
-    else if (def.type === "pipe") current = def.in;
-    else return current;
-  }
-}
-
-/** Whether the field may be left out (optional, or it has a default). */
-function acceptsMissing(schema: unknown): boolean {
-  const zod = (schema as { _zod?: { optin?: string } } | undefined)?._zod;
-  // Zod flags a default as "optional" or, in newer releases, "defaulted".
-  return zod?.optin === "optional" || zod?.optin === "defaulted";
-}
-
 /**
  * Shape raw query values by the query schema: a field declared as a list
  * receives a list for zero, one or several occurrences of its key.
@@ -98,20 +68,20 @@ export function shapeQueryBySchema(
   raw: Record<string, string | string[]>,
   schema: unknown,
 ): Record<string, string | string[]> {
-  const root = zodDef(unwrapInput(schema));
+  const root = zodDef(unwrapSchema(schema, "input"));
   if (root.type !== "object") return raw;
 
   const result = { ...raw };
   for (
     const [key, field] of Object.entries(root.shape as Record<string, unknown>)
   ) {
-    const type = zodDef(unwrapInput(field)).type;
+    const type = zodType(unwrapSchema(field, "input"));
     if (type !== "array" && type !== "set") continue;
 
     const value = raw[key];
     if (typeof value === "string") {
       result[key] = [value];
-    } else if (value === undefined && !acceptsMissing(field)) {
+    } else if (value === undefined && !isOptionalField(field, "input")) {
       result[key] = [];
     }
   }

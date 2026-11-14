@@ -21,6 +21,7 @@ import type {
   Protocol,
   StepResponse,
 } from "./types.ts";
+import { zodType } from "../core/zod_internals.ts";
 import { validateProtocol } from "./dsl.ts";
 import {
   InvalidRequestError,
@@ -103,8 +104,7 @@ export type AvailableSteps<
 }[keyof TSteps & string];
 
 function isNeverSchema(schema: z.ZodType): boolean {
-  const zod = (schema as { _zod?: { def?: { type?: string } } })._zod;
-  return zod?.def?.type === "never";
+  return zodType(schema) === "never";
 }
 
 // =============================================================================

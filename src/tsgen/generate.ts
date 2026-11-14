@@ -2,6 +2,7 @@ import { toFileUrl } from "@std/path";
 import type { AnyPaginationMeta } from "@/pagination/types.ts";
 import {
   apiPathToTemplate,
+  capitalize,
   collectRouteFiles,
   deriveOperationId,
   endsWithParam,
@@ -11,6 +12,7 @@ import {
   pathToResourceSegments,
 } from "@/core/routes.ts";
 import { pathToTypeName } from "./path.ts";
+import { isIdentifier } from "./zod.ts";
 import {
   type ExtractedMethod,
   type Extraction,
@@ -138,14 +140,6 @@ function assertNoCollisions(
       lines.join("\n")
     }\n${hint}`,
   );
-}
-
-function isIdentifier(name: string): boolean {
-  return /^[A-Za-z_$][\w$]*$/.test(name);
-}
-
-function capitalize(text: string): string {
-  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function buildEndpoints(extraction: Extraction): EndpointType[] {

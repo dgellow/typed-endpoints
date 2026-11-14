@@ -22,6 +22,7 @@
 
 import { z } from "zod";
 import type { HttpMethod } from "../core/types.ts";
+import { zodDef } from "../core/zod_internals.ts";
 import type { MappingForRequest } from "./dsl.ts";
 import type { FieldMapping } from "./mapping.ts";
 import type {
@@ -184,15 +185,18 @@ function mergeRequestSchemas(
     const schema = def[part];
     if (!schema) continue;
 
-    // deno-lint-ignore no-explicit-any
-    const schemaDef = (schema as any)._zod?.def;
-    if (schemaDef?.type !== "object" || !schemaDef.shape) {
+    const schemaDef = zodDef(schema);
+    if (schemaDef.type !== "object" || !schemaDef.shape) {
       throw new Error(
         `Cannot create a step from ${method}: its ${part} schema is not a plain object schema, so its fields cannot be merged into the step request`,
       );
     }
 
-    for (const [key, field] of Object.entries(schemaDef.shape)) {
+    for (
+      const [key, field] of Object.entries(
+        schemaDef.shape as Record<string, z.ZodType>,
+      )
+    ) {
       shape[key] = field;
       (locations[key] ??= []).push(location);
     }

@@ -119,7 +119,8 @@ export function apiPathToTemplate(apiPath: string): string {
 // Naming
 // =============================================================================
 
-function capitalize(text: string): string {
+/** Upper-case the first character. */
+export function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
