@@ -844,3 +844,29 @@ Deno.test("pagination query parameters reject fractions", () => {
     assertEquals(query.safeParse({ [param]: "1.5" }).success, false, param);
   }
 });
+
+Deno.test("url.paginated merges extraResponse into a parent shared with a pagination path", () => {
+  const result = url.paginated({
+    item: z.object({ id: z.string() }),
+    names: { nextUrl: "links.next", prevUrl: "links.prev" },
+    extraResponse: {
+      links: z.object({ self: z.string() }),
+      total: z.number(),
+    },
+  });
+
+  const parsed = result.response.parse({
+    items: [{ id: "1" }],
+    links: { self: "/repos?page=2", next: "/repos?page=3", prev: "/repos" },
+    total: 3,
+  });
+
+  // `links.next` and `links.prev` are what __pagination points at; they
+  // must survive next to the extra `links.self`.
+  assertEquals(parsed, {
+    items: [{ id: "1" }],
+    links: { self: "/repos?page=2", next: "/repos?page=3", prev: "/repos" },
+    total: 3,
+  });
+  assertEquals(result.__pagination.nextUrl, "links.next");
+});
