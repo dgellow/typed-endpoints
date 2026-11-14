@@ -139,7 +139,7 @@ export interface Api {
 /** Pass to \`createClient<Api>({ baseUrl, routes })\`. */
 export const routes = {
   "tasks.events.subscribe": { method: "GET", path: "/api/tasks/{id}/events" },
-  "users.list": { method: "GET", path: "/api/users" },
+  "users.list": { method: "GET", path: "/api/users", pagination: { style: "cursor", items: "data", limitParam: "limit", cursor: "nextCursor", cursorParam: "cursor" } },
   "users.create": { method: "POST", path: "/api/users" },
   "users.retrieve": { method: "GET", path: "/api/users/{id}" },
   "users.delete": { method: "DELETE", path: "/api/users/{id}" },

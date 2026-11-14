@@ -49,6 +49,12 @@ export interface MethodDef {
    * the response type of a call is computed from its options.
    */
   readonly dependent?: true;
+  /**
+   * Pagination metadata, written by the type generator for an endpoint
+   * built with a pagination helper: the style, and the names of the
+   * fields and parameters it uses.
+   */
+  readonly pagination?: { readonly style: string; readonly items: string };
 }
 
 /** A resource can have methods and/or nested resources */
@@ -209,8 +215,66 @@ export type Method<
   ) => Promise<Resolve<M["response"], O>>
   : (...args: [...TLead, ...OptionsArg<M, TNames>]) => Promise<M["response"]>;
 
+/**
+ * The element type of the list at the dot-notation path `P` of `T`;
+ * `never` when there is no list there.
+ */
+export type ElementAt<T, P extends string> = P extends `${infer H}.${infer R}`
+  ? H extends keyof T ? ElementAt<T[H], R> : never
+  : P extends keyof T ? T[P] extends readonly (infer E)[] ? E : never
+  : never;
+
+/** The item type of a paginated method whose response type is `TResponse`. */
+export type ItemOf<M, TResponse> = M extends
+  { readonly pagination: { readonly items: infer P extends string } }
+  ? ElementAt<TResponse, P>
+  : never;
+
+/**
+ * What a `list` method of a paginated endpoint has besides being callable:
+ * every page, or every item, from the page the options ask for onwards.
+ *
+ * The client asks for the next page the way the endpoint's pagination
+ * style says (the cursor of the last response, the next offset or page
+ * number, the id of the last item, the next URL) until the server says
+ * there is none. Pages are requested as they are consumed: leaving the
+ * loop stops the requests.
+ *
+ * For an endpoint without pagination metadata this adds nothing.
+ */
+export type Paginated<M extends MethodDef, TNames extends string = never> =
+  M extends { readonly pagination: object } ? M extends { dependent: true } ? {
+        /** Every page, in order. */
+        pages<const O extends ReadonlyDeep<MethodOptions<M, TNames>>>(
+          ...args: CapturedOptionsArg<
+            M,
+            O & Requires<M["response"], O>,
+            TNames
+          >
+        ): AsyncIterable<Resolve<M["response"], O>>;
+        /** Every item of every page, in order. */
+        items<const O extends ReadonlyDeep<MethodOptions<M, TNames>>>(
+          ...args: CapturedOptionsArg<
+            M,
+            O & Requires<M["response"], O>,
+            TNames
+          >
+        ): AsyncIterable<ItemOf<M, Resolve<M["response"], O>>>;
+      }
+    : {
+      /** Every page, in order. */
+      pages(...args: OptionsArg<M, TNames>): AsyncIterable<M["response"]>;
+      /** Every item of every page, in order. */
+      items(
+        ...args: OptionsArg<M, TNames>
+      ): AsyncIterable<ItemOf<M, M["response"]>>;
+    }
+    : unknown;
+
 /** List method - no id, returns array */
-export type ListMethod<M extends MethodDef> = Method<M, [], AllParams<M>>;
+export type ListMethod<M extends MethodDef> =
+  & Method<M, [], AllParams<M>>
+  & Paginated<M, AllParams<M>>;
 
 /** Retrieve method - the id, if the path ends with a parameter */
 export type RetrieveMethod<M extends MethodDef> = Method<

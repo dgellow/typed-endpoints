@@ -15,9 +15,11 @@ import {
   type Expansion,
   type IsUnion,
   type Projection,
+  type Requires,
   type Resolve,
   type ResponseFamily,
 } from "./dependent_types.ts";
+import type { SelectError, Selection } from "./selection_types.ts";
 import { zodToTypeString } from "../tsgen/zod.ts";
 
 /** Each type is assignable to the other. */
@@ -130,6 +132,56 @@ Deno.test("Resolve applies families inside arrays and objects, and leaves the re
 // =============================================================================
 // Builders
 // =============================================================================
+
+Deno.test("Requires: what the families of a response ask of the request", () => {
+  /** Exactly `unknown`: nothing is asked. */
+  type AsksNothing<T> = unknown extends T ? true : false;
+  type Fields = { query: { fields: ["id"] } };
+  type Picked = Dependent<Projection<User, "fields">, Partial<User>>;
+  type Chosen = Dependent<Selection<User, "select">, Partial<User>>;
+
+  // A projection asks for nothing, wherever it stands.
+  assertType<AsksNothing<Requires<Picked, Fields>>>();
+  assertType<
+    AsksNothing<Requires<{ data: Picked[]; total: number }, Fields>>
+  >();
+  assertType<AsksNothing<Requires<{ id: string }, Fields>>>();
+
+  // An optional property next to a family does not turn the requirement
+  // into `never`, which would reject every call.
+  assertType<
+    AsksNothing<Requires<{ data: Picked[]; nextCursor?: string }, Fields>>
+  >();
+  assertType<
+    AsksNothing<
+      Requires<{ data?: Picked[]; meta?: { note?: string } }, Fields>
+    >
+  >();
+
+  // A selection asks for a valid select string, also next to optional
+  // properties.
+  assertType<
+    Equal<
+      Requires<
+        { data: Chosen[]; nextCursor?: string },
+        { query: { select: "id,nope" } }
+      >,
+      {
+        readonly query: {
+          readonly select: SelectError<'"nope" is not a field'>;
+        };
+      }
+    >
+  >();
+  assertType<
+    AsksNothing<
+      Requires<
+        { data: Chosen[]; nextCursor?: string },
+        { query: { select: "id" } }
+      >
+    >
+  >();
+});
 
 Deno.test("projection: the schema accepts any subset and carries the rule", () => {
   const schema = projection(User, "fields");

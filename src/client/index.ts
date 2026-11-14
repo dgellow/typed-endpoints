@@ -81,14 +81,17 @@ export type {
   CapturedOptionsArg,
   CreateMethod,
   DeleteMethod,
+  ElementAt,
   Empty,
   IdArg,
+  ItemOf,
   ListMethod,
   Method,
   MethodDef,
   MethodOptions,
   NeedsOptions,
   OptionsArg,
+  Paginated,
   ParamName,
   ParamsOption,
   ParentParams,
@@ -133,10 +136,164 @@ export interface ClientConfig {
   readonly routes?: ClientRoutes;
 }
 
-/** A generated route table: method and path template by client method. */
+/** Pagination metadata of a route, as the type generator writes it. */
+export interface RoutePagination {
+  /** `cursor`, `cursorId`, `offset`, `page` or `url`. */
+  readonly style: string;
+  /** Path of the response field that holds the items. */
+  readonly items: string;
+  /** Query parameter that sets the page size. */
+  readonly limitParam?: string;
+  /** `cursor`: response field that holds the next cursor. */
+  readonly cursor?: string;
+  /** `cursor`: query parameter that takes the cursor. */
+  readonly cursorParam?: string;
+  /** `cursorId`: query parameter that takes the id of the last item. */
+  readonly cursorIdParam?: string;
+  /** `cursorId`: item field that holds its id. */
+  readonly idField?: string;
+  /** `offset`, `page`: response field that holds the item count. */
+  readonly total?: string;
+  /** `offset`: query parameter that takes the offset. */
+  readonly offsetParam?: string;
+  /** `page`: query parameter that takes the page number. */
+  readonly pageParam?: string;
+  /** `page`: query parameter that sets the page size. */
+  readonly perPageParam?: string;
+  /** `page`: response field that holds the page count. */
+  readonly totalPages?: string;
+  /** `url`: path of the response field that holds the next page's URL. */
+  readonly nextUrl?: string;
+  /** `url`: path of the response field that holds the previous page's URL. */
+  readonly prevUrl?: string;
+}
+
+/**
+ * A generated route table: method and path template by client method,
+ * and the pagination metadata of a paginated endpoint.
+ */
 export type ClientRoutes = Readonly<
-  Record<string, { readonly method: string; readonly path: string }>
+  Record<
+    string,
+    {
+      readonly method: string;
+      readonly path: string;
+      readonly pagination?: RoutePagination;
+    }
+  >
 >;
+
+/** The value at a dot-notation path of a response. */
+function valueAt(value: unknown, path: string): unknown {
+  let current = value;
+  for (const key of path.split(".")) {
+    if (current === null || typeof current !== "object") return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current;
+}
+
+/** What to ask for after a page: a new query, a URL, or nothing. */
+type NextPage =
+  | { readonly query: Record<string, unknown> }
+  | { readonly url: string }
+  | undefined;
+
+/**
+ * Where the page after `page` is, by pagination style.
+ *
+ * @param call Name of the client method, for errors.
+ * @param meta The endpoint's pagination metadata.
+ * @param page The response that was just received.
+ * @param query The query it was requested with.
+ * @param pageSize Number of items of the first page: the server's page
+ * size when the query does not set one.
+ */
+function nextPage(
+  call: string,
+  meta: RoutePagination,
+  page: unknown,
+  query: Record<string, unknown>,
+  pageSize: number,
+): NextPage {
+  const items = valueAt(page, meta.items);
+  const count = Array.isArray(items) ? items.length : 0;
+  const stuck = (what: string): never => {
+    throw new Error(
+      `${call}: the server answered with the ${what} it was asked for; there is no next page to ask for`,
+    );
+  };
+  const param = (name: string | undefined, what: string): string => {
+    if (name === undefined) {
+      throw new TypeError(
+        `${call}: the pagination metadata has no ${what} for style "${meta.style}"`,
+      );
+    }
+    return name;
+  };
+
+  switch (meta.style) {
+    case "cursor": {
+      const cursorParam = param(meta.cursorParam, "cursorParam");
+      const cursor = valueAt(page, param(meta.cursor, "cursor"));
+      if (cursor === undefined || cursor === null || cursor === "") {
+        return undefined;
+      }
+      if (cursor === query[cursorParam]) stuck("cursor");
+      return { query: { ...query, [cursorParam]: cursor } };
+    }
+    case "cursorId": {
+      const cursorIdParam = param(meta.cursorIdParam, "cursorIdParam");
+      if (count === 0) return undefined;
+      // A page shorter than the size asked for is the last one.
+      const limit = Number(query[meta.limitParam ?? ""]);
+      if (Number.isFinite(limit) && count < limit) return undefined;
+      const last = (items as unknown[])[count - 1];
+      const id = valueAt(last, param(meta.idField, "idField"));
+      if (id === undefined || id === null) {
+        throw new Error(
+          `${call}: the last item of the page has no "${meta.idField}" to continue from`,
+        );
+      }
+      if (String(id) === query[cursorIdParam]) stuck("item");
+      return { query: { ...query, [cursorIdParam]: String(id) } };
+    }
+    case "offset": {
+      const offsetParam = param(meta.offsetParam, "offsetParam");
+      if (count === 0) return undefined;
+      const offset = Number(query[offsetParam] ?? 0) + count;
+      const total = valueAt(page, meta.total ?? "");
+      if (typeof total === "number" && offset >= total) return undefined;
+      return { query: { ...query, [offsetParam]: offset } };
+    }
+    case "page": {
+      const pageParam = param(meta.pageParam, "pageParam");
+      if (count === 0) return undefined;
+      const current = Number(query[pageParam] ?? 1);
+      const totalPages = valueAt(page, meta.totalPages ?? "");
+      if (typeof totalPages === "number" && current >= totalPages) {
+        return undefined;
+      }
+      const size = Number(query[meta.perPageParam ?? ""]) || pageSize;
+      const total = valueAt(page, meta.total ?? "");
+      if (
+        typeof total === "number" && (current - 1) * size + count >= total
+      ) {
+        return undefined;
+      }
+      if (count < size) return undefined;
+      return { query: { ...query, [pageParam]: current + 1 } };
+    }
+    case "url": {
+      const url = valueAt(page, param(meta.nextUrl, "nextUrl"));
+      return typeof url === "string" && url !== "" ? { url } : undefined;
+    }
+    default:
+      throw new TypeError(
+        `${call}: unknown pagination style "${meta.style}"`,
+      );
+  }
+}
 
 /** Methods that address one resource: their first argument can be its id. */
 const ID_METHODS: ReadonlySet<string> = new Set([
@@ -430,14 +587,22 @@ export function createClient<Api extends ApiSchema>(
   const basePath = cfg.basePath ?? "/api";
   const fetchFn = cfg.fetch ?? fetch;
 
-  async function request(
+  function request(
     method: string,
     path: string,
     body?: unknown,
     options?: RequestOptions,
   ): Promise<unknown> {
     const url = cfg.baseUrl + path + buildQuery(options?.query);
+    return requestUrl(method, url, body, options?.signal);
+  }
 
+  async function requestUrl(
+    method: string,
+    url: string,
+    body?: unknown,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     const headers: Record<string, string> = {
       ...cfg.headers,
     };
@@ -452,7 +617,7 @@ export function createClient<Api extends ApiSchema>(
       method,
       headers,
       body: bodyStr,
-      signal: options?.signal,
+      signal,
     });
 
     if (!response.ok) {
@@ -548,6 +713,75 @@ export function createClient<Api extends ApiSchema>(
   }
 
   /**
+   * Every page of a paginated `list`, from the one the options ask for.
+   * Each page is requested when the consumer asks for it.
+   */
+  async function* pagesOf(
+    pathSegments: string[],
+    args: unknown[],
+  ): AsyncGenerator<unknown> {
+    const call = [...pathSegments, "list"].join(".");
+    const meta = cfg.routes?.[call]?.pagination;
+    if (!meta) {
+      throw new TypeError(
+        cfg.routes
+          ? `${call} is not paginated: its entry in the route table has no pagination metadata`
+          : `${call}: paging needs the generated route table; pass \`routes\` to createClient()`,
+      );
+    }
+
+    const { method, path, options } = resolveCall(pathSegments, "list", args);
+    let query: Record<string, unknown> = { ...options.query };
+    let url: string | undefined;
+    let pageSize = 0;
+
+    while (true) {
+      const page = url === undefined
+        ? await request(method, path, undefined, { ...options, query })
+        : await requestUrl(method, url, undefined, options.signal);
+      if (pageSize === 0) {
+        const items = valueAt(page, meta.items);
+        pageSize = Array.isArray(items) ? items.length : 0;
+      }
+      yield page;
+
+      const next = nextPage(call, meta, page, query, pageSize);
+      if (!next) return;
+      if ("query" in next) {
+        query = next.query;
+      } else {
+        // The server names the next page. It is followed on the origin of
+        // `baseUrl` only: the request carries the client's headers.
+        const target = new URL(next.url, cfg.baseUrl);
+        if (target.origin !== new URL(cfg.baseUrl).origin) {
+          throw new Error(
+            `${call}: the next page is at ${target.origin}, which is not the origin of baseUrl`,
+          );
+        }
+        if (target.href === url) {
+          throw new Error(
+            `${call}: the server answered with the URL it was asked for; there is no next page to ask for`,
+          );
+        }
+        url = target.href;
+      }
+    }
+  }
+
+  /** Every item of every page of a paginated `list`. */
+  async function* itemsOf(
+    pathSegments: string[],
+    args: unknown[],
+  ): AsyncGenerator<unknown> {
+    const call = [...pathSegments, "list"].join(".");
+    const path = cfg.routes?.[call]?.pagination?.items;
+    for await (const page of pagesOf(pathSegments, args)) {
+      const items = valueAt(page, path ?? "");
+      if (Array.isArray(items)) yield* items;
+    }
+  }
+
+  /**
    * Create a resource proxy that handles method calls and nested resources.
    */
   function createResourceProxy(pathSegments: string[]): unknown {
@@ -578,7 +812,7 @@ export function createClient<Api extends ApiSchema>(
         }
 
         if (CLIENT_METHODS.has(prop)) {
-          return (...args: unknown[]) => {
+          const call = (...args: unknown[]) => {
             const { method, path, body, options } = resolveCall(
               pathSegments,
               prop,
@@ -586,6 +820,11 @@ export function createClient<Api extends ApiSchema>(
             );
             return request(method, path, body, options);
           };
+          if (prop !== "list") return call;
+          return Object.assign(call, {
+            pages: (...args: unknown[]) => pagesOf(pathSegments, args),
+            items: (...args: unknown[]) => itemsOf(pathSegments, args),
+          });
         }
 
         // Handle nested resources

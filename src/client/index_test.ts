@@ -886,3 +886,220 @@ Deno.test("createClient sends default headers and Content-Type only with a body"
     "Content-Type": "application/json",
   });
 });
+
+// =============================================================================
+// Paging: list.pages() and list.items()
+// =============================================================================
+
+type PagedApi = {
+  things: {
+    list: {
+      path: "/things";
+      query: Record<string, unknown>;
+      response: { items: { id: string }[]; [key: string]: unknown };
+      pagination: { style: string; items: "items" };
+    };
+  };
+};
+
+/** A client whose `things.list` has the given pagination, over a mock. */
+function pagedClient(
+  pagination: Record<string, string>,
+  respond: (url: URL) => unknown,
+) {
+  const urls: string[] = [];
+  const client = createClient<PagedApi>({
+    baseUrl: "https://api.example.com",
+    routes: {
+      "things.list": {
+        method: "GET",
+        path: "/things",
+        pagination: { items: "items", ...pagination } as never,
+      },
+    },
+    fetch: createMockFetch((url) => {
+      urls.push(String(url).replace("https://api.example.com", ""));
+      return Response.json(respond(new URL(String(url))));
+    }),
+  });
+  return { client, urls };
+}
+
+async function collectAll<T>(source: AsyncIterable<T>): Promise<T[]> {
+  const all: T[] = [];
+  for await (const value of source) all.push(value);
+  return all;
+}
+
+const ids = (...names: string[]) => names.map((id) => ({ id }));
+
+Deno.test("paging: a server that returns the cursor it was given is not asked again", async () => {
+  const { client, urls } = pagedClient(
+    { style: "cursor", cursor: "next", cursorParam: "cursor" },
+    () => ({ items: ids("a"), next: "same" }),
+  );
+  await assertRejects(
+    () => collectAll(client.things.list.pages()),
+    Error,
+    "things.list: the server answered with the cursor it was asked for",
+  );
+  // The first page, and the page for the cursor: no third request.
+  assertEquals(urls, ["/things", "/things?cursor=same"]);
+});
+
+Deno.test("paging: an empty cursor ends the pages", async () => {
+  for (const last of [undefined, null, ""]) {
+    const { client, urls } = pagedClient(
+      { style: "cursor", cursor: "next", cursorParam: "cursor" },
+      (url) =>
+        url.searchParams.has("cursor")
+          ? { items: ids("b"), next: last }
+          : { items: ids("a"), next: "2" },
+    );
+    assertEquals(
+      await collectAll(client.things.list.items()),
+      ids("a", "b"),
+    );
+    assertEquals(urls, ["/things", "/things?cursor=2"]);
+  }
+});
+
+Deno.test("paging: page numbers stop at a short page when there is no total", async () => {
+  const all = ids("a", "b", "c", "d", "e");
+  const { client, urls } = pagedClient(
+    { style: "page", pageParam: "page", perPageParam: "size" },
+    (url) => {
+      const page = Number(url.searchParams.get("page") ?? 1);
+      return { items: all.slice((page - 1) * 2, page * 2) };
+    },
+  );
+  assertEquals(await collectAll(client.things.list.items()), all);
+  // The size of the first page is the page size: the third page is short.
+  assertEquals(urls, ["/things", "/things?page=2", "/things?page=3"]);
+});
+
+Deno.test("paging: page numbers stop at the total", async () => {
+  const all = ids("a", "b", "c", "d");
+  const { client, urls } = pagedClient(
+    { style: "page", pageParam: "page", perPageParam: "size", total: "total" },
+    (url) => {
+      const page = Number(url.searchParams.get("page") ?? 1);
+      return { items: all.slice((page - 1) * 2, page * 2), total: 4 };
+    },
+  );
+  assertEquals(await collectAll(client.things.list.items()), all);
+  // Two full pages make the total: no request for an empty third page.
+  assertEquals(urls, ["/things", "/things?page=2"]);
+});
+
+Deno.test("paging: cursor-id needs an id on the last item", async () => {
+  const { client } = pagedClient(
+    { style: "cursorId", cursorIdParam: "after", idField: "uid" },
+    () => ({ items: ids("a") }),
+  );
+  await assertRejects(
+    () => collectAll(client.things.list.items()),
+    Error,
+    'the last item of the page has no "uid" to continue from',
+  );
+});
+
+Deno.test("paging: a next URL is followed on the origin of baseUrl only", async () => {
+  // Absolute, same origin: followed.
+  const same = pagedClient(
+    { style: "url", nextUrl: "next" },
+    (url) =>
+      url.searchParams.has("p")
+        ? { items: ids("b") }
+        : { items: ids("a"), next: "https://api.example.com/things?p=2" },
+  );
+  assertEquals(
+    await collectAll(same.client.things.list.items()),
+    ids("a", "b"),
+  );
+  assertEquals(same.urls, ["/things", "/things?p=2"]);
+
+  // Another origin: the request would carry this client's headers there.
+  const other = pagedClient(
+    { style: "url", nextUrl: "next" },
+    () => ({ items: ids("a"), next: "https://elsewhere.example/things?p=2" }),
+  );
+  await assertRejects(
+    () => collectAll(other.client.things.list.items()),
+    Error,
+    "the next page is at https://elsewhere.example, which is not the origin of baseUrl",
+  );
+  assertEquals(other.urls, ["/things"]);
+
+  // A URL that points at itself.
+  const loop = pagedClient(
+    { style: "url", nextUrl: "next" },
+    () => ({ items: ids("a"), next: "/things?p=2" }),
+  );
+  await assertRejects(
+    () => collectAll(loop.client.things.list.items()),
+    Error,
+    "the server answered with the URL it was asked for",
+  );
+  assertEquals(loop.urls, ["/things", "/things?p=2"]);
+});
+
+Deno.test("paging: metadata that lacks what its style needs is reported", async () => {
+  const { client } = pagedClient(
+    { style: "cursor" },
+    () => ({ items: ids("a") }),
+  );
+  await assertRejects(
+    () => collectAll(client.things.list.pages()),
+    TypeError,
+    'the pagination metadata has no cursorParam for style "cursor"',
+  );
+
+  const unknown = pagedClient({ style: "spiral" }, () => ({ items: [] }));
+  await assertRejects(
+    () => collectAll(unknown.client.things.list.pages()),
+    TypeError,
+    'unknown pagination style "spiral"',
+  );
+});
+
+Deno.test("paging: the options of the call go with every page", async () => {
+  const controller = new AbortController();
+  const signals: (AbortSignal | null | undefined)[] = [];
+  const client = createClient<PagedApi>({
+    baseUrl: "https://api.example.com",
+    routes: {
+      "things.list": {
+        method: "GET",
+        path: "/things",
+        pagination: {
+          style: "offset",
+          items: "items",
+          offsetParam: "offset",
+          total: "total",
+        },
+      },
+    },
+    fetch: createMockFetch((url, init) => {
+      signals.push(init?.signal);
+      const offset = Number(new URL(String(url)).searchParams.get("offset"));
+      return Response.json({ items: ids(`i${offset}`), total: 3 });
+    }),
+  });
+
+  const urls: string[] = [];
+  for await (
+    const page of client.things.list.pages({
+      query: { tag: "x" },
+      signal: controller.signal,
+    })
+  ) {
+    urls.push(String(page.items[0].id));
+  }
+  assertEquals(urls, ["i0", "i1", "i2"]);
+  assertEquals(signals, [
+    controller.signal,
+    controller.signal,
+    controller.signal,
+  ]);
+});

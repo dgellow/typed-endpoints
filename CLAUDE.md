@@ -131,6 +131,16 @@ which the client types compute the arguments: the trailing path parameter is the
 client falls back to deriving URLs from property names. End-to-end coverage:
 `e2e_tests/client_routes_test.ts`.
 
+## Key Concepts (Pagination)
+
+A pagination helper (`cursor.paginated()` and four more) returns the query
+schema, the response schema, the metadata (`__pagination`) and a `page()`
+builder that is not enumerable, so spreading the result into `endpoint()` copies
+schemas and metadata only. The client format writes the metadata into the route
+table; `list.pages()` / `list.items()` read it there and ask for the next page
+by style (`nextPage()` in `client/index.ts`). End to end, one endpoint per
+style: `e2e_tests/pagination_test.ts`.
+
 ## Key Concepts (Request-Dependent Responses)
 
 A response type can be a function of the request (`?fields=`, `?expand=`).

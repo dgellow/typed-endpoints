@@ -85,7 +85,9 @@ export type Requires<T, R> = T extends { readonly "~responseFamily"?: infer F }
 
 /** `Requires` for the members of an array or object. */
 export type RequiresIn<T, R> = T extends readonly (infer E)[] ? Requires<E, R>
-  : T extends object ? AllOf<{ [K in keyof T]: [Requires<T[K], R>] }[keyof T]>
+  // `-?`: an optional property would add `undefined` to the union, and the
+  // intersection of everything with `undefined` is `never`.
+  : T extends object ? AllOf<{ [K in keyof T]-?: [Requires<T[K], R>] }[keyof T]>
   : unknown;
 
 /** The intersection of the types wrapped in the one-element tuples `U`. */

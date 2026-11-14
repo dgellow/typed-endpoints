@@ -469,28 +469,84 @@ const UserSchema = z.object({
   email: z.email(),
 });
 
+// cursor.paginated generates both query and response schemas
+const users = cursor.paginated({
+  item: UserSchema,
+  names: { items: "data", cursor: "nextCursor" },
+  defaultLimit: 20,
+  maxLimit: 100,
+});
+
 export const handler = createApiHandlers({
   GET: endpoint({
-    // cursor.paginated generates both query and response schemas
-    ...cursor.paginated({
-      item: UserSchema,
-      names: { items: "data", cursor: "nextCursor" },
-      defaultLimit: 20,
-      maxLimit: 100,
-    }),
+    ...users,
     public: true,
     async handler(ctx, { query }) {
       // query.cursor is string | undefined
       // query.limit is number (with default 20, max 100)
-      const users = await getUsers(query.cursor, query.limit);
-      return Response.json({
-        data: users,
-        nextCursor: users.length > 0 ? users.at(-1)?.id : undefined,
-      });
+      const { rows, next } = await getUsers(query.cursor, query.limit);
+      // page() puts the items and the cursor under the configured names.
+      return users.page({ items: rows, cursor: next });
     },
   }),
 });
 ```
+
+`page()` builds the response of a page: the items and what the style keeps track
+of, under the field names the helper was configured with (nested ones included).
+Its argument is typed by the helper:
+
+| Style                | `page({ ... })`                                              |
+| -------------------- | ------------------------------------------------------------ |
+| `cursor`             | `items`, `cursor?` (absent on the last page)                 |
+| `cursorId`           | `items`                                                      |
+| `offset`             | `items`, `total`                                             |
+| `page`               | `items`, and `total` / `totalPages` if the helper names them |
+| `url`                | `items`, `next?`, and `prev?` if the helper names it         |
+| with `extraResponse` | `extra: { ... }`, required                                   |
+
+On the client, a `list` method of a paginated endpoint can be iterated, page by
+page or item by item:
+
+```typescript
+import { createClient } from "@dgellow/typed-endpoints/client";
+import { type Api, routes } from "./api-types.ts";
+
+const client = createClient<Api>({ baseUrl, routes });
+
+for await (const user of client.users.list.items({ query: { limit: 50 } })) {
+  user.email; // string
+}
+
+for await (const page of client.users.list.pages()) {
+  page.data; // User[]
+  page.nextCursor; // string | undefined
+}
+
+const first = await client.users.list(); // still one page
+```
+
+The client asks for the next page the way the endpoint's style says, until the
+server says there is none:
+
+| Style      | Next request                       | Stops when                                                 |
+| ---------- | ---------------------------------- | ---------------------------------------------------------- |
+| `cursor`   | the cursor of the last response    | the response has no cursor                                 |
+| `cursorId` | the id of the last item            | a page is empty, or shorter than the limit asked for       |
+| `offset`   | the offset plus the items received | the offset reaches the total, or a page is empty           |
+| `page`     | the next page number               | the page count or the total is reached, or a page is short |
+| `url`      | the URL the response names         | the response names none                                    |
+
+- Pages are requested as they are consumed: leaving the loop stops the requests
+- The options of the call (`query`, `params`, `signal`) go with every page;
+  iteration starts at the page they ask for
+- Items are typed as a single page's are, a `projection()` included:
+  `list.items({ query: { fields: ["name"] } })` yields `{ name: string }`
+- A server that answers with the cursor or URL it was just asked for is an
+  error, not a loop. A next URL is followed on the origin of `baseUrl` only: the
+  request carries the client's headers
+- The client needs the generated route table (`routes`): the pagination metadata
+  is in it, since types are erased
 
 Available pagination styles:
 
@@ -509,7 +565,8 @@ Each style generates appropriate query params and response fields. Supports:
 
 Pagination metadata is included in:
 
-- Generated TypeScript types (`pagination: { style: "cursor"; ... }`)
+- Generated TypeScript types (`pagination: { style: "cursor"; ... }`) and the
+  generated route table, which is where the client reads it
 - OpenAPI spec (`x-pagination` extension)
 
 ### Responses That Depend on the Request
