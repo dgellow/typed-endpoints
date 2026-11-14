@@ -205,6 +205,7 @@ class OddCreateBody(BaseModel):
     loose: str | float | list[str]
     looseOrNull: str | float | None
     version: Literal[2]
+    level: Literal["very-high", "low"]
     anything: Any
     chain: OddCreateBodyChain
     json_: OddCreateBodyJson = Field(validation_alias="json", serialization_alias="json")
@@ -246,6 +247,7 @@ class OddCreateResponse(BaseModel):
     loose: str | float | list[str]
     looseOrNull: str | float | None
     version: Literal[2]
+    level: Literal["very-high", "low"]
     anything: Any
     chain: OddCreateResponseChain
     json_: OddCreateBodyJson = Field(validation_alias="json", serialization_alias="json")

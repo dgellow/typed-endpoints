@@ -251,6 +251,7 @@ Deno.test("type graph: a union names its variants; a field that tells them apart
   assertEquals(type, {
     kind: "union",
     name: "Shape",
+    tag: "kind",
     discriminator: "kind",
     variants: [
       { kind: "ref", name: "ShapeCircle", cyclic: false },
@@ -380,10 +381,18 @@ Deno.test("type graph: a union that refers to itself through an object", () => {
   });
   assertEquals(type, { kind: "ref", name: "Sum", cyclic: false });
   assertEquals(definitions.map((d) => `${d.kind} ${d.name}`), [
-    "object SumExpr2",
+    "object SumExprNeg",
     "named SumExpr",
     "object Sum",
   ]);
+  // The object is named by its constant, which tells the objects of the
+  // union apart; with a number beside them it does not decide the member.
+  const named = definitions[1];
+  assertEquals(
+    named.kind === "named" && named.type.kind === "union" &&
+      [named.type.tag, named.type.discriminator],
+    ["op", undefined],
+  );
   // The object is inside the union it refers to: the cycle closes there.
   const [inner] = definitions;
   assertEquals(inner.kind === "object" && inner.fields[1], {
@@ -391,6 +400,105 @@ Deno.test("type graph: a union that refers to itself through an object", () => {
     type: { kind: "ref", name: "SumExpr", cyclic: true },
     required: true,
   });
+});
+
+Deno.test("type graph: the items of `items` are an item", () => {
+  const { definitions } = graphOf(
+    z.object({
+      items: z.array(z.object({ id: z.string() })),
+      tags: z.array(z.object({ label: z.string() })),
+    }),
+    { name: "Page" },
+  );
+  assertEquals(definitions.map((d) => d.name), [
+    "PageItem",
+    "PageTagsItem",
+    "Page",
+  ]);
+});
+
+Deno.test("type graph: the same object is recognised whatever document it is in", () => {
+  interface Tree {
+    name: string;
+    children: Tree[];
+  }
+  const Tree: z.ZodType<Tree> = z.object({
+    name: z.string(),
+    get children() {
+      return z.array(Tree);
+    },
+  });
+  const graph = new TypeGraph();
+  // As the root of one document, where it refers to itself as `#`, and
+  // inside another, where it is a definition.
+  graph.define("Tree", jsonSchema(Tree), false);
+  graph.define("Forest", jsonSchema(z.object({ root: Tree })), false);
+  assertEquals(
+    graph.definitions.map((d) =>
+      d.kind === "alias" ? `${d.name} = ${d.target}` : d.name
+    ),
+    ["Tree", "ForestRoot = Tree", "Forest"],
+  );
+});
+
+Deno.test("type graph: mergeSides makes the two sides of a schema one type", () => {
+  const Settings = z.object({
+    theme: z.string().default("light"),
+    owner: z.object({ name: z.string() }),
+  });
+
+  // As they are: a default is optional going in and always there coming
+  // out, and what comes out has no other members.
+  const sides = new TypeGraph();
+  sides.define("Body", jsonSchema(Settings, "input"), false);
+  sides.define("Response", jsonSchema(Settings, "output"), false);
+  assertEquals(sides.definitions.map((d) => `${d.kind} ${d.name}`), [
+    "object BodyOwner",
+    "object Body",
+    "object ResponseOwner",
+    "object Response",
+  ]);
+  assertEquals(sides.object("Body")?.fields[0].required, false);
+  assertEquals(sides.object("Response")?.fields[0].required, true);
+  assertEquals(sides.object("Response")?.closed, true);
+
+  // Merged: one definition, whichever side is read first.
+  for (const order of [["input", "output"], ["output", "input"]] as const) {
+    const merged = new TypeGraph({ mergeSides: true });
+    merged.define("First", jsonSchema(Settings, order[0]), false);
+    merged.define("Second", jsonSchema(Settings, order[1]), false);
+    assertEquals(
+      merged.definitions.map((d) =>
+        d.kind === "alias" ? `${d.name} = ${d.target}` : d.name
+      ),
+      ["FirstOwner", "First", "Second = First"],
+    );
+    assertEquals(merged.object("First"), {
+      kind: "object",
+      name: "First",
+      closed: false,
+      text: false,
+      fields: [
+        {
+          name: "theme",
+          type: { kind: "string" },
+          required: false,
+          default: { value: "light" },
+        },
+        {
+          name: "owner",
+          type: { kind: "ref", name: "FirstOwner", cyclic: false },
+          required: true,
+        },
+      ],
+    });
+  }
+
+  // What differs in more than that stays two types.
+  const merged = new TypeGraph({ mergeSides: true });
+  merged.define("In", jsonSchema(z.object({ a: z.string() })), false);
+  merged.define("Out", jsonSchema(z.object({ a: z.number() })), false);
+  assertEquals(merged.definitions.map((d) => d.kind), ["object", "object"]);
 });
 
 Deno.test("type graph: an intersection of objects is one object", () => {

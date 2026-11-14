@@ -20,7 +20,7 @@
  */
 
 import type { JsonSchema } from "../contract/index.ts";
-import { context } from "../contract/types.ts";
+import { canonical } from "../contract/types.ts";
 
 /** Python keywords and names a Pydantic model already uses. */
 const RESERVED: ReadonlySet<string> = new Set([
@@ -417,11 +417,7 @@ export class PythonModels {
     document: Document,
     strict: boolean,
   ): string {
-    const content = JSON.stringify([
-      schema,
-      strict,
-      context(schema, document),
-    ]);
+    const content = JSON.stringify([canonical(schema, document), strict]);
     const known = this.recursive.get(content);
     if (known !== undefined) return known;
 

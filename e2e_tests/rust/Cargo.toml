@@ -9,6 +9,6 @@ description = "The fixture API of typed-endpoints served by axum, from generated
 axum = "0.8"
 fancy-regex = "0.16"
 serde = { version = "1", features = ["derive"] }
-# preserve_order: issues and members in the order the schema has them.
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = "1"
+tracing = "0.1"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync"] }

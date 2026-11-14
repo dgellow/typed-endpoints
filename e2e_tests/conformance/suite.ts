@@ -79,6 +79,7 @@ const ODD = {
   loose: "x",
   looseOrNull: null,
   version: 2,
+  level: "low",
   anything: 1,
   chain: { name: "a", origin: null },
   json: null,
@@ -528,6 +529,7 @@ export function conformance(
       loose: ["a", "b"] as string | number | string[],
       looseOrNull: null as string | number | null,
       version: 2 as const,
+      level: "very-high" as const,
       anything: { nested: [1, "two", null] } as unknown,
       chain: {
         name: "a",
