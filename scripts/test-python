@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+#
+# Run the Python side (e2e_tests/python): the FastAPI application built
+# from the generated module is type-checked and started under uv, and the
+# conformance tests that hold for the TypeScript server are run against it.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+project="$root/e2e_tests/python"
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "error: uv is not installed (https://docs.astral.sh/uv/)" >&2
+  exit 1
+fi
+
+cd "$project"
+uv sync --frozen --quiet
+
+# The generated module and the hand-written handlers, in strict mode.
+uv run --frozen pyright
+
+# What the generated router does with a handler that breaks its types.
+uv run --frozen python -m unittest --quiet test_runtime
+
+# A free port, then the application on it.
+port="$(uv run --frozen python -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+log="$(mktemp)"
+uv run --frozen uvicorn app:app --host 127.0.0.1 --port "$port" --log-level warning >"$log" 2>&1 &
+server=$!
+trap 'kill "$server" 2>/dev/null || true; rm -f "$log"' EXIT
+
+url="http://127.0.0.1:$port"
+for _ in $(seq 1 100); do
+  if curl --silent --output /dev/null "$url/api/notes"; then
+    break
+  fi
+  if ! kill -0 "$server" 2>/dev/null; then
+    echo "error: the application did not start:" >&2
+    cat "$log" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+
+cd "$root"
+status=0
+FASTAPI_URL="$url" deno test --allow-read --allow-net --allow-env=FASTAPI_URL \
+  e2e_tests/python/against_fastapi.ts "$@" || status=$?
+
+if [ "$status" -ne 0 ]; then
+  echo "--- application log ---" >&2
+  cat "$log" >&2
+fi
+exit "$status"

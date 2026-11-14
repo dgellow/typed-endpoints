@@ -958,6 +958,97 @@ Limits:
 End to end against a live server, with a handler broken on purpose:
 `e2e_tests/resource_laws_test.ts`.
 
+### Other Languages: Python and FastAPI
+
+The routes can leave TypeScript. `generateFastApi()` writes one Python module
+from a routes directory:
+
+```bash
+typed-endpoints -r routes/api -o server/api_generated.py --format fastapi
+```
+
+The module holds:
+
+- a Pydantic model for every request part, response and declared error body
+- `Handlers`, a protocol with one method per operation, typed by those models
+- `create_router(handlers)`, a FastAPI `APIRouter` that validates each request,
+  calls the handler and checks what it returns
+- `create_app(handlers)`, an application with that router and with validation
+  failures answered as the TypeScript handlers answer them
+
+The application implements `Handlers` in a file of its own. Generating again
+never overwrites it, and a type checker reports a handler that no longer fits
+the routes:
+
+```python
+from typing import Literal
+
+from fastapi.responses import Response
+
+import api_generated as api
+
+
+class Notes:
+    async def notes_retrieve(
+        self, params: api.NotesRetrieveParams
+    ) -> api.NotesRetrieveResponse | api.Fail[Literal[404], api.NotFound] | Response:
+        note = store.get(params.id)
+        if note is None:
+            return api.Fail(404, api.NotFound(error="not_found", id=params.id))
+        return note
+
+    ...
+
+
+app = api.create_app(Notes())
+```
+
+A handler returns the response value, a `Fail` with a status the operation
+declares, or a `Response`, which is sent as it is: the same three as in
+TypeScript. A status the operation does not declare is an error for the type
+checker; past the type checker it is a 500 and is logged, as is a value the
+response model rejects.
+
+What is kept the same on both sides:
+
+|                                                     | TypeScript handlers                                    | Generated FastAPI module                                 |
+| --------------------------------------------------- | ------------------------------------------------------ | -------------------------------------------------------- |
+| A body's types                                      | not coerced (`"5"` is not a number)                    | strict models for bodies and responses                   |
+| Query and path parameters                           | coerced from text where the schema says so             | coerced                                                  |
+| Lengths, bounds, patterns, literals, closed objects | Zod                                                    | the same constraints on the Pydantic field               |
+| An optional field that was not set                  | absent from the response                               | absent (`exclude_unset`), never `null`                   |
+| A request that fails validation                     | 400 `{ error, in, issues: [{ path, message, code }] }` | the same shape, same `in` and `path`                     |
+| A field name Python cannot use (`from`, `data-id`)  | as written                                             | a Python attribute (`from_`) with the wire name as alias |
+| The same object in two operations                   | one type                                               | one class, with a name per operation                     |
+
+What differs, and what does not cross:
+
+- The message and the code of a validation issue are Pydantic's
+  (`string_too_short`), not Zod's (`too_small`)
+- A `transform()` in a schema is TypeScript code. Python sees the input of a
+  request schema; the result of a transform in a response is `Any`
+- A string with a format (`date-time`, `uuid`) stays a `str` with Zod's pattern.
+  Parsing it and writing it back could change the text
+- A JSON body sent as `text/plain` is read by the TypeScript handlers and
+  refused by FastAPI; a form body is a 400 there, not a 415
+- Not generated yet: server-sent event streams (listed in a comment in the
+  module), request-dependent responses (`projection()`, `selection()`),
+  protocols, a Python client
+
+The module is built from a contract, which is also available on its own:
+`generateContract()` (`--format contract`) describes every operation with its
+method, path template, declared error statuses, pagination metadata and a JSON
+Schema (draft 2020-12) for each part. Request parts are the input side of the
+Zod schema, responses the output side.
+
+How it is checked (`./scripts/test-python`, through `uv`): the generated module
+and a hand-written implementation of `Handlers` pass pyright in strict mode; the
+application runs under uvicorn; and the tests that hold for the fixture's
+TypeScript server hold for it, using the TypeScript client generated from the
+same routes: CRUD, declared errors as values, cursor pagination, validation
+failures, a DELETE body, a catch-all path, a recursive schema, and the lens laws
+of `checkResourceLaws()`.
+
 ## API
 
 ### `createApiHandlers(def)`
@@ -1206,6 +1297,8 @@ src/
 │   ├── dependent.ts   # projection(), expansion(): responses typed by the request
 │   ├── dependent_types.ts # Type-level functions: ResponseFamily, Apply, Resolve
 │   └── openapi.ts     # OpenAPI spec generation (x-pagination)
+├── contract/          # The routes as language-neutral data (JSON Schema per part)
+├── python/            # Pydantic models and a FastAPI router from the contract
 ├── pagination/
 │   ├── types.ts       # Pagination type definitions
 │   └── index.ts       # cursor, cursorId, offset, page, url helpers

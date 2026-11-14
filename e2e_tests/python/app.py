@@ -1,0 +1,126 @@
+"""The fixture API of e2e_tests/fixtures/python, in Python.
+
+The handlers do what the TypeScript handlers of the fixture do. Models,
+`Handlers` and `create_app()` come from `api_generated.py`, which the
+generator writes from the TypeScript routes.
+"""
+
+from typing import Literal
+
+from fastapi.responses import Response
+
+import api_generated as api
+
+Note = api.NotesRetrieveResponse
+
+
+class Notes:
+    """Implements `api.Handlers` with the notes in memory."""
+
+    def __init__(self) -> None:
+        self.notes: dict[str, Note] = {}
+        self.created = 0
+
+    async def notes_list(
+        self, query: api.NotesListQuery
+    ) -> api.NotesListResponse | Response:
+        wanted = query.tag or []
+        matching = sorted(
+            (
+                note
+                for note in self.notes.values()
+                if all(tag in note.tags for tag in wanted)
+                and (query.cursor is None or note.id > query.cursor)
+            ),
+            key=lambda note: note.id,
+        )
+        items = matching[: query.limit]
+        # The cursor stays unset on the last page: absent, not null.
+        if len(matching) > len(items):
+            return api.NotesListResponse(items=items, cursor=items[-1].id)
+        return api.NotesListResponse(items=items)
+
+    async def notes_create(
+        self, body: api.NotesCreateBody
+    ) -> (
+        api.NotesCreateResponse
+        | api.Fail[Literal[409], api.NotesCreateError409]
+        | Response
+    ):
+        for note in self.notes.values():
+            if note.title == body.title:
+                return api.Fail(
+                    409, api.NotesCreateError409(error="conflict", title=body.title)
+                )
+        self.created += 1
+        return self._store(f"n{self.created}", 0, body)
+
+    async def notes_retrieve(
+        self, params: api.NotesRetrieveParams
+    ) -> api.NotesRetrieveResponse | api.Fail[Literal[404], api.NotFound] | Response:
+        note = self.notes.get(params.id)
+        if note is None:
+            return api.Fail(404, api.NotFound(error="not_found", id=params.id))
+        return note
+
+    async def notes_update(
+        self, params: api.NotesUpdateParams, body: api.NotesUpdateBody
+    ) -> api.NotesUpdateResponse | Response:
+        current = self.notes.get(params.id)
+        return self._store(params.id, current.likes if current else 0, body)
+
+    async def notes_delete(
+        self, params: api.NotesDeleteParams, body: api.NotesDeleteBody
+    ) -> api.NotesDeleteResponse | api.Fail[Literal[404], api.NotFound] | Response:
+        if self.notes.pop(params.id, None) is None:
+            return api.Fail(404, api.NotFound(error="not_found", id=params.id))
+        return api.NotesDeleteResponse(deleted=True, reason=body.reason)
+
+    async def echo_retrieve(
+        self, params: api.EchoRetrieveParams
+    ) -> api.EchoRetrieveResponse | Response:
+        return api.EchoRetrieveResponse(
+            path=params.path, segments=params.path.split("/")
+        )
+
+    async def shapes_create(
+        self, body: api.ShapesCreateBody
+    ) -> api.ShapesCreateResponse | Response:
+        shape = body.shape
+        if isinstance(shape, api.ShapesCreateBodyShapeCircle):
+            area = 3 * shape.radius * shape.radius
+        else:
+            area = shape.width * shape.height
+        return api.ShapesCreateResponse(
+            area=area,
+            kind=shape.kind,
+            from_=body.from_,
+            # Only what the request set: an absent `class` stays absent.
+            meta=api.ShapesCreateResponseMeta.model_validate(
+                body.meta.model_dump(by_alias=True, exclude_unset=True)
+            ),
+            unit=body.unit,
+            note=body.note,
+        )
+
+    async def trees_create(
+        self, body: api.TreesCreateBody
+    ) -> api.TreesCreateResponse | Response:
+        def depth(tree: api.TreesCreateBody) -> int:
+            return 1 + max((depth(child) for child in tree.children), default=0)
+
+        return api.TreesCreateResponse(
+            depth=depth(body),
+            root=api.TreesCreateResponseRoot.model_validate(body.model_dump()),
+        )
+
+    def _store(self, note_id: str, likes: int, body: api.NotesCreateBody) -> Note:
+        # Only the fields the body set: an absent `pinned` stays absent.
+        note = Note.model_validate(
+            {"id": note_id, "likes": likes, **body.model_dump(exclude_unset=True)}
+        )
+        self.notes[note_id] = note
+        return note
+
+
+app = api.create_app(Notes())

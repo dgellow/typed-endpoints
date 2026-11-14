@@ -19,7 +19,9 @@ import { isIdentifier } from "./zod.ts";
 import {
   type ExtractedMethod,
   type Extraction,
+  type ExtractOptions,
   extractRoutes,
+  type MethodSchemas,
   type RouteSource,
 } from "./extract.ts";
 
@@ -77,12 +79,16 @@ const RESULT_MARKER = "__TYPED_ENDPOINTS_RESULT__";
 async function extractWithConfig(
   sources: RouteSource[],
   configPath: string,
+  extractOptions: ExtractOptions,
 ): Promise<Extraction> {
   const extractUrl = new URL("./extract.ts", import.meta.url).href;
   const script = `
     const { extractRoutes } = await import(${JSON.stringify(extractUrl)});
     try {
-      const result = await extractRoutes(JSON.parse(Deno.args[0]));
+      const result = await extractRoutes(
+        JSON.parse(Deno.args[0]),
+        JSON.parse(Deno.args[1]),
+      );
       console.log(${JSON.stringify(RESULT_MARKER)} + JSON.stringify(result));
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));
@@ -92,6 +98,7 @@ async function extractWithConfig(
 
   const { code, stdout, stderr } = await denoEval(configPath, script, [
     JSON.stringify(sources),
+    JSON.stringify(extractOptions),
   ]);
 
   if (code !== 0) {
@@ -110,7 +117,8 @@ async function extractWithConfig(
 // Endpoints
 // =============================================================================
 
-interface EndpointType {
+/** One method of one route, as the generators see it. */
+export interface EndpointType {
   /** Base of the generated type names, e.g. `UsersByIdGet`. */
   readonly name: string;
   /** URL path in file-route notation, e.g. `/api/users/[id]`. */
@@ -130,6 +138,11 @@ interface EndpointType {
   readonly errors?: Readonly<Record<string, string>>;
   readonly pagination?: AnyPaginationMeta;
   readonly operationId?: string;
+  /** The parts as JSON Schema, when the extraction was asked for them. */
+  readonly schemas?: MethodSchemas;
+  readonly summary?: string;
+  readonly description?: string;
+  readonly tags?: readonly string[];
 }
 
 function describe(endpoint: EndpointType): string {
@@ -206,6 +219,10 @@ function buildEndpoints(extraction: Extraction): EndpointType[] {
         errors: def.errors,
         pagination: def.pagination as AnyPaginationMeta | undefined,
         operationId: def.operationId,
+        schemas: def.schemas,
+        summary: def.summary,
+        description: def.description,
+        tags: def.tags,
       });
     }
   }
@@ -213,17 +230,28 @@ function buildEndpoints(extraction: Extraction): EndpointType[] {
   return endpoints;
 }
 
+/** What every generator needs from the routes: which, and from where. */
+export interface RouteOptions {
+  /** Directories containing route files. Defaults to ["routes/api"] */
+  readonly routesDirs?: readonly string[];
+  /** Path to a deno.json whose import map the route files use (Deno). */
+  readonly config?: string;
+  /** The framework whose route file layout `routesDirs` follows. */
+  readonly convention?: RouteConvention;
+}
+
 /**
- * Generate TypeScript types from API route Zod schemas.
- * Returns the generated types as a string.
- * If `output` is provided, also writes to that file.
+ * Import the route files and describe their endpoints.
+ *
+ * Shared by the TypeScript generator and by the generators for other
+ * languages, which ask for JSON Schema (`extractOptions.jsonSchema`).
  */
-export async function generateTypes(
-  options: TypeGenOptions = {},
-): Promise<string> {
+export async function loadEndpoints(
+  options: RouteOptions,
+  extractOptions: ExtractOptions = {},
+): Promise<{ endpoints: EndpointType[]; extraction: Extraction }> {
   const {
     routesDirs = ["routes/api"],
-    output,
     config,
     convention = "fresh",
   } = options;
@@ -253,10 +281,22 @@ export async function generateTypes(
   }
 
   const extraction = inSubprocess
-    ? await extractWithConfig(sources, config)
-    : await extractRoutes(sources);
+    ? await extractWithConfig(sources, config, extractOptions)
+    : await extractRoutes(sources, extractOptions);
 
-  const endpoints = buildEndpoints(extraction);
+  return { endpoints: buildEndpoints(extraction), extraction };
+}
+
+/**
+ * Generate TypeScript types from API route Zod schemas.
+ * Returns the generated types as a string.
+ * If `output` is provided, also writes to that file.
+ */
+export async function generateTypes(
+  options: TypeGenOptions = {},
+): Promise<string> {
+  const { output } = options;
+  const { endpoints, extraction } = await loadEndpoints(options);
 
   // Named types that only the request-dependent response texts use
   // belong to the client format alone.

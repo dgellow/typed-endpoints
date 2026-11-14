@@ -17,6 +17,7 @@
     "CHANGELOG.md",
     "e2e_tests/bun",
     "e2e_tests/framework-types",
+    "e2e_tests/python/.venv",
     "scripts/bun-package.ts",
     "TypeScript",
     "aplas-code"
@@ -33,6 +34,8 @@
     "./nitro": "./src/integrations/nitro.ts",
     "./client": "./src/client/index.ts",
     "./protocol": "./src/protocol/index.ts",
+    "./contract": "./src/contract/index.ts",
+    "./python": "./src/python/index.ts",
     "./cli": "./src/cli.ts"
   },
   "publish": {

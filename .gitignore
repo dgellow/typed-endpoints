@@ -3,3 +3,7 @@ TypeScript/
 aplas-code/
 idris2-http-example/
 recombine/
+
+# Python (e2e_tests/python, run through uv)
+.venv/
+__pycache__/
