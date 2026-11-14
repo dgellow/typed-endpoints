@@ -39,7 +39,8 @@ src/
 │   ├── file_routes.ts # loadFileRoutes(), path formatting for routers
 │   ├── module_api.ts # readModuleApi(): handler object, per-method exports, default export
 │   ├── runtime.ts  # The only place that knows the runtime (Deno subprocess for import maps)
-│   ├── zod_internals.ts # The only reader of schema._zod (def, type, unwrap, optionality)
+│   ├── zod_internals.ts # The only reader of schema._zod (def, type, checks, unwrap, optionality)
+│   ├── arbitrary.ts # arbitrary(schema): a seeded, valid value of any schema
 │   ├── dependent.ts # projection(), expansion(): response type depends on the request
 │   └── dependent_types.ts # Type-level functions (ResponseFamily, Apply, Resolve); no imports
 ├── integrations/   # fresh, bun, hono, next, sveltekit, astro, nitro, fetch; vite (build-time)
@@ -51,6 +52,7 @@ src/
 │   ├── mapping.ts  # Declarative field mappings: fromStep()
 │   ├── client.ts   # Type-safe session execution
 │   ├── plan.ts     # PlanOf/ResultOf, runPlan(): runs sequence/repeat/choice/branch/parallel
+│   ├── fuzz.ts     # fuzzProtocol(): sends the calls a protocol forbids to an executor
 │   ├── errors.ts   # ProtocolError hierarchy thrown by sessions
 │   ├── introspect.ts # Zod schema path lookup used by validateProtocol()
 │   ├── http.ts     # HTTP executor for real endpoints
@@ -159,6 +161,11 @@ N. TypeScript can't express dependent types, so:
   `After<Node, Known>`) and gives a step that cannot run there the uninhabited
   type `NotReady`. `branch(step, predicate, sides)` names the step it asks about
   and narrows what is known on each side
+- **Fuzzing**: `fuzzProtocol()` walks a protocol with generated requests and
+  sends, at every state, the calls forbidden there (`before-dependency`,
+  `wrong-variant`, `revoked`, `forged`) to the executor. A forbidden call the
+  server accepts is a finding; so is an allowed call it refuses, which usually
+  means the protocol under-declares (a missing `revoking`)
 - **Revocation**: `revoking(step, names)` removes steps from `TDone`/`TSeen` and
   their responses from the session. The types follow the returned session;
   `createSession(..., { singleUse: true })` refuses the earlier value at runtime

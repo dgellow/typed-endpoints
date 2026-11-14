@@ -232,6 +232,18 @@ export type {
   SequencePlan,
 } from "./plan.ts";
 
+// Fuzzing: the calls a protocol forbids, sent to a server
+export { FORBIDDEN_REASONS, formatFuzzReport, fuzzProtocol } from "./fuzz.ts";
+export type {
+  ForbiddenReason,
+  FuzzCall,
+  FuzzFinding,
+  FuzzOptions,
+  FuzzReport,
+  ProbeCount,
+  RequestContext,
+} from "./fuzz.ts";
+
 // OpenAPI extensions
 export {
   addProtocolsToSpec,

@@ -861,6 +861,7 @@ src/
 │   ├── module_api.ts  # How a route module exposes its method definitions
 │   ├── runtime.ts     # What differs between Deno and Bun (module resolution)
 │   ├── zod_internals.ts # Readers for Zod schema internals
+│   ├── arbitrary.ts   # arbitrary(schema): a seeded, valid value of any schema
 │   ├── dependent.ts   # projection(), expansion(): responses typed by the request
 │   ├── dependent_types.ts # Type-level functions: ResponseFamily, Apply, Resolve
 │   └── openapi.ts     # OpenAPI spec generation (x-pagination)
@@ -872,6 +873,8 @@ src/
 │   ├── dsl.ts         # Builder functions: step(), dependentStep(), mappedStep(), etc.
 │   ├── mapping.ts     # Declarative field mappings: fromStep(), deriveSchemaWithLiterals()
 │   ├── client.ts      # Type-safe protocol session client
+│   ├── plan.ts        # PlanOf, ResultOf, runPlan(): running compositions
+│   ├── fuzz.ts        # fuzzProtocol(): the calls a protocol forbids, sent to a server
 │   ├── errors.ts      # Errors thrown by protocol sessions
 │   ├── introspect.ts  # Schema path lookup used by validateProtocol()
 │   ├── http.ts        # HTTP executor for real endpoint connections
@@ -1291,6 +1294,10 @@ const order = topologicalSort(oauth2Protocol);
 - **Branded type generation** via `generateProtocolTypes()` — compile-time
   provenance enforcement from `mappedStep()` definitions
 - **OpenAPI x-protocol extension** for spec generation
+- **Plans** (`runPlan()`): compositions as request types, with compile-time
+  tracking of what has run
+- **Protocol fuzzing** (`fuzzProtocol()`): checks that a server refuses the
+  calls the protocol forbids
 
 ### Type-Safe Protocol Client
 
@@ -1550,6 +1557,128 @@ Benefits:
   `response`; naming a method the handler does not define is a compile error
 - **Backward compatible**: `step()` and `dependentStep()` still work for manual
   definitions
+
+### Fuzzing a Server Against a Protocol
+
+A session keeps a client from calling `exchange` before `authorize`, or from
+spending an authorization code twice. It says nothing about the server: whether
+it refuses those calls when a client that does not use the types sends them.
+
+`fuzzProtocol()` walks a protocol the way a session allows, with generated
+requests, and at every state it reaches it also sends the calls the protocol
+forbids there, past the session, straight to the executor:
+
+| Reason              | The call                                                                                                   |
+| ------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `before-dependency` | a step whose dependency has not run                                                                        |
+| `wrong-variant`     | a step whose `when` the earlier response does not meet                                                     |
+| `revoked`           | a step whose dependency was revoked; where the step ran before, the request it sent then, again (a replay) |
+| `forged`            | an available step, with a request built for another earlier response                                       |
+
+```typescript
+import {
+  createHttpExecutor,
+  formatFuzzReport,
+  fuzzProtocol,
+} from "@dgellow/typed-endpoints/protocol";
+
+const report = await fuzzProtocol(
+  sessions,
+  createHttpExecutor(sessions, { baseUrl, routes }),
+  {
+    seed: 3,
+    runs: 15,
+    // Where a generated value is not good enough: real credentials.
+    requests: {
+      login: () => ({ user: "ada", password: process.env.PASSWORD }),
+    },
+  },
+);
+
+assertEquals(report.findings, [], formatFuzzReport(report));
+```
+
+A refusal is an error the executor throws (an HTTP error status, with the HTTP
+executor). For a server that refuses with a response of its own, such as OAuth's
+error variants, `isRefusal: (step, response) => response.type === "error"` says
+which responses refuse.
+
+A report names the seed, counts the calls by reason, lists the steps the walks
+reached, and carries each finding with the accepted calls that led to it:
+
+```
+seed 1, 40 walks
+allowed calls: 156/156 accepted
+forbidden (before-dependency): 120/120 refused
+forbidden (wrong-variant): 42/44 refused
+forbidden (revoked): 40/118 refused
+forbidden (forged): 71/71 refused
+covered: authorize, exchange, refresh, revoke
+
+the server accepted "exchange" (revoked, replayed request), 78 times
+  walk 0, after: authorize > exchange
+  request: {"grant_type":"authorization_code","code":"code-1","client_id":"y","client_secret":"am"}
+  response: {"type":"success","access_token":"access-3","token_type":"Bearer","expires_in":3600}
+
+the server accepted "exchange" (wrong-variant, replayed request), 2 times
+  walk 27, after: authorize > exchange > authorize
+  request: {"grant_type":"authorization_code","code":"code-1","client_id":"exhkl","client_secret":"qmwwhvb"}
+  response: {"type":"success","access_token":"access-4","token_type":"Bearer","expires_in":3600}
+```
+
+That is the report for an authorization server that exchanges one code more than
+once (`src/protocol/fuzz_test.ts`).
+
+Three kinds of finding:
+
+- `forbidden-accepted`: the server answered a forbidden call as if it were
+  allowed. For a credential that is a defect. For a stateless lookup it may be
+  the protocol that is stricter than the server needs to be
+- `allowed-refused`: the server refused a call the protocol allows. Often the
+  protocol is too permissive: a `logout` that does not declare
+  `revoking(["login"])` leaves a second `logout` allowed
+- `invalid-response`: the response to an allowed call does not fit its schema
+
+Limits:
+
+- A step the server answers the same way in every state cannot be probed. Token
+  revocation is one (RFC 7009, section 2.2: the answer is 200 for a token the
+  server does not know). Leave it out with `probes: (step) => step !== "revoke"`
+- A replay is sent only for a request made for a response that has since been
+  revoked. A request made for a response that was merely superseded (a second
+  login) may still be good
+- Requests come from `arbitrary()`. A step whose request cannot be generated is
+  counted in `report.skipped` and needs an entry in `requests`
+
+Run against the OAuth reference protocol, the fuzzer found a gap in the protocol
+itself: `revoke` accepted any string as the token, so a session could believe a
+grant revoked while the server kept it alive. The request is now limited to the
+tokens the exchange issued.
+
+### Values From Schemas
+
+`arbitrary(schema)` returns a value the schema accepts, chosen by a seeded
+generator: the same seed gives the same value.
+
+```typescript
+import { arbitrary, seededRandom } from "@dgellow/typed-endpoints";
+
+arbitrary(z.object({ id: z.uuid(), tags: z.array(z.string()).max(3) }), {
+  seed: 7,
+});
+
+// One generator across calls
+const random = seededRandom(7);
+const first = arbitrary(UserSchema, { random });
+const second = arbitrary(UserSchema, { random });
+```
+
+It reads the schema's structure and checks (lengths, bounds, `multipleOf`,
+string formats, `startsWith`/`endsWith`/`includes`), builds a value, and parses
+it with the schema. Constraints it cannot read (`refine()`, a regular
+expression) are met by retrying; a schema it cannot satisfy throws
+`ArbitraryError` with the path of the part that failed. Recursive schemas end:
+past `maxDepth`, optional parts are left out and lists are empty.
 
 ### OpenAPI Protocol Extensions
 
