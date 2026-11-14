@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { ClientError, createClient } from "./index.ts";
 
 // Mock API type for testing (using type instead of interface for index signature compatibility)
@@ -147,6 +147,39 @@ Deno.test("createClient handles nested resources", async () => {
   assertEquals(requests[0].url, "http://localhost:3000/api/webhooks/stripe");
   assertEquals(requests[0].method, "POST");
   assertEquals(result, { received: true });
+});
+
+Deno.test("createClient resources are not thenables", async () => {
+  const client = createClient<TestApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: createMockFetch(() => Response.json([])),
+  });
+
+  // `await` looks up `then`. If the proxy answered with a nested resource,
+  // these awaits would never settle and the test would time out.
+  const users = await client.users;
+  const stripe = await Promise.resolve(client.webhooks.stripe);
+
+  assertEquals(await users.list(), []);
+  assertEquals(typeof stripe.create, "function");
+  // deno-lint-ignore no-explicit-any
+  assertEquals((client as any).then, undefined);
+  // deno-lint-ignore no-explicit-any
+  assertEquals((client.users as any)[Symbol.toPrimitive], undefined);
+});
+
+Deno.test("createClient throws when an unknown method is called", () => {
+  const client = createClient<TestApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: createMockFetch(() => Response.json([])),
+  });
+
+  assertThrows(
+    // deno-lint-ignore no-explicit-any
+    () => (client.users as any).lst(),
+    TypeError,
+    '"lst" is not a client method (called as users.lst())',
+  );
 });
 
 Deno.test("createClient throws ClientError on non-ok response", async () => {

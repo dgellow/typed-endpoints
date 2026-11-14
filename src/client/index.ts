@@ -225,6 +225,18 @@ export class ClientError extends Error {
 }
 
 /**
+ * Properties that must not resolve to a nested resource.
+ *
+ * - Symbols are looked up by the runtime (inspection, iteration, coercion).
+ * - `then` is looked up by `await` and `Promise.resolve`: a resource that
+ *   answers it with a function is treated as a thenable that never settles.
+ * - `toJSON` is looked up by `JSON.stringify`.
+ */
+function isReservedProperty(prop: string | symbol): prop is symbol {
+  return typeof prop === "symbol" || prop === "then" || prop === "toJSON";
+}
+
+/**
  * Create a typed HTTP client.
  */
 export function createClient<Api extends ApiSchema>(
@@ -289,7 +301,18 @@ export function createClient<Api extends ApiSchema>(
    */
   function createResourceProxy(pathSegments: string[]): unknown {
     return new Proxy(() => {}, {
-      get(_target, prop: string) {
+      apply() {
+        // Reached when a property that is not a client method is called,
+        // e.g. a typo such as `client.users.lst()`.
+        throw new TypeError(
+          `"${pathSegments.at(-1)}" is not a client method (called as ${
+            pathSegments.join(".")
+          }())`,
+        );
+      },
+      get(_target, prop: string | symbol) {
+        if (isReservedProperty(prop)) return undefined;
+
         // Handle method calls
         if (prop === "list") {
           return (options?: RequestOptions) => {
@@ -364,7 +387,8 @@ export function createClient<Api extends ApiSchema>(
 
   // Create the root proxy
   return new Proxy({} as TypedClient<Api>, {
-    get(_target, prop: string) {
+    get(_target, prop: string | symbol) {
+      if (isReservedProperty(prop)) return undefined;
       return createResourceProxy([prop]);
     },
   });
