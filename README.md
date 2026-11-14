@@ -6,8 +6,16 @@ specs, and TypeScript types for free.
 ## Installation
 
 ```sh
+# Deno
 deno add jsr:@dgellow/typed-endpoints
+
+# Bun
+bunx jsr add @dgellow/typed-endpoints
 ```
+
+The library runs on Deno and on Bun; both are tested in CI. Route handlers are
+provided for [Fresh](#fresh) and for [`Bun.serve()`](#bun). The typed client,
+the protocol module and the generators are the same on both.
 
 ## Usage
 
@@ -54,6 +62,76 @@ export const handler = createApiHandlers({
   }),
 });
 ```
+
+### Bun
+
+The Bun integration has the same helpers as the Fresh one. A handler receives
+Bun's request instead of a Fresh context:
+
+```typescript
+// routes/api/users/[id].ts
+import { z } from "zod";
+import { createApiHandlers, endpoint } from "@dgellow/typed-endpoints/bun";
+
+export const handler = createApiHandlers({
+  GET: endpoint({
+    params: z.object({ id: z.string() }),
+    response: z.object({ id: z.string(), name: z.string() }),
+    handler: (_req, { params }) => Response.json(getUser(params.id)),
+  }),
+});
+```
+
+`createApiHandlers()` returns a route object (`{ GET, POST, ... }`) that
+`Bun.serve()` takes as is. `fileRoutes()` builds the whole `routes` option from
+a directory, with the file conventions the generators read:
+
+```typescript
+// server.ts
+import { fileRoutes } from "@dgellow/typed-endpoints/bun";
+
+Bun.serve({
+  routes: await fileRoutes("routes"),
+  // routes/api/users/[id].ts     -> /api/users/:id
+  // routes/api/files/[...path].ts -> /api/files/*
+});
+```
+
+Type and OpenAPI generation work on the same directory:
+
+```typescript
+import { generateOpenApiSpec, generateTypes } from "@dgellow/typed-endpoints";
+
+await generateTypes({
+  routesDirs: ["routes/api"],
+  output: "src/api.ts",
+  format: "client",
+});
+const spec = await generateOpenApiSpec({ routesDir: "routes/api" });
+```
+
+Another framework needs a few lines: `buildHandlers()` takes the method
+definitions and how to read the request and the path parameters from whatever
+the framework passes to a handler.
+
+```typescript
+import { buildHandlers } from "@dgellow/typed-endpoints";
+
+// Hono-style context
+const handlers = buildHandlers<Context, typeof def>(def, {
+  request: (c) => c.req.raw,
+  params: (c) => c.req.param(),
+});
+```
+
+Differences from Deno:
+
+- Route files are imported into the generating process. On Deno they are
+  imported in a subprocess when a `deno.json` is given, so that they resolve
+  through its import map; Bun resolves imports from the importing file, and the
+  `config` option has no effect.
+- A catch-all route is Bun's `*`, which has no parameter name. The handler reads
+  the rest of the path from `req.url`.
 
 ### OpenAPI Generation
 
@@ -548,6 +626,8 @@ src/
 │   ├── types.ts       # Shared types (including SSE)
 │   ├── validation.ts  # Request validation
 │   ├── routes.ts      # Route discovery, path conversion, operationId derivation
+│   ├── handlers.ts    # Route handlers with validation, for any framework
+│   ├── runtime.ts     # What differs between Deno and Bun (module resolution)
 │   ├── zod_internals.ts # Readers for Zod schema internals
 │   ├── dependent.ts   # projection(), expansion(): responses typed by the request
 │   ├── dependent_types.ts # Type-level functions: ResponseFamily, Apply, Resolve
@@ -578,6 +658,7 @@ src/
 │   └── generate.ts    # types, client and routes output formats
 ├── integrations/
 │   ├── fresh.ts       # Fresh v2 runtime adapter (endpoint, sseEndpoint)
+│   ├── bun.ts         # Bun.serve() adapter (endpoint, sseEndpoint, fileRoutes)
 │   └── vite.ts        # Vite build-time plugins (OpenAPI, protocol types)
 ├── cli.ts             # CLI for type generation
 └── mod.ts             # Root exports
