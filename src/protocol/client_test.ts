@@ -1039,8 +1039,14 @@ Deno.test("OAuth protocol: an authorization code is exchanged once, tokens end w
 
   const revocable = s3.ready("revoke");
   assert(revocable);
+  // Only a token of the exchange can be revoked: anything else would
+  // leave the grant alive while the session believes it gone.
+  await assertRejects(
+    () => revocable.execute("revoke", { token: "made-up", client_id: "c" }),
+    InvalidRequestError,
+  );
   const { session: s4 } = await revocable.execute("revoke", {
-    token: "at-2",
+    token: "rt",
     client_id: "client",
   });
 

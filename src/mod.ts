@@ -42,6 +42,15 @@ export type {
   ResponseFamily,
 } from "./core/dependent_types.ts";
 
+// Values from schemas
+export {
+  arbitrary,
+  ArbitraryError,
+  type ArbitraryOptions,
+  type Random,
+  seededRandom,
+} from "./core/arbitrary.ts";
+
 // Validation
 export {
   parseSearchParams,

@@ -176,7 +176,10 @@ export const refreshStep = dependentStep({
  * Client revokes access or refresh token.
  *
  * The step revokes `exchange`: with the tokens gone, `refresh` and a
- * second `revoke` are no longer available.
+ * second `revoke` are no longer available. That only holds for a token of
+ * that exchange, so the request is limited to its access token and its
+ * refresh token: revoking some other string would leave the grant alive
+ * while the session believes it gone.
  */
 export const revokeStep = revoking(
   dependentStep({
@@ -184,9 +187,13 @@ export const revokeStep = revoking(
     dependsOn: exchangeStep,
     description: "Revoke access or refresh token",
     when: (prev) => prev.type === "success",
-    request: () =>
+    request: (prev) =>
       z.object({
-        token: z.string(), // access_token or refresh_token
+        // A token the exchange issued: its access_token or refresh_token
+        token: z.literal([
+          prev.access_token,
+          ...(prev.refresh_token === undefined ? [] : [prev.refresh_token]),
+        ]),
         token_type_hint: z.enum(["access_token", "refresh_token"]).optional(),
         client_id: z.string(),
         client_secret: z.string().optional(),

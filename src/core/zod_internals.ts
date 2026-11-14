@@ -36,6 +36,18 @@ export function zodType(schema: unknown): string | undefined {
   return typeof type === "string" ? type : undefined;
 }
 
+/**
+ * The definitions of the checks on a schema (`min_length`, `greater_than`,
+ * `string_format`, ...), in the order they were added. A format schema such
+ * as `z.email()` is its own check and comes first.
+ */
+export function zodChecks(schema: unknown): ZodDef[] {
+  const def = zodDef(schema);
+  const own = typeof def.check === "string" ? [def] : [];
+  const added = Array.isArray(def.checks) ? def.checks.map(zodDef) : [];
+  return [...own, ...added];
+}
+
 /** Wrapper schema types that carry the described type in `innerType`. */
 const WRAPPERS: ReadonlySet<string> = new Set([
   "optional",
