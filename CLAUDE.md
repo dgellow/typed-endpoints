@@ -123,7 +123,7 @@ e2e_tests/bun/      # Tests run by Bun (`bun:test`); excluded from Deno's tools
 e2e_tests/framework-types/ # Compile-only check against the frameworks' types
 e2e_tests/conformance/ # The suite every server passes (suite.ts), the recorded refusals
 e2e_tests/python/   # uv project: generated FastAPI module and client, handlers
-e2e_tests/rust/     # cargo project: generated axum module, handlers
+e2e_tests/rust/     # cargo project: generated axum module, handlers; a hand-written protocol session (src/oauth_session.rs)
 ```
 
 ## Testing
@@ -369,3 +369,12 @@ N. TypeScript can't express dependent types, so:
   `client.ts`); `await using` or `abandon()` on any of them ends the session
   once, running the step on the latest state unless that state is terminal.
   `{ linear: true }` then throws `SessionAbandonedError`
+- **Other languages**: `x-protocols` is the only description of a protocol that
+  leaves TypeScript, and carries the steps, their dependencies, what they revoke
+  and renew. It does not carry `when` or how a dependent step computes its
+  request, which are TypeScript functions. `e2e_tests/rust/src/oauth_session.rs`
+  is the OAuth protocol as a Rust session written by hand, to find out what a
+  generator would write: a step takes the session by value, so each kind of call
+  `fuzzProtocol()` sends as forbidden does not compile.
+  `e2e_tests/rust/forbidden_calls.ts` builds each such example by itself and
+  looks for the error it names
