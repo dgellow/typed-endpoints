@@ -49,6 +49,7 @@ export type { SseEvent, SseEventDef, SseMethodDef } from "../core/types.ts";
 export type {
   ApiDefOf,
   HandlerMethodDef,
+  HandlerResult,
   Handlers,
   HandlerSseMethodDef,
 } from "../core/handlers.ts";

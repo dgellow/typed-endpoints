@@ -20,6 +20,7 @@ import type {
   SseMethodDef,
   ValidatedRequest,
 } from "./types.ts";
+import { applyDependentResponse } from "./dependent.ts";
 import { validateRequest } from "./validation.ts";
 
 /** Path parameters as a router hands them over. */
@@ -56,6 +57,16 @@ export interface HandlerMethodDef<
   /**
    * Handles the request. Receives the framework's context and the
    * validated body, query and path parameters.
+   *
+   * Returns either:
+   *
+   * - a value of the `response` schema's input type. It is parsed with the
+   *   schema, cut down to what the request asked for where the schema has
+   *   `projection()` or `expansion()` places, and sent as JSON with status
+   *   200. A value the schema rejects is a server error: the client gets
+   *   500 and the issues are logged.
+   * - a `Response`, which is sent as it is and not checked. For other
+   *   status codes, headers, or bodies that are not JSON.
    */
   readonly handler: (
     context: TContext,
@@ -64,8 +75,16 @@ export interface HandlerMethodDef<
       TQuerySchema extends z.ZodType ? z.infer<TQuerySchema> : unknown,
       TParamsSchema extends z.ZodType ? z.infer<TParamsSchema> : unknown
     >,
-  ) => Response | Promise<Response>;
+  ) => HandlerResult<TResponseSchema> | Promise<HandlerResult<TResponseSchema>>;
 }
+
+/**
+ * What a handler may return: a `Response`, or, when the method declares a
+ * `response` schema, a value of that schema's input type.
+ */
+export type HandlerResult<TResponseSchema> = TResponseSchema extends z.ZodType
+  ? Response | z.input<TResponseSchema>
+  : Response;
 
 /** An SSE method definition with its generator, for context `TContext`. */
 export interface HandlerSseMethodDef<
@@ -218,6 +237,40 @@ function isSseEndpoint(def: unknown): boolean {
 }
 
 /**
+ * The response for a value a handler returned: parsed by the response
+ * schema, reduced by its request-dependent rules, as JSON.
+ */
+function respondWith(
+  method: string,
+  request: Request,
+  def: { readonly response?: z.ZodType },
+  value: unknown,
+  validated: { readonly query: unknown },
+): Response {
+  let body = value;
+  if (def.response) {
+    const parsed = def.response.safeParse(value);
+    if (!parsed.success) {
+      // The handler broke the endpoint's contract. That is a bug on the
+      // server; the details are for its log, not for the client.
+      console.error(
+        `${method} ${
+          new URL(request.url).pathname
+        }: the handler returned a value that does not match the response schema:`,
+        parsed.error.issues,
+      );
+      return jsonError("Internal Server Error", 500);
+    }
+    body = applyDependentResponse(def.response, parsed.data, validated.query);
+  }
+  if (body === undefined) return new Response(null, { status: 204 });
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/**
  * Create route handlers with automatic validation for any framework.
  *
  * @param apiDef Method definitions by HTTP method, each with its handler.
@@ -314,7 +367,9 @@ export function buildHandlers<
           return jsonError(result.error, 400);
         }
 
-        return await methodDef.handler(context, result.data);
+        const returned = await methodDef.handler(context, result.data);
+        if (returned instanceof Response) return returned;
+        return respondWith(method, request, methodDef, returned, result.data);
       };
     }
   }

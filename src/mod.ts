@@ -14,6 +14,7 @@ export type {
 
 // Responses whose type depends on the request
 export {
+  applyDependentResponse,
   expansion,
   type ExpansionSchema,
   fieldsOf,
@@ -78,6 +79,7 @@ export {
   type BuildHandlersOptions,
   defineIntegration,
   type HandlerMethodDef,
+  type HandlerResult,
   type Handlers,
   type HandlerSseMethodDef,
   type Integration,
