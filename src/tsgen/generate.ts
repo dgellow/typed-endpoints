@@ -4,6 +4,7 @@ import {
   apiPathToTemplate,
   collectRouteFiles,
   deriveOperationId,
+  endsWithParam,
   filePathToApiPath,
   HTTP_METHODS,
   httpMethodToResourceMethod,
@@ -472,6 +473,11 @@ function generateClientFormat(
   function renderNode(node: ResourceNode, indent: string): void {
     for (const [methodName, { endpoint }] of Object.entries(node.methods)) {
       lines.push(`${indent}${methodName}: {`);
+      // A subscription to a path that ends with a parameter takes that id;
+      // the client reads this from `params`.
+      if (endpoint.events && endpoint.params && endsWithParam(endpoint.path)) {
+        lines.push(`${indent}  params: ${endpoint.params};`);
+      }
       if (endpoint.query) {
         lines.push(`${indent}  query: ${endpoint.query};`);
       }
