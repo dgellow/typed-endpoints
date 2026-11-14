@@ -26,10 +26,16 @@ export type ResourceMethod =
   | "retrieve"
   | "create"
   | "update"
+  | "replace"
   | "delete";
 
 /** Definition for a single method */
 export interface MethodDef {
+  /**
+   * Path template, e.g. `/api/users/{id}/posts`. Written by the type
+   * generator; it says which path parameters a call has to supply.
+   */
+  readonly path?: string;
   /** Path parameter types. */
   readonly params?: Record<string, string>;
   /** Query parameter types. */
@@ -65,34 +71,114 @@ export interface RequestOptions {
   readonly query?: Record<string, unknown>;
   /** Aborts the request. */
   readonly signal?: AbortSignal;
+  /**
+   * Values for the path parameters that are not the trailing id, e.g.
+   * `{ id }` for `/users/{id}/posts`. Needs the generated route table
+   * (`createClient({ routes })`).
+   */
+  readonly params?: Readonly<Record<string, string>>;
 }
+
+// -----------------------------------------------------------------------------
+// Path templates
+// -----------------------------------------------------------------------------
+
+/** `+name` (a catch-all) to `name`. */
+export type ParamName<N extends string> = N extends `+${infer M}` ? M : N;
+
+/**
+ * Names of the parameters of a path template: `"id" | "postId"` for
+ * `/users/{id}/posts/{postId}`. A catch-all is written `{+path}`.
+ */
+export type PathParamNames<P extends string> = P extends
+  `${string}{${infer N}}${infer R}` ? ParamName<N> | PathParamNames<R>
+  : never;
+
+/**
+ * The parameter that is the last segment of a path template, if the path
+ * ends with one: `"postId"` for `/users/{id}/posts/{postId}`, `never` for
+ * `/users/{id}/posts`.
+ */
+export type TrailingParam<P extends string> = P extends `${string}/{${infer N}}`
+  ? N extends `${string}}${infer R}` ? TrailingParam<`${R}}`> : ParamName<N>
+  : never;
+
+/** The path template of a method definition; `never` if it has none. */
+export type PathOf<M> = M extends { readonly path: infer P extends string } ? P
+  : never;
+
+/**
+ * The leading `id` argument of a method that addresses one resource.
+ *
+ * With a path template, there is an id exactly when the path ends with a
+ * parameter (`DELETE /session` has none). Without one, as in hand-written
+ * definitions, the id is assumed.
+ */
+export type IdArg<M> = [PathOf<M>] extends [never] ? [id: string]
+  : [TrailingParam<PathOf<M>>] extends [never] ? []
+  : [id: string];
+
+/** Path parameters a call passes in `options.params`: all of them. */
+export type AllParams<M> = PathParamNames<PathOf<M>>;
+
+/** Path parameters a call passes in `options.params`: all but the id. */
+export type ParentParams<M> = Exclude<
+  AllParams<M>,
+  TrailingParam<PathOf<M>>
+>;
+
+/**
+ * The `params` option for the path parameters `TNames`: required, typed by
+ * the endpoint's `params` schema where it has one.
+ */
+export type ParamsOption<M, TNames extends string> = [TNames] extends [never]
+  ? unknown
+  : {
+    readonly params: {
+      readonly [K in TNames]: M extends { params: infer T }
+        ? K extends keyof T ? T[K] : string
+        : string;
+    };
+  };
+
+// -----------------------------------------------------------------------------
+// Options
+// -----------------------------------------------------------------------------
 
 /**
  * Options for a method. When the method definition declares a `query` type,
  * `query` is typed by it; it is required only if it has required keys.
+ * `TNames` are the path parameters the call has to supply in `params`.
  */
-export type MethodOptions<M> = M extends { query: infer Q } ?
-    & Omit<RequestOptions, "query">
-    & (Record<never, never> extends Q ? { query?: Q } : { query: Q })
-  : RequestOptions;
+export type MethodOptions<M, TNames extends string = never> =
+  & (M extends { query: infer Q } ?
+      & Omit<RequestOptions, "query" | "params">
+      & (Record<never, never> extends Q ? { query?: Q } : { query: Q })
+    : Omit<RequestOptions, "params">)
+  & ParamsOption<M, TNames>;
+
+/** Whether a call has to pass options: a required query, or path params. */
+export type NeedsOptions<M, TNames extends string = never> = [TNames] extends
+  [never]
+  ? M extends { query: infer Q } ? Record<never, never> extends Q ? false : true
+  : false
+  : true;
 
 /** The trailing options argument of a method. */
-export type OptionsArg<M> = M extends { query: infer Q }
-  ? Record<never, never> extends Q ? [options?: MethodOptions<M>]
-  : [options: MethodOptions<M>]
-  : [options?: RequestOptions];
+export type OptionsArg<M, TNames extends string = never> =
+  NeedsOptions<M, TNames> extends true ? [options: MethodOptions<M, TNames>]
+    : [options?: MethodOptions<M, TNames>];
 
 /**
  * The trailing options argument of a method whose response type depends
  * on it: the options are captured as the type `O`.
  */
-export type CapturedOptionsArg<M, O> = M extends { query: infer Q }
-  ? Record<never, never> extends Q ? [options?: O]
-  : [options: O]
-  : [options?: O];
+export type CapturedOptionsArg<M, O, TNames extends string = never> =
+  NeedsOptions<M, TNames> extends true ? [options: O] : [options?: O];
 
 /**
- * A client method with leading arguments `TLead`.
+ * A client method with leading arguments `TLead` and path parameters
+ * `TNames` to pass in `options.params`.
  *
  * For an endpoint marked `dependent`, the method is generic in its options
  * and the response type is computed from them: `Resolve` applies the
@@ -102,30 +188,42 @@ export type CapturedOptionsArg<M, O> = M extends { query: infer Q }
  * is an array whose members are not. Any other endpoint has the fixed
  * response type.
  */
-export type Method<M extends MethodDef, TLead extends unknown[]> = M extends
-  { dependent: true } ? <const O extends ReadonlyDeep<MethodOptions<M>>>(
-    ...args: [...TLead, ...CapturedOptionsArg<M, O>]
+export type Method<
+  M extends MethodDef,
+  TLead extends unknown[],
+  TNames extends string = never,
+> = M extends { dependent: true }
+  ? <const O extends ReadonlyDeep<MethodOptions<M, TNames>>>(
+    ...args: [...TLead, ...CapturedOptionsArg<M, O, TNames>]
   ) => Promise<Resolve<M["response"], O>>
-  : (...args: [...TLead, ...OptionsArg<M>]) => Promise<M["response"]>;
+  : (...args: [...TLead, ...OptionsArg<M, TNames>]) => Promise<M["response"]>;
 
-/** List method - no required params, returns array */
-export type ListMethod<M extends MethodDef> = Method<M, []>;
+/** List method - no id, returns array */
+export type ListMethod<M extends MethodDef> = Method<M, [], AllParams<M>>;
 
-/** Retrieve method - requires id param */
-export type RetrieveMethod<M extends MethodDef> = Method<M, [id: string]>;
+/** Retrieve method - the id, if the path ends with a parameter */
+export type RetrieveMethod<M extends MethodDef> = Method<
+  M,
+  IdArg<M>,
+  ParentParams<M>
+>;
 
 /** Create method - requires body */
 export type CreateMethod<M extends MethodDef> = M["body"] extends undefined
-  ? Method<M, []>
-  : Method<M, [body: M["body"]]>;
+  ? Method<M, [], AllParams<M>>
+  : Method<M, [body: M["body"]], AllParams<M>>;
 
-/** Update method - requires id and body */
+/** Update method - the id, if the path ends with a parameter, and the body */
 export type UpdateMethod<M extends MethodDef> = M["body"] extends undefined
-  ? Method<M, [id: string]>
-  : Method<M, [id: string, body: M["body"]]>;
+  ? Method<M, IdArg<M>, ParentParams<M>>
+  : Method<M, [...IdArg<M>, body: M["body"]], ParentParams<M>>;
 
-/** Delete method - requires id */
-export type DeleteMethod<M extends MethodDef> = Method<M, [id: string]>;
+/** Delete method - the id, if the path ends with a parameter */
+export type DeleteMethod<M extends MethodDef> = Method<
+  M,
+  IdArg<M>,
+  ParentParams<M>
+>;
 
 // =============================================================================
 // SSE Types
@@ -139,6 +237,8 @@ export interface SseEventsDef {
 
 /** SSE method definition in generated Api interface */
 export interface SseMethodDef {
+  /** Path template, e.g. `/api/tasks/{id}/events`. */
+  readonly path?: string;
   /** Path parameter types. */
   readonly params?: Record<string, string>;
   /** Query parameter types. */
@@ -151,6 +251,11 @@ export interface SseMethodDef {
 export interface SubscribeOptions {
   /** Query parameters, serialised into the URL. */
   readonly query?: Record<string, unknown>;
+  /**
+   * Values for the path parameters that are not the trailing id. Needs the
+   * generated route table (`createClient({ routes })`).
+   */
+  readonly params?: Readonly<Record<string, string>>;
   /** Ends the subscription and closes the connection. */
   readonly signal?: AbortSignal;
   /**
@@ -178,13 +283,31 @@ export type TypedSseEvent<TEvents extends SseEventsDef> = {
   };
 }[keyof TEvents];
 
-/** Subscribe method - with or without id based on params */
-export type SubscribeMethod<M extends SseMethodDef> = M["params"] extends
-  Record<string, string> ? (
-    id: string,
-    options?: SubscribeOptions,
-  ) => AsyncIterable<TypedSseEvent<M["events"]>>
-  : (options?: SubscribeOptions) => AsyncIterable<TypedSseEvent<M["events"]>>;
+/** Options of a subscription, with the path parameters it has to supply. */
+export type SubscribeOptionsFor<M> =
+  & Omit<SubscribeOptions, "params">
+  & ParamsOption<M, ParentParams<M>>;
+
+/**
+ * Subscribe method.
+ *
+ * With a path template: the id if the path ends with a parameter, and
+ * `options.params` for the others. Without one (hand-written definitions):
+ * an id if the definition has `params`.
+ */
+export type SubscribeMethod<M extends SseMethodDef> = [PathOf<M>] extends
+  [never] ? M["params"] extends Record<string, string> ? (
+      id: string,
+      options?: SubscribeOptions,
+    ) => AsyncIterable<TypedSseEvent<M["events"]>>
+  : (options?: SubscribeOptions) => AsyncIterable<TypedSseEvent<M["events"]>>
+  : (
+    ...args: [
+      ...IdArg<M>,
+      ...([ParentParams<M>] extends [never] ? [options?: SubscribeOptionsFor<M>]
+        : [options: SubscribeOptionsFor<M>]),
+    ]
+  ) => AsyncIterable<TypedSseEvent<M["events"]>>;
 
 // =============================================================================
 // Resource to Client type mapping
@@ -204,6 +327,8 @@ export type ResourceClient<R extends ResourceDef> =
   & (R["create"] extends MethodDef ? { create: CreateMethod<R["create"]> }
     : Empty)
   & (R["update"] extends MethodDef ? { update: UpdateMethod<R["update"]> }
+    : Empty)
+  & (R["replace"] extends MethodDef ? { replace: UpdateMethod<R["replace"]> }
     : Empty)
   & (R["delete"] extends MethodDef ? { delete: DeleteMethod<R["delete"]> }
     : Empty)
