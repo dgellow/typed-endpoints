@@ -18,6 +18,7 @@ import {
   InvalidRequestError,
   InvalidResponseError,
   ProtocolError,
+  SessionSpentError,
   StepNotAvailableError,
   StepRefusedError,
   UnknownStepError,
@@ -971,4 +972,80 @@ Deno.test("execute raises a distinct error class for each failure mode", async (
     fresh.execute("nope", {})
   );
   assert(unknown instanceof UnknownStepError);
+});
+
+// =============================================================================
+// OAuth: what the reference protocol revokes
+// =============================================================================
+
+Deno.test("OAuth protocol: an authorization code is exchanged once, tokens end with revoke", async () => {
+  const executor = createMockExecutor(oauth2AuthCodeProtocol, {
+    authorize: {
+      type: "success",
+      code: "c-1",
+      state: "s",
+    } as AuthorizeResponse,
+    exchange: {
+      type: "success",
+      access_token: "at",
+      token_type: "Bearer",
+      expires_in: 3600,
+      refresh_token: "rt",
+    } as ExchangeResponse,
+    refresh: {
+      type: "success",
+      access_token: "at-2",
+      token_type: "Bearer",
+      expires_in: 3600,
+    } as ExchangeResponse,
+    revoke: { revoked: true },
+  });
+  const exchangeRequest = {
+    grant_type: "authorization_code",
+    code: "c-1",
+    client_id: "client",
+    client_secret: "secret",
+  } as const;
+
+  const start = createSession(oauth2AuthCodeProtocol, executor, {
+    singleUse: true,
+  });
+  const { session: s1 } = await start.execute("authorize", {
+    response_type: "code",
+    client_id: "client",
+    state: "s",
+  });
+  const granted = s1.ready("exchange");
+  assert(granted);
+  const { session: s2 } = await granted.execute("exchange", exchangeRequest);
+
+  // The code is spent: on the returned session by its type, on the earlier
+  // one at runtime.
+  // @ts-expect-error authorize was revoked by exchange
+  void (() => s2.ready("exchange")?.execute("exchange", exchangeRequest));
+  assertEquals(s2.canExecute("exchange"), false);
+  await assertRejects(
+    () => granted.execute("exchange", exchangeRequest),
+    SessionSpentError,
+  );
+
+  const live = s2.ready("refresh");
+  assert(live);
+  const { session: s3 } = await live.execute("refresh", {
+    grant_type: "refresh_token",
+    refresh_token: "rt",
+    client_id: "client",
+  });
+
+  const revocable = s3.ready("revoke");
+  assert(revocable);
+  const { session: s4 } = await revocable.execute("revoke", {
+    token: "at-2",
+    client_id: "client",
+  });
+
+  // With the tokens revoked, only a new authorization is possible.
+  assertEquals(s4.availableSteps(), ["authorize"]);
+  assertEquals(s4.ready("refresh"), undefined);
+  assertEquals(s4.isTerminal(), true);
 });
