@@ -7,6 +7,7 @@ Needs Python 3.12.
 Not in this module: server-sent event streams (`GET /api/ticks`).
 """
 
+import functools
 import re
 from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass
@@ -61,28 +62,38 @@ class PathError(ValueError):
 # =============================================================================
 
 
+@functools.cache
 def _pattern(source: str) -> re.Pattern[str]:
-    """Compile a pattern of the API as JavaScript reads it.
+    r"""Compile a pattern of the API as JavaScript reads it.
 
-    There the classes for digits and for word characters are ASCII.
+    There the classes for digits and for word characters are ASCII, and $ is
+    the end of the text. Here $ is also before a line break that ends the
+    text, and \Z is the end.
     """
-    return re.compile(source, re.ASCII)
+    # An escape and a class are kept as they are: a $ in one is no end.
+    ends = re.sub(
+        r"\\.|\[(?:\\.|[^\]])*\]|\$",
+        lambda found: r"\Z" if found[0] == "$" else found[0],
+        source,
+        flags=re.DOTALL,
+    )
+    return re.compile(ends, re.ASCII)
 
 
-_DATE_TIME_PATTERN = _pattern(
+_DATE_TIME_PATTERN = (
     r"^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)"
     r"-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)"
     r"-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3])"
-    r":[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))\Z"
+    r":[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$"
 )
-_UUID_PATTERN = _pattern(
-    r"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-"
-    r"fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffff"
-    r"ff)\Z"
+_UUID_PATTERN = (
+    "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-f"
+    "A-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff"
+    ")$"
 )
-_EMAIL_PATTERN = _pattern(
+_EMAIL_PATTERN = (
     r"^(?:[A-Za-z0-9_'+\-]+\.)*[A-Za-z0-9_'+\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9"
-    r"\-]*\.)+[A-Za-z]{2,}\Z"
+    r"\-]*\.)+[A-Za-z]{2,}$"
 )
 
 
@@ -129,17 +140,17 @@ class EdgesCreateBody(_Json):
     """The body of `POST /api/edges`."""
 
     short: str | None = Field(default=None, max_length=4)
-    digits: str | None = Field(default=None, pattern=_pattern(r"^\d+\Z"))
-    plain: str | None = Field(default=None, pattern=_pattern(r"^[\D]+\Z"))
-    word: str | None = Field(default=None, pattern=_pattern(r"^(?!admin)\w+\Z"))
+    digits: str | None = Field(default=None, pattern=_pattern(r"^\d+$"))
+    plain: str | None = Field(default=None, pattern=_pattern(r"^[\D]+$"))
+    word: str | None = Field(default=None, pattern=_pattern(r"^(?!admin)\w+$"))
     count: SafeInt | None = None
     step: float | None = Field(default=None, multiple_of=0.1)
     huge: float | None = Field(default=None, le=9007199254740991)
     flag: bool | None = None
     maybe: str | None = None
-    when: str | None = Field(default=None, pattern=_DATE_TIME_PATTERN)
-    id: str | None = Field(default=None, pattern=_UUID_PATTERN)
-    email: str | None = Field(default=None, pattern=_EMAIL_PATTERN)
+    when: str | None = Field(default=None, pattern=_pattern(_DATE_TIME_PATTERN))
+    id: str | None = Field(default=None, pattern=_pattern(_UUID_PATTERN))
+    email: str | None = Field(default=None, pattern=_pattern(_EMAIL_PATTERN))
 
 
 class Note(_ClosedJson):
@@ -431,7 +442,7 @@ _NOTES_LIST_ITEM: TypeAdapter[Note] = TypeAdapter(Note)
 _NOTES_CREATE_BODY: TypeAdapter[Any] = TypeAdapter(NotesCreateBody)
 _NOTES_CREATE_RESPONSE: TypeAdapter[Note] = TypeAdapter(Note)
 _NOTES_CREATE_ERRORS: dict[int, TypeAdapter[Any]] = {
-    409: TypeAdapter(NotesCreateError409),
+    409: TypeAdapter(NotesCreateError409)
 }
 _NOTES_DELETE_BODY: TypeAdapter[Any] = TypeAdapter(NotesDeleteBody)
 _NOTES_DELETE_RESPONSE: TypeAdapter[NotesDeleteResponse] = TypeAdapter(

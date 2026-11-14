@@ -972,10 +972,13 @@ The module holds:
 - a Pydantic model for every request part, response and declared error body
 - a type for what each handler returns (`NotesRetrieveResult`)
 - `Handlers`, a protocol with one method per operation, typed by those models
-- `create_router(handlers)`, a FastAPI `APIRouter` that validates each request,
-  calls the handler and checks what it returns
-- `create_app(handlers)`, an application with that router and with validation
-  failures answered as the TypeScript handlers answer them
+- the contract's JSON Schema of every request part, as Python data, and a
+  checker for it that words an issue as Zod does
+- `create_router(handlers)`, a FastAPI `APIRouter` that checks each request
+  against the contract, calls the handler and checks what it returns. A request
+  that is refused is answered by the router itself, as the TypeScript handlers
+  answer it: the router needs nothing of the application it is included in
+- `create_app(handlers)`, an application with that router
 
 The application implements `Handlers` in a file of its own. Generating again
 never overwrites it, and a type checker reports a handler that no longer fits
@@ -1006,7 +1009,7 @@ TypeScript. `NotesRetrieveResult` is that union:
 `Note | Fail[Literal[404], NotFound] | Response`.
 
 The module is written as Python is written. `ruff format` leaves it alone and
-`ruff check` with every rule selected has nothing to report (ruff 0.17.5; four
+`ruff check` with every rule selected has nothing to report (ruff 0.17.5; five
 rules are off, and six more for the tests, each with its reason in
 `e2e_tests/python/pyproject.toml`):
 
@@ -1049,48 +1052,83 @@ reconnects after; the endpoint's `keepAlive` interval is kept. A status the
 operation does not declare is an error for the type checker; past the type
 checker it is a 500 and is logged, as is a value the response model rejects.
 
+A request is not validated by FastAPI. A route function takes the request as it
+is, checks each part against the contract and then builds the model the handler
+receives:
+
+```python
+@router.put(
+    "/api/notes/{id}",
+    operation_id="notesUpdate",
+    response_model=None,
+    responses={200: {"model": Note}, 400: {"model": InvalidRequest}, ...},
+    openapi_extra=_described(params=_NOTES_UPDATE_PARAMS, body=_NOTES_UPDATE_BODY),
+)
+async def notes_update(request: Request) -> Response:
+    body = await _body(request, _NOTES_UPDATE_BODY)
+    params = _params(request, _NOTES_UPDATE_PARAMS)
+    return await _respond(
+        "PUT /api/notes/{id}",
+        handlers.notes_update(params=params, body=body),
+        _NOTES_UPDATE_RESPONSE,
+        _NOTES_UPDATE_ERRORS,
+    )
+```
+
+`_NOTES_UPDATE_BODY` holds the contract's schema of the body and its type. The
+first version of the generator gave FastAPI typed arguments, which Pydantic
+validated: by its own rules, and in its own words. The suite then declared eight
+differences for FastAPI, and of the 27 recorded refusals one was answered as the
+TypeScript handlers answer it. The Rust generator, written after it, checked
+JSON against the contract and had none. The Python module now does what the Rust
+module does.
+
 What is kept the same on both sides:
 
 |                                                     | TypeScript handlers                                    | Generated FastAPI module                                                                                                                                                         |
 | --------------------------------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A body's types                                      | not coerced (`"5"` is not a number)                    | strict models for bodies and responses                                                                                                                                           |
-| Query and path parameters                           | coerced from text where the schema says so             | coerced                                                                                                                                                                          |
-| Lengths, bounds, patterns, literals, closed objects | Zod                                                    | the same constraints on the Pydantic field                                                                                                                                       |
+| A body's types                                      | not coerced (`"5"` is not a number)                    | checked as JSON against the contract; `2.0` is the integer `2`, as in JavaScript                                                                                                 |
+| What is a JSON body                                 | what parses, also as `text/plain`; else a 400 or a 415 | the same, and `NaN`, `Infinity` and `1e999` do not parse                                                                                                                         |
+| Query and path parameters                           | coerced from text where the schema says so             | read as JavaScript reads text (`0x10` is 16, blank is 0); a key given twice is a list                                                                                            |
+| Lengths, bounds, patterns, literals, closed objects | Zod                                                    | the contract's schema, checked by the module; the Pydantic fields state the same constraints                                                                                     |
 | An optional field that was not set                  | absent from the response                               | absent (`exclude_unset`), never `null`                                                                                                                                           |
 | What a handler returns or yields                    | parsed by the schema before it is sent                 | validated again as plain data, also when it is a model instance: Pydantic trusts an instance, and one built with `model_construct()` or changed afterwards may not fit its model |
-| A request that fails validation                     | 400 `{ error, in, issues: [{ path, message, code }] }` | the same shape, same `in` and `path`                                                                                                                                             |
-| A field name that is not a Python attribute name    | as written (`from`, `data-id`, `createdAt`)            | a snake-case attribute (`from_`, `data_id`, `created_at`) with the wire name as alias                                                                                            |
+| A request that fails validation                     | 400 `{ error, in, issues: [{ path, message, code }] }` | the same answer, word for word: the 27 recorded refusals                                                                                                                         |
+| A field name that is not a Python attribute name    | as written (`from`, `data-id`, `createdAt`)            | a snake-case attribute (`from_`, `data_id`, `created_at`) with the wire name as alias; a request is read by wire names only                                                      |
 | The same object in two operations                   | one type                                               | one class, with a name per operation                                                                                                                                             |
 
 The description FastAPI serves of the application (`/openapi.json`, `/docs`)
 says what the application answers: for each operation the response model, the
-declared errors and the 400 of a failed validation, and not the 422 that FastAPI
-would send by itself.
+declared errors, the 400 of a request the contract refuses and, with a body, the
+415 of one that does not claim to be JSON. FastAPI describes a request from the
+arguments of a route function, and these functions take the request as it is, so
+the module describes it from the contract (`openapi_extra`): the parameters of
+the path and the query, and the schema of the body. A reference in a schema is
+written out, because it would not resolve in FastAPI's document; a schema that
+refers to itself is described down to that reference.
 
 What differs, and what does not cross:
 
-- The message and the code of a validation issue are Pydantic's
-  (`string_too_short`), not Zod's (`too_small`)
+- An encoded slash in a path (`/notes/a%2Fb`) is a slash: an ASGI server decodes
+  the path, and Starlette routes on the decoded one. The TypeScript handlers and
+  axum give the handler `a/b`. It is the one difference the suite declares for
+  FastAPI, and it asserts it
+- A body nested deeper than the checker follows is refused as a body that is not
+  JSON. Python limits how deep a call goes; measured on the fixture's tree, 400
+  levels are refused
 - A `transform()` in a schema is TypeScript code. Python sees the input of a
   request schema; the result of a transform in a response is `Any`
 - A string with a format (`date-time`, `uuid`) stays a `str` with Zod's pattern.
   Parsing it and writing it back could change the text
-- A JSON body sent as `text/plain` is read by the TypeScript handlers and
-  refused by FastAPI; a form body is a 400 there, not a 415
-- `2.0` is refused for an integer; an explicit `null` is accepted for an
-  optional field; a scalar query parameter given twice takes the last value; a
-  value that fits no member of a union is reported once per member; a path that
-  is not UTF-8 once decoded reaches the handler. The conformance suite asserts
-  each of these, so the list stays true
-- A pattern is compiled as JavaScript reads it: the classes `\d` and `\w` are
+- A pattern stays as JavaScript writes it, in the contract's schema and in the
+  model, and is compiled as JavaScript reads it: the classes `\d` and `\w` are
   ASCII, and `$` is the end of the text (Python's `$` is also before a last line
   break). An independent review found that the generated module accepted
   `"123\n"` for `/^\d+$/`; the suite has the case now, for every server
 - The modules need Python 3.12: generic classes and `type` statements are
   written as that version writes them
-- A request that names a member by its Python attribute (`created_at`) is
-  accepted where the wire name is `createdAt`: models can be built by attribute
-  name, and Pydantic does not tell the two uses apart
+- A response is still validated by its Pydantic model, not against the contract,
+  and a model is written per side of a schema
 - Not generated yet: request-dependent responses (`projection()`,
   `selection()`), protocols, and event streams in the Python client (listed in
   its module's docstring)
@@ -1141,12 +1179,14 @@ Zod schema, responses the output side.
 How it is checked (`./scripts/test-python`, through `uv`): the generated
 modules, a hand-written implementation of `Handlers` and the tests are formatted
 as `ruff format` formats and pass `ruff check` with every rule selected; they
-pass pyright in strict mode; the application runs under uvicorn; and the tests
-that hold for the fixture's TypeScript server hold for it, using the TypeScript
-client generated from the same routes: CRUD, declared errors as values, cursor
-pagination, validation failures, a DELETE body, a catch-all path, a recursive
-schema, event streams (frames, failure and resume, keep-alive), and the lens
-laws of `checkResourceLaws()`.
+pass pyright in strict mode; so do the modules of seven APIs that use only a
+part of what the generator writes (no body, no query, only an event stream),
+which carry only the parts they use; the application runs under uvicorn; and the
+tests that hold for the fixture's TypeScript server hold for it, using the
+TypeScript client generated from the same routes: CRUD, declared errors as
+values, cursor pagination, validation failures, a DELETE body, a catch-all path,
+a recursive schema, event streams (frames, failure and resume, keep-alive), and
+the lens laws of `checkResourceLaws()`.
 
 ### Other Languages: Rust and axum
 
@@ -1257,16 +1297,17 @@ The contract is in the module as data the compiler checks (`static` values of a
 `Schema` type), not as text parsed when the server starts, and the runtime
 interprets it and words its issues as Zod does. That turned out closer to the
 TypeScript handlers than mapping the schema onto the validation library of the
-language, which is what the Python generator does. The conformance suite sends
-27 requests that have to be refused (`e2e_tests/conformance/refusals.json`
-records what the TypeScript handlers answer). Compared as JSON values:
+language, which is what the Python generator did first, and the Python module
+was changed to do the same. The conformance suite sends 27 requests that have to
+be refused (`e2e_tests/conformance/refusals.json` records what the TypeScript
+handlers answer). Compared as JSON values:
 
-|                                                 | axum | FastAPI |
-| ----------------------------------------------- | ---- | ------- |
-| Same status, same issues, same words            | 27   | 1       |
-| Same status, same issue paths in the same order | 27   | 19      |
-| Same status                                     | 27   | 26      |
-| Differences the suite declares                  | 0    | 8       |
+|                                                 | axum | FastAPI | FastAPI, validated by Pydantic |
+| ----------------------------------------------- | ---- | ------- | ------------------------------ |
+| Same status, same issues, same words            | 27   | 27      | 1                              |
+| Same status, same issue paths in the same order | 27   | 27      | 19                             |
+| Same status                                     | 27   | 27      | 26                             |
+| Differences the suite declares                  | 0    | 1       | 8                              |
 
 As text the axum answers differ from the TypeScript ones in 25 of the 27: the
 members of an object are written in alphabetical order.

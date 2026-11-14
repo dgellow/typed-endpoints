@@ -164,6 +164,19 @@ export function fit(
     ];
   }
 
+  // A string too long for its line, as the pieces Python joins. In
+  // parentheses: without them, two strings in a list read as two items
+  // with a comma forgotten.
+  if (inside && STRING.test(text)) {
+    return [
+      `${pad}${prefix}(`,
+      ...stringPieces(text, WIDTH - indent - 4).map((piece) =>
+        `${pad}    ${piece}`
+      ),
+      `${pad})${suffix}`,
+    ];
+  }
+
   const group = bracketed(text);
   if (!group || group.items.length === 0) return [line];
   const first = `${pad}${prefix}${group.head}${group.open}`;
@@ -173,8 +186,8 @@ export function fit(
   // on a line if they fit; the items of a list or a dict never do.
   const display = group.head === "" || group.open === "{";
   if (!display && inner.length <= WIDTH) return [first, inner, last];
-  // One item in a subscript has no comma: with one it would be a tuple.
-  const comma = group.open === "[" && group.items.length === 1 ? "" : ",";
+  // One item has no comma after it. (In a subscript it would make a tuple.)
+  const comma = group.items.length === 1 ? "" : ",";
   return [
     first,
     ...group.items.flatMap((item) => {
@@ -183,6 +196,43 @@ export function fit(
     }),
     last,
   ];
+}
+
+/** One string literal, and nothing else. */
+const STRING = /^r?"(?:[^"\\]|\\.)*"$/;
+
+/**
+ * A string literal as literals no wider than `room`, which Python joins
+ * when they follow each other. A piece ends after a space where it can,
+ * and never inside an escape.
+ */
+function stringPieces(literal: string, room: number): string[] {
+  const raw = literal.startsWith("r") ? "r" : "";
+  const content = literal.slice(raw.length + 1, -1);
+  // What cannot be cut: an escape, or one character.
+  const units = content.match(/\\u[0-9a-fA-F]{4}|\\.|[^\\]/gu) ?? [];
+  const width = Math.max(room - raw.length - 2, 1);
+  const pieces: string[] = [];
+  let current = "";
+  for (const unit of units) {
+    if (current.length + unit.length > width) {
+      // Rather after the last space, if that is not far back.
+      const space = current.lastIndexOf(" ") + 1;
+      const cut = space > width - 24 ? space : current.length;
+      pieces.push(current.slice(0, cut));
+      current = current.slice(cut);
+    }
+    current += unit;
+  }
+  pieces.push(current);
+  return pieces.map((piece) => {
+    // Each piece has the quotes that need no escape in it, as the
+    // formatter chooses them.
+    const single = !raw && piece.includes('\\"') && !piece.includes("'");
+    return single
+      ? `'${piece.replace(/\\(.)/gu, (escape, c) => c === '"' ? c : escape)}'`
+      : `${raw}"${piece}"`;
+  });
 }
 
 /**
@@ -423,10 +473,14 @@ export function imports(
 ): string[] {
   const used = (name: string) =>
     new RegExp(`(?<![\\w.])${name.replaceAll(".", "\\.")}\\b`).test(source);
+  // A module is used through one of its members: its name alone is also a
+  // word of a docstring, or a string.
+  const usedModule = (name: string) =>
+    new RegExp(`(?<![\\w.])${name.replaceAll(".", "\\.")}\\.\\w`).test(source);
   const lines: string[] = [];
   for (const section of sections) {
     const plain = section
-      .filter(([module, names]) => names.length === 0 && used(module))
+      .filter(([module, names]) => names.length === 0 && usedModule(module))
       .map(([module]) => `import ${module}`);
     const from = section.flatMap(([module, names]) => {
       const needed = names.filter(used);

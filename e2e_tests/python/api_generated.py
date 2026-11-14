@@ -7,16 +7,20 @@ Needs Python 3.12.
 """
 
 import asyncio
+import functools
 import json
 import logging
+import math
+import operator
 import re
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal, Protocol, cast
+from typing import Annotated, Any, Final, Literal, Protocol, cast, override
+from urllib.parse import unquote_to_bytes
 
-from fastapi import APIRouter, Body, FastAPI, Path, Query, Request
-from fastapi.exceptions import RequestValidationError
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 from pydantic.alias_generators import to_camel
 
@@ -43,10 +47,16 @@ class InvalidRequestIssue(BaseModel):
 
 
 class InvalidRequest(BaseModel):
-    """The body of the 400 that answers a request that fails validation."""
+    """The answer to a request that is refused before it reaches its handler.
+
+    A 400 for a part the contract does not accept, or for a body that is not
+    JSON; a 415 for a body that does not claim to be.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
 
     error: str
-    part: Literal["body", "query", "params", "json"] = Field(
+    part: Literal["body", "query", "params", "json", "content-type"] = Field(
         validation_alias="in", serialization_alias="in"
     )
     issues: list[InvalidRequestIssue]
@@ -57,28 +67,38 @@ class InvalidRequest(BaseModel):
 # =============================================================================
 
 
+@functools.cache
 def _pattern(source: str) -> re.Pattern[str]:
-    """Compile a pattern of the API as JavaScript reads it.
+    r"""Compile a pattern of the API as JavaScript reads it.
 
-    There the classes for digits and for word characters are ASCII.
+    There the classes for digits and for word characters are ASCII, and $ is
+    the end of the text. Here $ is also before a line break that ends the
+    text, and \Z is the end.
     """
-    return re.compile(source, re.ASCII)
+    # An escape and a class are kept as they are: a $ in one is no end.
+    ends = re.sub(
+        r"\\.|\[(?:\\.|[^\]])*\]|\$",
+        lambda found: r"\Z" if found[0] == "$" else found[0],
+        source,
+        flags=re.DOTALL,
+    )
+    return re.compile(ends, re.ASCII)
 
 
-_DATE_TIME_PATTERN = _pattern(
+_DATE_TIME_PATTERN = (
     r"^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)"
     r"-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)"
     r"-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3])"
-    r":[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))\Z"
+    r":[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$"
 )
-_UUID_PATTERN = _pattern(
-    r"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-"
-    r"fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffff"
-    r"ff)\Z"
+_UUID_PATTERN = (
+    "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-f"
+    "A-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff"
+    ")$"
 )
-_EMAIL_PATTERN = _pattern(
+_EMAIL_PATTERN = (
     r"^(?:[A-Za-z0-9_'+\-]+\.)*[A-Za-z0-9_'+\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9"
-    r"\-]*\.)+[A-Za-z]{2,}\Z"
+    r"\-]*\.)+[A-Za-z]{2,}$"
 )
 
 
@@ -123,17 +143,17 @@ class EdgesCreateBody(_Json):
     """The body of `POST /api/edges`."""
 
     short: str | None = Field(default=None, max_length=4)
-    digits: str | None = Field(default=None, pattern=_pattern(r"^\d+\Z"))
-    plain: str | None = Field(default=None, pattern=_pattern(r"^[\D]+\Z"))
-    word: str | None = Field(default=None, pattern=_pattern(r"^(?!admin)\w+\Z"))
+    digits: str | None = Field(default=None, pattern=_pattern(r"^\d+$"))
+    plain: str | None = Field(default=None, pattern=_pattern(r"^[\D]+$"))
+    word: str | None = Field(default=None, pattern=_pattern(r"^(?!admin)\w+$"))
     count: SafeInt | None = None
     step: float | None = Field(default=None, multiple_of=0.1)
     huge: float | None = Field(default=None, le=9007199254740991)
     flag: bool | None = None
     maybe: str | None = None
-    when: str | None = Field(default=None, pattern=_DATE_TIME_PATTERN)
-    id: str | None = Field(default=None, pattern=_UUID_PATTERN)
-    email: str | None = Field(default=None, pattern=_EMAIL_PATTERN)
+    when: str | None = Field(default=None, pattern=_pattern(_DATE_TIME_PATTERN))
+    id: str | None = Field(default=None, pattern=_pattern(_UUID_PATTERN))
+    email: str | None = Field(default=None, pattern=_pattern(_EMAIL_PATTERN))
 
 
 class EdgesCreateResponse(_ClosedJson):
@@ -535,6 +555,307 @@ class Handlers(Protocol):
 
 
 # =============================================================================
+# Contract
+# =============================================================================
+
+
+type _Schema = dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _Part[T]:
+    """A part of a request: what the contract says it is, and its type."""
+
+    schema: _Schema
+    adapter: TypeAdapter[T]
+
+
+# What the contract says each part of a request is, and the type the part
+# has once the contract accepts it.
+_ECHO_RETRIEVE_PARAMS: _Part[EchoRetrieveParams] = _Part(
+    {
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+    },
+    TypeAdapter(EchoRetrieveParams),
+)
+_EDGES_CREATE_BODY: _Part[EdgesCreateBody] = _Part(
+    {
+        "type": "object",
+        "properties": {
+            "short": {"type": "string", "maxLength": 4},
+            "digits": {"type": "string", "pattern": r"^\d+$"},
+            "plain": {"type": "string", "pattern": r"^[\D]+$"},
+            "word": {"type": "string", "pattern": r"^(?!admin)\w+$"},
+            "count": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991,
+            },
+            "step": {"type": "number", "multipleOf": 0.1},
+            "huge": {"type": "number", "maximum": 9007199254740991},
+            "flag": {"type": "boolean"},
+            "maybe": {"type": ["string", "null"]},
+            "when": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": _DATE_TIME_PATTERN,
+            },
+            "id": {"type": "string", "format": "uuid", "pattern": _UUID_PATTERN},
+            "email": {"type": "string", "format": "email", "pattern": _EMAIL_PATTERN},
+        },
+    },
+    TypeAdapter(EdgesCreateBody),
+)
+_NOTES_LIST_QUERY: _Part[NotesListQuery] = _Part(
+    {
+        "type": "object",
+        "properties": {
+            "cursor": {"type": "string"},
+            "limit": {"default": 2, "type": "integer", "minimum": 1, "maximum": 100},
+            "tag": {"type": "array", "items": {"type": "string"}},
+        },
+    },
+    TypeAdapter(NotesListQuery),
+)
+_NOTES_CREATE_BODY: _Part[NotesCreateBody] = _Part(
+    {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "minLength": 1, "maxLength": 40},
+            "tags": {
+                "maxItems": 4,
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+            },
+            "pinned": {"type": "boolean"},
+        },
+        "required": ["title", "tags"],
+    },
+    TypeAdapter(NotesCreateBody),
+)
+_NOTES_DELETE_PARAMS: _Part[NotesDeleteParams] = _Part(
+    {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
+    TypeAdapter(NotesDeleteParams),
+)
+_NOTES_DELETE_BODY: _Part[NotesDeleteBody] = _Part(
+    {
+        "type": "object",
+        "properties": {"reason": {"type": "string", "minLength": 3}},
+        "required": ["reason"],
+    },
+    TypeAdapter(NotesDeleteBody),
+)
+_NOTES_RETRIEVE_PARAMS = _NOTES_DELETE_PARAMS
+_NOTES_UPDATE_PARAMS = _NOTES_DELETE_PARAMS
+_NOTES_UPDATE_BODY = _NOTES_CREATE_BODY
+_ODD_CREATE_BODY: _Part[OddCreateBody] = _Part(
+    {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string"},
+            "createdAt": {"type": "string"},
+            "created_at": {"type": "string"},
+            "2fa": {"type": "boolean"},
+            "pair": {
+                "type": "array",
+                "prefixItems": [{"type": "string"}, {"type": "number"}],
+                "items": False,
+                "minItems": 2,
+                "maxItems": 2,
+            },
+            "scores": {
+                "type": "object",
+                "propertyNames": {"type": "string"},
+                "additionalProperties": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991,
+                },
+            },
+            "loose": {
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "number"},
+                    {"type": "array", "items": {"type": "string"}},
+                ]
+            },
+            "looseOrNull": {"type": ["string", "number", "null"]},
+            "version": {"type": "number", "const": 2},
+            "level": {"type": "string", "enum": ["very-high", "low"]},
+            "anything": {},
+            "chain": {"$ref": "#/$defs/__schema0"},
+            "json": {"$ref": "#/$defs/__schema1"},
+            "jsonIfAny": {"$ref": "#/$defs/__schema1"},
+            "expr": {"$ref": "#/$defs/__schema2"},
+            "limit": {
+                "default": None,
+                "anyOf": [
+                    {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991,
+                    },
+                    {"type": "null"},
+                ],
+            },
+        },
+        "required": [
+            "type",
+            "createdAt",
+            "created_at",
+            "2fa",
+            "pair",
+            "scores",
+            "loose",
+            "looseOrNull",
+            "version",
+            "level",
+            "anything",
+            "chain",
+            "json",
+            "expr",
+        ],
+        "$defs": {
+            "__schema0": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "next": {"$ref": "#/$defs/__schema0"},
+                    "origin": {
+                        "anyOf": [{"$ref": "#/$defs/__schema0"}, {"type": "null"}]
+                    },
+                },
+                "required": ["name", "origin"],
+            },
+            "__schema1": {
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "number"},
+                    {"type": "boolean"},
+                    {"type": "null"},
+                    {"type": "array", "items": {"$ref": "#/$defs/__schema1"}},
+                    {
+                        "type": "object",
+                        "propertyNames": {"type": "string"},
+                        "additionalProperties": {"$ref": "#/$defs/__schema1"},
+                    },
+                ]
+            },
+            "__schema2": {
+                "anyOf": [
+                    {"type": "number"},
+                    {
+                        "type": "object",
+                        "properties": {
+                            "op": {"type": "string", "const": "neg"},
+                            "of": {"$ref": "#/$defs/__schema2"},
+                        },
+                        "required": ["op", "of"],
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "op": {"type": "string", "const": "add"},
+                            "args": {
+                                "type": "array",
+                                "items": {"$ref": "#/$defs/__schema2"},
+                            },
+                        },
+                        "required": ["op", "args"],
+                    },
+                ]
+            },
+        },
+    },
+    TypeAdapter(OddCreateBody),
+)
+_SHAPES_CREATE_BODY: _Part[ShapesCreateBody] = _Part(
+    {
+        "type": "object",
+        "properties": {
+            "shape": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"type": "string", "const": "circle"},
+                            "radius": {"type": "number", "exclusiveMinimum": 0},
+                        },
+                        "required": ["kind", "radius"],
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"type": "string", "const": "rect"},
+                            "width": {"type": "number", "exclusiveMinimum": 0},
+                            "height": {"type": "number", "exclusiveMinimum": 0},
+                        },
+                        "required": ["kind", "width", "height"],
+                    },
+                ],
+                "discriminator": {"propertyName": "kind"},
+            },
+            "from": {"type": "string"},
+            "meta": {
+                "type": "object",
+                "properties": {
+                    "data-id": {"type": "string"},
+                    "class": {"type": "string"},
+                },
+                "required": ["data-id"],
+            },
+            "unit": {"default": "mm", "type": "string", "enum": ["mm", "cm"]},
+            "note": {"type": ["string", "null"]},
+        },
+        "required": ["shape", "from", "meta", "note"],
+    },
+    TypeAdapter(ShapesCreateBody),
+)
+_TICKS_LIST_QUERY: _Part[TicksListQuery] = _Part(
+    {
+        "type": "object",
+        "properties": {
+            "count": {
+                "default": 2,
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991,
+            },
+            "failAt": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991,
+            },
+            "badAt": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991,
+            },
+            "pause": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991,
+            },
+        },
+    },
+    TypeAdapter(TicksListQuery),
+)
+_TREES_CREATE_BODY: _Part[TreesCreateBody] = _Part(
+    {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "children": {"type": "array", "items": {"$ref": "#"}},
+        },
+        "required": ["name", "children"],
+    },
+    TypeAdapter(TreesCreateBody),
+)
+
+
+# =============================================================================
 # Router
 # =============================================================================
 
@@ -547,7 +868,7 @@ _NOTES_LIST_RESPONSE: TypeAdapter[Any] = TypeAdapter(NotesListResponse)
 _NOTES_LIST_ERRORS: dict[int, TypeAdapter[Any]] = {}
 _NOTES_CREATE_RESPONSE: TypeAdapter[Any] = TypeAdapter(Note)
 _NOTES_CREATE_ERRORS: dict[int, TypeAdapter[Any]] = {
-    409: TypeAdapter(NotesCreateError409),
+    409: TypeAdapter(NotesCreateError409)
 }
 _NOTES_DELETE_RESPONSE: TypeAdapter[Any] = TypeAdapter(NotesDeleteResponse)
 _NOTES_DELETE_ERRORS: dict[int, TypeAdapter[Any]] = {404: TypeAdapter(NotFound)}
@@ -576,9 +897,10 @@ def _add_echo_retrieve(router: APIRouter, handlers: Handlers) -> None:
             200: {"model": EchoRetrieveResponse},
             400: {"model": InvalidRequest},
         },
+        openapi_extra=_described(params=_ECHO_RETRIEVE_PARAMS),
     )
-    async def echo_retrieve(path: str) -> Response:
-        params = _parse(EchoRetrieveParams, {"path": path}, "path")
+    async def echo_retrieve(request: Request) -> Response:
+        params = _params(request, _ECHO_RETRIEVE_PARAMS)
         return await _respond(
             "GET /api/echo/{+path}",
             handlers.echo_retrieve(params=params),
@@ -592,9 +914,15 @@ def _add_edges_create(router: APIRouter, handlers: Handlers) -> None:
         "/api/edges",
         operation_id="edgesCreate",
         response_model=None,
-        responses={200: {"model": EdgesCreateResponse}, 400: {"model": InvalidRequest}},
+        responses={
+            200: {"model": EdgesCreateResponse},
+            400: {"model": InvalidRequest},
+            415: {"model": InvalidRequest},
+        },
+        openapi_extra=_described(body=_EDGES_CREATE_BODY),
     )
-    async def edges_create(body: Annotated[EdgesCreateBody, Body()]) -> Response:
+    async def edges_create(request: Request) -> Response:
+        body = await _body(request, _EDGES_CREATE_BODY)
         return await _respond(
             "POST /api/edges",
             handlers.edges_create(body=body),
@@ -609,8 +937,10 @@ def _add_notes_list(router: APIRouter, handlers: Handlers) -> None:
         operation_id="notesList",
         response_model=None,
         responses={200: {"model": NotesListResponse}, 400: {"model": InvalidRequest}},
+        openapi_extra=_described(query=_NOTES_LIST_QUERY),
     )
-    async def notes_list(query: Annotated[NotesListQuery, Query()]) -> Response:
+    async def notes_list(request: Request) -> Response:
+        query = _query(request, _NOTES_LIST_QUERY)
         return await _respond(
             "GET /api/notes",
             handlers.notes_list(query=query),
@@ -628,9 +958,12 @@ def _add_notes_create(router: APIRouter, handlers: Handlers) -> None:
             200: {"model": Note},
             400: {"model": InvalidRequest},
             409: {"model": NotesCreateError409},
+            415: {"model": InvalidRequest},
         },
+        openapi_extra=_described(body=_NOTES_CREATE_BODY),
     )
-    async def notes_create(body: Annotated[NotesCreateBody, Body()]) -> Response:
+    async def notes_create(request: Request) -> Response:
+        body = await _body(request, _NOTES_CREATE_BODY)
         return await _respond(
             "POST /api/notes",
             handlers.notes_create(body=body),
@@ -648,12 +981,13 @@ def _add_notes_delete(router: APIRouter, handlers: Handlers) -> None:
             200: {"model": NotesDeleteResponse},
             400: {"model": InvalidRequest},
             404: {"model": NotFound},
+            415: {"model": InvalidRequest},
         },
+        openapi_extra=_described(params=_NOTES_DELETE_PARAMS, body=_NOTES_DELETE_BODY),
     )
-    async def notes_delete(
-        id_: Annotated[str, Path(alias="id")], body: Annotated[NotesDeleteBody, Body()]
-    ) -> Response:
-        params = _parse(NotesDeleteParams, {"id": id_}, "path")
+    async def notes_delete(request: Request) -> Response:
+        body = await _body(request, _NOTES_DELETE_BODY)
+        params = _params(request, _NOTES_DELETE_PARAMS)
         return await _respond(
             "DELETE /api/notes/{id}",
             handlers.notes_delete(params=params, body=body),
@@ -672,9 +1006,10 @@ def _add_notes_retrieve(router: APIRouter, handlers: Handlers) -> None:
             400: {"model": InvalidRequest},
             404: {"model": NotFound},
         },
+        openapi_extra=_described(params=_NOTES_RETRIEVE_PARAMS),
     )
-    async def notes_retrieve(id_: Annotated[str, Path(alias="id")]) -> Response:
-        params = _parse(NotesRetrieveParams, {"id": id_}, "path")
+    async def notes_retrieve(request: Request) -> Response:
+        params = _params(request, _NOTES_RETRIEVE_PARAMS)
         return await _respond(
             "GET /api/notes/{id}",
             handlers.notes_retrieve(params=params),
@@ -688,12 +1023,16 @@ def _add_notes_update(router: APIRouter, handlers: Handlers) -> None:
         "/api/notes/{id}",
         operation_id="notesUpdate",
         response_model=None,
-        responses={200: {"model": Note}, 400: {"model": InvalidRequest}},
+        responses={
+            200: {"model": Note},
+            400: {"model": InvalidRequest},
+            415: {"model": InvalidRequest},
+        },
+        openapi_extra=_described(params=_NOTES_UPDATE_PARAMS, body=_NOTES_UPDATE_BODY),
     )
-    async def notes_update(
-        id_: Annotated[str, Path(alias="id")], body: Annotated[NotesUpdateBody, Body()]
-    ) -> Response:
-        params = _parse(NotesUpdateParams, {"id": id_}, "path")
+    async def notes_update(request: Request) -> Response:
+        body = await _body(request, _NOTES_UPDATE_BODY)
+        params = _params(request, _NOTES_UPDATE_PARAMS)
         return await _respond(
             "PUT /api/notes/{id}",
             handlers.notes_update(params=params, body=body),
@@ -707,9 +1046,15 @@ def _add_odd_create(router: APIRouter, handlers: Handlers) -> None:
         "/api/odd",
         operation_id="oddCreate",
         response_model=None,
-        responses={200: {"model": OddCreateResponse}, 400: {"model": InvalidRequest}},
+        responses={
+            200: {"model": OddCreateResponse},
+            400: {"model": InvalidRequest},
+            415: {"model": InvalidRequest},
+        },
+        openapi_extra=_described(body=_ODD_CREATE_BODY),
     )
-    async def odd_create(body: Annotated[OddCreateBody, Body()]) -> Response:
+    async def odd_create(request: Request) -> Response:
+        body = await _body(request, _ODD_CREATE_BODY)
         return await _respond(
             "POST /api/odd",
             handlers.odd_create(body=body),
@@ -726,9 +1071,12 @@ def _add_shapes_create(router: APIRouter, handlers: Handlers) -> None:
         responses={
             200: {"model": ShapesCreateResponse},
             400: {"model": InvalidRequest},
+            415: {"model": InvalidRequest},
         },
+        openapi_extra=_described(body=_SHAPES_CREATE_BODY),
     )
-    async def shapes_create(body: Annotated[ShapesCreateBody, Body()]) -> Response:
+    async def shapes_create(request: Request) -> Response:
+        body = await _body(request, _SHAPES_CREATE_BODY)
         return await _respond(
             "POST /api/shapes",
             handlers.shapes_create(body=body),
@@ -743,10 +1091,10 @@ def _add_ticks_list(router: APIRouter, handlers: Handlers) -> None:
         operation_id="ticksList",
         response_class=StreamingResponse,
         responses={400: {"model": InvalidRequest}},
+        openapi_extra=_described(query=_TICKS_LIST_QUERY),
     )
-    async def ticks_list(
-        request: Request, query: Annotated[TicksListQuery, Query()]
-    ) -> Response:
+    async def ticks_list(request: Request) -> Response:
+        query = _query(request, _TICKS_LIST_QUERY)
         return _stream(
             "GET /api/ticks",
             handlers.ticks_list(
@@ -762,9 +1110,15 @@ def _add_trees_create(router: APIRouter, handlers: Handlers) -> None:
         "/api/trees",
         operation_id="treesCreate",
         response_model=None,
-        responses={200: {"model": TreesCreateResponse}, 400: {"model": InvalidRequest}},
+        responses={
+            200: {"model": TreesCreateResponse},
+            400: {"model": InvalidRequest},
+            415: {"model": InvalidRequest},
+        },
+        openapi_extra=_described(body=_TREES_CREATE_BODY),
     )
-    async def trees_create(body: Annotated[TreesCreateBody, Body()]) -> Response:
+    async def trees_create(request: Request) -> Response:
+        body = await _body(request, _TREES_CREATE_BODY)
         return await _respond(
             "POST /api/trees",
             handlers.trees_create(body=body),
@@ -776,11 +1130,10 @@ def _add_trees_create(router: APIRouter, handlers: Handlers) -> None:
 def create_router(handlers: Handlers) -> APIRouter:
     """Make a router whose routes call the given handlers.
 
-    An application that includes it also needs `install_error_handlers()`,
-    which `create_app()` calls: without it, a request that fails validation
-    is answered by FastAPI, as a 422 in its own shape.
+    It needs nothing of the application it is included in: a request the contract
+    refuses is answered by the router itself.
     """
-    router = APIRouter()
+    router = APIRouter(route_class=_Route)
     _add_echo_retrieve(router, handlers)
     _add_edges_create(router, handlers)
     _add_notes_list(router, handlers)
@@ -795,65 +1148,699 @@ def create_router(handlers: Handlers) -> APIRouter:
     return router
 
 
-_PARTS = {"path": "params", "query": "query", "body": "body"}
+def create_app(handlers: Handlers) -> FastAPI:
+    """Make an application that serves the operations with the given handlers."""
+    app = FastAPI()
+    app.include_router(create_router(handlers))
+    return app
+
+
+# =============================================================================
+# Requests
+# =============================================================================
+
+
+# A value that is not there. Not None, which is the null of JSON.
+_MISSING: Final = object()
+
+# The largest integer a JavaScript number holds exactly.
+_MAX_SAFE_INTEGER = 9007199254740991
+
+# How far a number may be from a multiple of a step and still be one: what
+# binary floating point makes of 0.3 / 0.1.
+_STEP_TOLERANCE = 1e-9
+
+# A string format, as Zod names it in a message.
+_FORMATS = {
+    "date-time": "ISO datetime",
+    "date": "ISO date",
+    "time": "ISO time",
+    "duration": "ISO duration",
+    "email": "email address",
+    "uuid": "UUID",
+    "uri": "URL",
+    "ipv4": "IPv4 address",
+    "ipv6": "IPv6 address",
+}
+
+# The bounds of a number: the keyword, whether a number is outside the
+# bound, and the code and the words of the issue.
+_BOUNDS = (
+    ("minimum", operator.lt, "too_small", "Too small", ">="),
+    ("exclusiveMinimum", operator.le, "too_small", "Too small", ">"),
+    ("maximum", operator.gt, "too_big", "Too big", "<="),
+    ("exclusiveMaximum", operator.ge, "too_big", "Too big", "<"),
+)
+
+
+def _resolved(root: _Schema, schema: _Schema) -> _Schema:
+    """Give the schema itself, or the one it refers to."""
+    while "$ref" in schema:
+        reference: str = schema["$ref"]
+        name = reference.removeprefix("#/$defs/")
+        schema = root if reference == "#" else root["$defs"][name]
+    return schema
+
+
+def _types(schema: _Schema) -> list[str]:
+    """List the JSON types a schema allows; none listed means any."""
+    allowed: str | list[str] = schema.get("type", [])
+    return [allowed] if isinstance(allowed, str) else allowed
+
+
+def _type_of(value: object) -> str:
+    """Name the JSON type of a value, as Zod does in a message.
+
+    A number is a number: whether it is an integer is a question about its
+    value.
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int | float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    return "array" if isinstance(value, list) else "object"
+
+
+def _expected(schema: _Schema) -> str:
+    """Name the type a schema asks for, as Zod words it in a message."""
+    # With null: the other type.
+    named = [name for name in _types(schema) if name != "null"]
+    if not named:
+        # No type: anything, which a missing value is not.
+        return "nonoptional"
+    if named[0] == "array" and "prefixItems" in schema:
+        return "tuple"
+    if named[0] == "object" and "properties" not in schema:
+        return "record"
+    return "number" if named[0] == "integer" else named[0]
+
+
+def _fits(allowed: list[str], value: object) -> bool:
+    """Whether a value has one of the JSON types listed.
+
+    An integer is a number without a fraction. Infinity, which only text
+    can be read as, is no number.
+    """
+    actual = _type_of(value)
+    if actual != "number":
+        return actual in allowed
+    if "number" in allowed:
+        return not (isinstance(value, float) and math.isinf(value))
+    whole = isinstance(value, int) or cast("float", value).is_integer()
+    return "integer" in allowed and whole
+
+
+def _is_union(schema: _Schema) -> bool:
+    """Whether a schema lists several types.
+
+    Null beside one other type is that type, nullable; beside several it is
+    a union.
+    """
+    return len([name for name in _types(schema) if name != "null"]) > 1
+
+
+def _as_javascript(number: float) -> float:
+    """Read a number as JavaScript does, which has one kind: 2.0 is 2."""
+    whole = number.is_integer() and abs(number) <= _MAX_SAFE_INTEGER
+    return int(number) if whole else number
+
+
+def _is_literal(expected: object, value: object) -> bool:
+    """Whether a value is the one a schema names: True is not 1."""
+    return _type_of(expected) == _type_of(value) and expected == value
+
+
+def _written(value: object) -> str:
+    """Write a value a schema names as JSON, for a message."""
+    return json.dumps(value, ensure_ascii=False)
+
+
+class _Checker:
+    """Checks JSON values against a schema and collects what is wrong.
+
+    It reads the JSON Schema that a contract has, not all of JSON Schema,
+    and gives an issue the code and the words Zod gives it. A value is only
+    read, so trying an alternative of a union costs no copy.
+    """
+
+    def __init__(self, root: _Schema, *, text: bool) -> None:
+        self.root = root
+        # Whether the values arrived as text (a query, a path).
+        self.text = text
+        # Where the value being checked is: keys and indexes from the root.
+        self.path: list[str | int] = []
+        self.issues: list[InvalidRequestIssue] = []
+
+    def issue(self, code: str, message: str) -> None:
+        found = InvalidRequestIssue(path=list(self.path), message=message, code=code)
+        self.issues.append(found)
+
+    def fits(self, schema: _Schema, value: object) -> bool:
+        trial = _Checker(self.root, text=self.text)
+        trial.check(schema, value)
+        return not trial.issues
+
+    def check_at(self, step: str | int, schema: _Schema, value: object) -> None:
+        self.path.append(step)
+        self.check(schema, value)
+        self.path.pop()
+
+    def check(self, schema: _Schema, value: object) -> None:
+        schema = _resolved(self.root, schema)
+        alternatives: list[_Schema] | None = schema.get("anyOf", schema.get("oneOf"))
+        # A value that is listed: a missing one is not.
+        if "const" in schema:
+            if not _is_literal(schema["const"], value):
+                expected = _written(schema["const"])
+                self.issue("invalid_value", f"Invalid input: expected {expected}")
+        elif "enum" in schema:
+            options: list[object] = schema["enum"]
+            if not any(_is_literal(option, value) for option in options):
+                listed = "|".join(_written(option) for option in options)
+                self.issue("invalid_value", f"Invalid option: expected one of {listed}")
+        elif alternatives is not None:
+            self.check_alternatives(schema, alternatives, value)
+        elif value is _MISSING:
+            self.check_missing(schema)
+        elif "allOf" in schema:
+            for part in schema["allOf"]:
+                self.check(part, value)
+        elif self.has_type(schema, value):
+            self.check_value(schema, value)
+
+    def check_missing(self, schema: _Schema) -> None:
+        if _is_union(schema):
+            self.issue("invalid_union", "Invalid input")
+        else:
+            expected = _expected(schema)
+            message = f"Invalid input: expected {expected}, received undefined"
+            self.issue("invalid_type", message)
+
+    def has_type(self, schema: _Schema, value: object) -> bool:
+        allowed = _types(schema)
+        if not allowed or _fits(allowed, value):
+            return True
+        received = self.received(allowed, value)
+        if _is_union(schema):
+            self.issue("invalid_union", "Invalid input")
+        elif "integer" in allowed and received == "number":
+            # The right kind and the wrong value.
+            self.issue("invalid_type", "Invalid input: expected int, received number")
+        else:
+            expected = _expected(schema)
+            message = f"Invalid input: expected {expected}, received {received}"
+            self.issue("invalid_type", message)
+        return False
+
+    def received(self, allowed: list[str], value: object) -> str:
+        # What Zod says it received: a type, or what the number is that
+        # text was read as and that is none.
+        if isinstance(value, float) and math.isinf(value):
+            return "Infinity" if value > 0 else "-Infinity"
+        numeric = "integer" in allowed or "number" in allowed
+        if self.text and numeric and isinstance(value, str):
+            return "NaN"
+        return _type_of(value)
+
+    def check_alternatives(
+        self, schema: _Schema, alternatives: list[_Schema], value: object
+    ) -> None:
+        # T or null: what is wrong with a value that is not null is what is
+        # wrong with it as a T.
+        others = [
+            alternative
+            for alternative in alternatives
+            if _types(_resolved(self.root, alternative)) != ["null"]
+        ]
+        tag: str | None = schema.get("discriminator", {}).get("propertyName")
+        if len(others) == 1 and len(alternatives) > 1:
+            if value is not None:
+                self.check(others[0], value)
+        elif tag is not None:
+            self.check_tagged(tag, alternatives, value)
+        # Each alternative is tried once. One that fits has nothing to
+        # report, so it is not checked a second time: in a union that refers
+        # to itself that would double the work at every level.
+        elif value is _MISSING or not any(
+            self.fits(alternative, value) for alternative in alternatives
+        ):
+            self.issue("invalid_union", "Invalid input")
+
+    def check_tagged(
+        self, tag: str, alternatives: list[_Schema], value: object
+    ) -> None:
+        # A member that tells the alternatives apart decides which one the
+        # value is checked as. The contract names it.
+        if not isinstance(value, dict):
+            received = "undefined" if value is _MISSING else _type_of(value)
+            message = f"Invalid input: expected object, received {received}"
+            self.issue("invalid_type", message)
+            return
+        constants: list[object] = [
+            _resolved(self.root, alternative)["properties"][tag]["const"]
+            for alternative in alternatives
+        ]
+        members = cast("dict[str, object]", value)
+        given = members.get(tag)
+        if isinstance(given, str) and given in constants:
+            self.check(alternatives[constants.index(given)], members)
+            return
+        listed = " | ".join(f"'{constant}'" for constant in constants)
+        self.path.append(tag)
+        message = f"Invalid discriminator value. Expected {listed}"
+        self.issue("invalid_union", message)
+        self.path.pop()
+
+    def check_value(self, schema: _Schema, value: object) -> None:
+        if isinstance(value, str):
+            self.check_string(schema, value)
+        elif isinstance(value, list):
+            self.check_array(schema, cast("list[object]", value))
+        elif isinstance(value, dict):
+            self.check_object(schema, cast("dict[str, object]", value))
+        elif isinstance(value, int | float) and not isinstance(value, bool):
+            self.check_number(schema, value)
+
+    def check_string(self, schema: _Schema, text: str) -> None:
+        # In code points, as JSON Schema counts.
+        minimum: int | None = schema.get("minLength")
+        if minimum is not None and len(text) < minimum:
+            message = f"Too small: expected string to have >={minimum} characters"
+            self.issue("too_small", message)
+        maximum: int | None = schema.get("maxLength")
+        if maximum is not None and len(text) > maximum:
+            message = f"Too big: expected string to have <={maximum} characters"
+            self.issue("too_big", message)
+        pattern: str | None = schema.get("pattern")
+        if pattern is not None and not _pattern(pattern).search(text):
+            # A format is written as a pattern; its name says what is wrong.
+            form: str | None = schema.get("format")
+            if form is None:
+                message = f"Invalid string: must match pattern /{pattern}/"
+            else:
+                message = f"Invalid {_FORMATS.get(form, form)}"
+            self.issue("invalid_format", message)
+
+    def check_number(self, schema: _Schema, amount: float) -> None:
+        # An integer is one a JavaScript number holds exactly. Zod says
+        # "int" for that bound, before any bound the schema states.
+        integer = "integer" in _types(schema)
+        if integer and amount > _MAX_SAFE_INTEGER:
+            message = f"Too big: expected int to be <={_MAX_SAFE_INTEGER}"
+            self.issue("too_big", message)
+        if integer and amount < -_MAX_SAFE_INTEGER:
+            message = f"Too small: expected int to be >=-{_MAX_SAFE_INTEGER}"
+            self.issue("too_small", message)
+        for keyword, outside, code, words, sign in _BOUNDS:
+            bound: float | None = schema.get(keyword)
+            # The contract states that bound again for every integer.
+            stated = integer and bound in {_MAX_SAFE_INTEGER, -_MAX_SAFE_INTEGER}
+            if bound is not None and not stated and outside(amount, bound):
+                self.issue(code, f"{words}: expected number to be {sign}{bound}")
+        step: float | None = schema.get("multipleOf")
+        if step:
+            steps = amount / step
+            if abs(steps - round(steps)) > _STEP_TOLERANCE:
+                message = f"Invalid number: must be a multiple of {step}"
+                self.issue("not_multiple_of", message)
+
+    def check_array(self, schema: _Schema, items: list[object]) -> None:
+        minimum: int | None = schema.get("minItems")
+        if minimum is not None and len(items) < minimum:
+            message = f"Too small: expected array to have >={minimum} items"
+            self.issue("too_small", message)
+        maximum: int | None = schema.get("maxItems")
+        if maximum is not None and len(items) > maximum:
+            message = f"Too big: expected array to have <={maximum} items"
+            self.issue("too_big", message)
+        # A tuple gives a schema per position; a list one for every item.
+        positioned: list[_Schema] = schema.get("prefixItems", [])
+        each: object = schema.get("items")
+        for index, item in enumerate(items):
+            member = positioned[index] if index < len(positioned) else each
+            if isinstance(member, dict):
+                self.check_at(index, cast("_Schema", member), item)
+
+    def check_object(self, schema: _Schema, members: dict[str, object]) -> None:
+        properties: dict[str, _Schema] = schema.get("properties", {})
+        required: list[str] = schema.get("required", [])
+        for name, member in properties.items():
+            if name in members:
+                self.check_at(name, member, members[name])
+            elif name in required:
+                self.check_at(name, member, _MISSING)
+        # Members the schema does not name: refused by a closed object,
+        # checked by a mapping, ignored otherwise.
+        unknown = [name for name in members if name not in properties]
+        additional: object = schema.get("additionalProperties")
+        if isinstance(additional, dict):
+            for name in unknown:
+                self.check_at(name, cast("_Schema", additional), members[name])
+        elif additional is False and unknown:
+            noun = "key" if len(unknown) == 1 else "keys"
+            listed = ", ".join(f'"{name}"' for name in unknown)
+            self.issue("unrecognized_keys", f"Unrecognized {noun}: {listed}")
+
+
+def _issues(schema: _Schema, value: object, *, text: bool) -> list[InvalidRequestIssue]:
+    """List what is wrong with a value: nothing, if it fits its schema."""
+    checker = _Checker(schema, text=text)
+    checker.check(schema, value)
+    return checker.issues
+
+
+type _PartName = Literal["body", "query", "params"]
+
 _PREFIX = {
-    "params": "Params validation error",
-    "query": "Query validation error",
     "body": "Validation error",
+    "query": "Query validation error",
+    "params": "Params validation error",
 }
 
 
-class EventError(ValueError):
-    """A handler yielded an event that cannot be written to its stream."""
+# In a path: a percent sign that does not start an escape.
+_NO_ESCAPE = re.compile(rb"%(?![0-9A-Fa-f]{2})")
 
 
-# What the task that runs a handler's generator puts after its last event.
-_END = object()
-_FAILED = object()
+class _RefusedError(Exception):
+    """A request that does not reach its handler: the response that answers it."""
+
+    def __init__(self, response: Response) -> None:
+        super().__init__(response.status_code)
+        self.response = response
 
 
-def _describe(issue: dict[str, Any]) -> str:
-    path: list[Any] = issue["path"]
-    message: str = issue["message"]
-    where = ".".join(str(key) for key in path)
-    return f"{where}: {message}" if path else message
+class _Route(APIRoute):
+    """A route that answers a request that is refused.
+
+    The answer is the router's own, whatever application it is included in:
+    no exception handler has to be installed for it.
+    """
+
+    @override
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        handle = super().get_route_handler()
+
+        async def answer(request: Request) -> Response:
+            # Before anything is read: the path is what led here.
+            if _is_malformed(request.scope.get("raw_path")):
+                return JSONResponse({"error": "Malformed URL path"}, status_code=400)
+            try:
+                return await handle(request)
+            except _RefusedError as refused:
+                return refused.response
+
+        return answer
 
 
-def _invalid_request(errors: list[dict[str, Any]]) -> JSONResponse:
-    """Answer with a 400 in the shape the TypeScript server uses."""
-    if any(error.get("type") == "json_invalid" for error in errors):
-        return JSONResponse(
-            {"error": "Invalid JSON body", "in": "json", "issues": []},
-            status_code=400,
-        )
-    # The part that failed first; its issues, each with the path below it.
-    part = _PARTS.get(str(errors[0]["loc"][0]), "body") if errors else "body"
-    issues: list[dict[str, Any]] = [
-        {
-            "path": list(error["loc"][1:]),
-            "message": error["msg"],
-            "code": error["type"],
-        }
-        for error in errors
-        if _PARTS.get(str(error["loc"][0]), "body") == part
-    ]
-    listed = ", ".join(_describe(issue) for issue in issues)
-    return JSONResponse(
-        {"error": f"{_PREFIX[part]}: {listed}", "in": part, "issues": issues},
-        status_code=400,
-    )
+def _is_malformed(path: object) -> bool:
+    """Whether a path, as it was sent, cannot be decoded.
 
-
-def _parse[ModelT: BaseModel](
-    model: type[ModelT], values: dict[str, Any], part: str
-) -> ModelT:
-    """Read path parameters as their model; a failure is a request error."""
+    The server has decoded it all the same, and has put U+FFFD where it
+    could not.
+    """
+    if not isinstance(path, bytes):
+        # The server does not say what was sent.
+        return False
+    if _NO_ESCAPE.search(path):
+        return True
     try:
-        return model.model_validate(values)
-    except ValidationError as error:
-        raise RequestValidationError(
-            [{**issue, "loc": (part, *issue["loc"])} for issue in error.errors()]
-        ) from error
+        unquote_to_bytes(path).decode()
+    except UnicodeDecodeError:
+        return True
+    return False
+
+
+def _refusal(
+    status: int,
+    error: str,
+    part: Literal["body", "query", "params", "json", "content-type"],
+    issues: list[InvalidRequestIssue],
+) -> JSONResponse:
+    """Answer a request that is refused: which part, and each issue."""
+    body = InvalidRequest(error=error, part=part, issues=issues)
+    return JSONResponse(body.model_dump(by_alias=True), status_code=status)
+
+
+def _invalid(name: _PartName, issues: list[InvalidRequestIssue]) -> JSONResponse:
+    """Answer a request that fails validation, as the TypeScript handlers do."""
+    listed = ", ".join(
+        f"{'.'.join(str(key) for key in issue.path)}: {issue.message}"
+        if issue.path
+        else issue.message
+        for issue in issues
+    )
+    return _refusal(400, f"{_PREFIX[name]}: {listed}", name, issues)
+
+
+def _typed[T](name: _PartName, part: _Part[T], value: object) -> T:
+    """Give a part of a request as its type, if the contract accepts it."""
+    issues = _issues(part.schema, value, text=name != "body")
+    if issues:
+        raise _RefusedError(_invalid(name, issues))
+    try:
+        # By the names of the contract only, and with the types the contract
+        # checked: a list for a tuple.
+        return part.adapter.validate_python(
+            None if value is _MISSING else value,
+            strict=False,
+            by_alias=True,
+            by_name=False,
+        )
+    except ValidationError:
+        # The contract accepts the value and its type does not: the two
+        # were generated from the same contract and disagree.
+        logger.exception("the %s the contract accepts does not fit its type", name)
+        raise _RefusedError(_internal_error()) from None
+
+
+# A number as JavaScript reads it from text: a decimal one, or an integer
+# in another base.
+_DECIMAL = re.compile(
+    r"[+-]?(?:Infinity|(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)"
+)
+
+_OTHER_BASE = re.compile(r"0[xX][0-9a-fA-F]+|0[oO][0-7]+|0[bB][01]+")
+
+
+def _number_from_text(text: str) -> float | None:
+    """Give the number a text is, as JavaScript converts text to a number.
+
+    Blank text is 0, and 0x, 0o and 0b start a hexadecimal, octal or binary
+    integer. A number too large to be one is infinity, which the checker
+    refuses by that name.
+    """
+    text = text.strip()
+    if not text:
+        return 0
+    if _OTHER_BASE.fullmatch(text):
+        return int(text, 0)
+    return _as_javascript(float(text)) if _DECIMAL.fullmatch(text) else None
+
+
+def _from_text(root: _Schema, schema: _Schema, value: object) -> object:
+    """Turn a value that arrived as text into what its schema asks for.
+
+    Query and path values are text. Where the schema asks for a number, a
+    boolean or a list, the text becomes one before it is checked; text that
+    is not one stays as it is and fails the check.
+    """
+    schema = _resolved(root, schema)
+    if isinstance(value, str):
+        return _text_as(root, schema, value)
+    if isinstance(value, dict):
+        return _members_from_text(root, schema, cast("dict[str, object]", value))
+    if isinstance(value, list):
+        items = cast("list[object]", value)
+        each: object = schema.get("items")
+        if isinstance(each, dict):
+            item = cast("_Schema", each)
+            return [_from_text(root, item, one) for one in items]
+        return items
+    return value
+
+
+def _text_as(root: _Schema, schema: _Schema, text: str) -> object:
+    allowed = _types(schema)
+    numeric = "integer" in allowed or "number" in allowed
+    number = _number_from_text(text) if numeric else None
+    if number is not None:
+        return number
+    if "boolean" in allowed and text in {"true", "false"}:
+        return text == "true"
+    # One occurrence of a key that takes a list.
+    return _from_text(root, schema, [text]) if "array" in allowed else text
+
+
+def _members_from_text(
+    root: _Schema, schema: _Schema, members: dict[str, object]
+) -> dict[str, object]:
+    properties: dict[str, _Schema] = schema.get("properties", {})
+    shaped = {
+        name: _from_text(root, properties[name], member)
+        if name in properties
+        else member
+        for name, member in members.items()
+    }
+    # No occurrence of a key that takes a list, and has to be there.
+    for name in schema.get("required", []):
+        if name not in shaped and "array" in _types(_resolved(root, properties[name])):
+            shaped[name] = []
+    return shaped
+
+
+def _not_json(content_type: str | None) -> JSONResponse:
+    """Answer a body that is not JSON.
+
+    A body is taken to be meant as JSON when its Content-Type says so, says
+    text/plain or is not there: a client that sets no header sends a text
+    body as text/plain.
+    """
+    media = (content_type or "").split(";")[0].strip().lower()
+    if media in {"", "application/json", "text/plain"} or media.endswith("+json"):
+        return _refusal(400, "Invalid JSON body", "json", [])
+    error = f'Unsupported content type "{content_type}": the body has to be JSON'
+    return _refusal(415, error, "content-type", [])
+
+
+class _NotJsonError(ValueError):
+    """A number Python's parser reads and JSON does not have."""
+
+
+def _json_number(text: str) -> float:
+    number = float(text)
+    if math.isinf(number):
+        # Too large to be a number, and JSON has no infinity.
+        raise _NotJsonError(text)
+    return _as_javascript(number)
+
+
+def _json_constant(name: str) -> float:
+    # NaN and the infinities.
+    raise _NotJsonError(name)
+
+
+async def _body[T](request: Request, part: _Part[T]) -> T:
+    """Read the JSON body of a request as its type.
+
+    A request without a body is checked as a missing value.
+    """
+    content_type = request.headers.get("content-type")
+    # As JavaScript reads a body: a byte that is not UTF-8 is U+FFFD.
+    text = (await request.body()).decode(errors="replace")
+    try:
+        value: object = _MISSING
+        if text.strip():
+            value = json.loads(
+                text, parse_float=_json_number, parse_constant=_json_constant
+            )
+        return _typed("body", part, value)
+    except (json.JSONDecodeError, _NotJsonError, RecursionError):
+        # Not JSON, or nested deeper than this server follows it.
+        raise _RefusedError(_not_json(content_type)) from None
+
+
+def _query[T](request: Request, part: _Part[T]) -> T:
+    """Read the query string of a request as its type.
+
+    A key that occurs several times is a list.
+    """
+    given = request.query_params
+    members: dict[str, object] = {}
+    for name in given:
+        values = given.getlist(name)
+        members[name] = values[0] if len(values) == 1 else values
+    return _typed("query", part, _from_text(part.schema, part.schema, members))
+
+
+def _params[T](request: Request, part: _Part[T]) -> T:
+    """Read the path parameters of a request as their type."""
+    members = dict(request.path_params)
+    return _typed("params", part, _from_text(part.schema, part.schema, members))
+
+
+# What is not a schema in a schema: the values it names.
+_VALUES = frozenset({"const", "default", "enum", "required"})
+
+
+def _inlined(root: _Schema, schema: object, inside: tuple[str, ...] = ()) -> object:
+    """Give a schema without references, for where they would not resolve.
+
+    A schema that refers to itself is described down to that reference.
+    """
+    if isinstance(schema, list):
+        return [_inlined(root, each, inside) for each in cast("list[object]", schema)]
+    if not isinstance(schema, dict):
+        return schema
+    rules = cast("_Schema", schema)
+    reference: str | None = rules.get("$ref")
+    if reference is not None:
+        if reference in inside:
+            return {}
+        return _inlined(root, _resolved(root, rules), (*inside, reference))
+    described: _Schema = {}
+    for keyword, value in rules.items():
+        if keyword == "properties":
+            described[keyword] = {
+                name: _inlined(root, member, inside)
+                for name, member in cast("dict[str, object]", value).items()
+            }
+        elif keyword != "$defs":
+            keep = keyword in _VALUES
+            described[keyword] = value if keep else _inlined(root, value, inside)
+    return described
+
+
+def _parameters(place: str, part: _Part[Any] | None) -> list[dict[str, Any]]:
+    if part is None:
+        return []
+    schema = _resolved(part.schema, part.schema)
+    required: list[str] = schema.get("required", [])
+    properties: dict[str, _Schema] = schema.get("properties", {})
+    return [
+        {
+            "name": name,
+            "in": place,
+            "required": place == "path" or name in required,
+            "schema": _inlined(part.schema, member),
+        }
+        for name, member in properties.items()
+    ]
+
+
+def _described(
+    *,
+    params: _Part[Any] | None = None,
+    query: _Part[Any] | None = None,
+    body: _Part[Any] | None = None,
+) -> dict[str, Any]:
+    """Describe the request of an operation, for the description FastAPI serves.
+
+    FastAPI describes a request from the arguments of a route function. The
+    route functions here take the request as it is, and the contract says
+    what it has to be.
+    """
+    described: dict[str, Any] = {}
+    parameters = [*_parameters("path", params), *_parameters("query", query)]
+    if parameters:
+        described["parameters"] = parameters
+    if body is not None:
+        schema = _inlined(body.schema, body.schema)
+        described["requestBody"] = {
+            # Unless the contract accepts a request without a body.
+            "required": bool(_issues(body.schema, _MISSING, text=False)),
+            "content": {"application/json": {"schema": schema}},
+        }
+    return described
+
+
+# =============================================================================
+# Responses
+# =============================================================================
 
 
 def _internal_error() -> JSONResponse:
@@ -924,6 +1911,15 @@ async def _respond(
             "%s: the returned value does not match the response schema", where
         )
         return _internal_error()
+
+
+class EventError(ValueError):
+    """A handler yielded an event that cannot be written to its stream."""
+
+
+# What the task that runs a handler's generator puts after its last event.
+_END = object()
+_FAILED = object()
 
 
 def _frame(event: object, events: dict[str, TypeAdapter[Any]]) -> str:
@@ -1032,40 +2028,3 @@ def _stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache"},
     )
-
-
-def install_error_handlers(app: FastAPI) -> None:
-    """Answer a request that fails validation with a 400.
-
-    The 400 names the part that failed and each issue.
-    """
-
-    async def invalid_request(_request: Request, error: Exception) -> Response:
-        failed = cast("RequestValidationError", error)
-        return _invalid_request(list(failed.errors()))
-
-    app.add_exception_handler(RequestValidationError, invalid_request)
-
-    # The description FastAPI gives of the application says the same: no
-    # operation answers the 422 FastAPI would send by itself.
-    describe = app.openapi
-
-    def openapi() -> dict[str, Any]:
-        schema = describe()
-        for path in schema.get("paths", {}).values():
-            for operation in path.values():
-                if isinstance(operation, dict):
-                    responses = cast("dict[str, Any]", operation).get("responses")
-                    if isinstance(responses, dict):
-                        cast("dict[str, Any]", responses).pop("422", None)
-        return schema
-
-    app.openapi = openapi
-
-
-def create_app(handlers: Handlers) -> FastAPI:
-    """Make an application that serves the operations with the given handlers."""
-    app = FastAPI()
-    install_error_handlers(app)
-    app.include_router(create_router(handlers))
-    return app

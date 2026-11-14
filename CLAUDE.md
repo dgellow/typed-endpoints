@@ -31,8 +31,9 @@ permissions):
 - `./scripts/test-python` — run `e2e_tests/python` through `uv` (needs `uv`):
   `ruff format --check` and `ruff check` with every rule selected, then pyright
   in strict mode, over the generated modules, the hand-written handlers and the
-  tests; then the conformance tests against the generated FastAPI application.
-  Python is always run through `uv`
+  tests, and over FastAPI modules generated for APIs that use only a part of the
+  generator; then the conformance tests against the generated FastAPI
+  application. Python is always run through `uv`
 - `./scripts/test-rust` — run `e2e_tests/rust` (needs `cargo` and `rustup`):
   `cargo fmt --check` (the generated module under the 2021 and 2024 style
   editions) and `cargo clippy -- -D warnings -W clippy::pedantic` over the
@@ -113,7 +114,7 @@ src/
 │   └── generate.ts # types / client / routes output formats
 ├── contract/       # generateContract(): the routes as data, JSON Schema per part
 │   └── types.ts    # TypeGraph: schemas as named, shared types with cycles marked
-├── python/         # Pydantic models (models.ts), a FastAPI module (fastapi.ts), an httpx client (client.ts), layout as ruff formats (format.ts)
+├── python/         # Pydantic models (models.ts), a FastAPI module (fastapi.ts), the contract as dicts (schema.ts), the runtime that checks requests against it (fastapi_runtime.ts), an httpx client (client.ts), layout as ruff formats (format.ts)
 ├── rust/           # serde types (models.ts), the contract as statics (contract.ts), the runtime that checks against it (runtime.ts), the axum module (axum.ts), a reqwest client (client.ts, client_runtime.ts)
 ├── cli.ts          # CLI entry point
 └── mod.ts          # Main module exports
@@ -233,16 +234,29 @@ TypeScript handlers (`e2e_tests/conformance_test.ts`), the generated FastAPI
 application (`./scripts/test-python`) and the generated axum server
 (`./scripts/test-rust`). A server that answers differently is fixed, or the
 difference is declared where the suite is called (`Difference`); a declared
-difference is asserted, not skipped. `refusals.json` records what the TypeScript
-handlers answer to 27 requests they refuse, and a server without the
-`issues-in-other-words` difference answers the same, word for word.
+difference is asserted, not skipped; one that no server declares any more is
+removed with its branch. `refusals.json` records what the TypeScript handlers
+answer to 27 requests they refuse, and every server answers the same, word for
+word.
 
 The Python generator writes one module: Pydantic models, a `Handlers` protocol,
-`create_router()`. User code implements `Handlers` elsewhere. Validation is
-Pydantic's, which is where its declared differences come from. The generated
-Python client (`test_client.py`) is run against the TypeScript and the FastAPI
-server; logic it carries that the fixture does not reach (pagination styles
-other than cursor) has Python unit tests (`test_pagination.py`).
+the contract's schema of every request part as a dict (`src/python/schema.ts`),
+`create_router()`. User code implements `Handlers` elsewhere. A request is not
+validated by FastAPI: a route function takes the `Request`, and the module's
+fixed part (`src/python/fastapi_runtime.ts`, a port of the Rust runtime's
+checker) checks each part against the contract, words issues as Zod does, and
+only then builds the Pydantic model. A refusal is an exception the router's own
+route class answers, so `create_router()` needs nothing of the application. The
+request is described for FastAPI's OpenAPI from the contract (`openapi_extra`).
+A block of the fixed part is written only into a module that uses it; modules
+for APIs that use a part (`e2e_tests/python/partial_modules.ts`) are checked by
+ruff and pyright too. Responses are still validated by Pydantic. The one
+declared difference of FastAPI is what the ASGI server does to a path before the
+router has it (`encoded-slash-is-a-slash`). The generated Python client
+(`test_client.py`) is run against the TypeScript and the FastAPI server; logic
+that the fixture does not reach has Python unit tests (`test_pagination.py` for
+pagination styles other than cursor, `test_requests.py` for the request
+handling).
 
 Generated code is not just code that works: it is written as a person would
 write it in that language, and the language's own tools say so. For Rust that is
@@ -255,7 +269,9 @@ after it was measured, with the same metric for every server compared.
 Generated Python is laid out by `src/python/format.ts`, which breaks a statement
 that is too wide the way `ruff format` does: the generators build a statement as
 one line and never run a formatter. A new shape of statement is tried against
-the formatter before it is relied on.
+the formatter before it is relied on. The fixed part of the FastAPI module is
+Python text in a template: a change to it is checked by generating and running
+`./scripts/test-python`.
 
 The Rust generator reads the contract through `TypeGraph`
 (`src/contract/types.ts`), which decides what a nominal language needs decided:

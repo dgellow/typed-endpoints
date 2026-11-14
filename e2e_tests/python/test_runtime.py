@@ -128,9 +128,10 @@ class Description(unittest.TestCase):
             {"$ref": "#/components/schemas/InvalidRequest"},
         )
         self.assertIn("$ref", self.schema("/api/notes/{id}", "get", "200"))
+        # With a body: also the 415 of one that does not claim to be JSON.
         self.assertEqual(
             sorted(self.paths["/api/notes"]["post"]["responses"]),
-            ["200", "400", "409"],
+            ["200", "400", "409", "415"],
         )
 
     def test_no_operation_documents_a_422(self) -> None:

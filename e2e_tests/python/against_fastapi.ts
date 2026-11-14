@@ -12,20 +12,12 @@ if (!url) {
   throw new Error("FASTAPI_URL is not set; run ./scripts/test-python");
 }
 
-// Requests are validated by Pydantic, whose rules differ from Zod's here.
+// The generated module checks a request against the contract, as the
+// TypeScript handlers do, and not with Pydantic. What is left is what the
+// server does to a request before the router has it.
 conformance("fastapi", () => url, {
   differences: {
-    "whole-float-is-not-integer": "a strict Pydantic int refuses 2.0",
-    "null-for-optional":
-      "an optional field is `T | None`, which accepts an explicit null",
-    "repeated-query-key": "FastAPI takes the last value of a repeated key",
-    "json-as-text": "FastAPI reads a body as JSON only under a JSON type",
-    "form-is-400": "FastAPI reports a form body as a validation failure",
-    "issues-in-other-words":
-      "the codes and messages are Pydantic's, and FastAPI's order",
-    "issue-per-union-member":
-      "Pydantic reports a union once per member, named in the path",
-    "malformed-path-is-decoded":
-      "Starlette decodes a path leniently: the handler gets U+FFFD",
+    "encoded-slash-is-a-slash":
+      "an ASGI server decodes the path, and Starlette routes on the decoded one",
   },
 });
