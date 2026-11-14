@@ -313,16 +313,25 @@ async def _frames(
         await asyncio.gather(producer, return_exceptions=True)
 
 
+class _EventStream(StreamingResponse):
+    """A stream of server-sent events.
+
+    As the response class of a route, it is also what the description
+    FastAPI serves says the route answers.
+    """
+
+    media_type = "text/event-stream"
+
+
 def _stream(
     where: str,
     source: AsyncIterator[object],
     events: dict[str, TypeAdapter[Any]],
     keep_alive: float | None,
-) -> StreamingResponse:
+) -> _EventStream:
     """Send the events a handler yields as a text/event-stream response."""
-    return StreamingResponse(
+    return _EventStream(
         _frames(where, source, events, keep_alive),
-        media_type="text/event-stream",
         headers={"Cache-Control": "no-cache"},
     )
 `.trim();
@@ -330,7 +339,11 @@ def _stream(
 /** Fixed part of the module: the application. */
 const APP = `
 def create_app(handlers: Handlers) -> FastAPI:
-    """Make an application that serves the operations with the given handlers."""
+    """Make an application that serves the operations with the given handlers.
+
+    An application with a title, middleware or routes of its own includes
+    \`create_router()\`, which is all this one has.
+    """
     app = FastAPI()
     app.include_router(create_router(handlers))
     return app
@@ -831,7 +844,7 @@ function route(item: Rendered): string[] {
   const options = [
     JSON.stringify(fastApiPath(operation.path)),
     `operation_id=${JSON.stringify(operation.operationId)}`,
-    item.stream ? "response_class=StreamingResponse" : "response_model=None",
+    item.stream ? "response_class=_EventStream" : "response_model=None",
     ...(operation.summary
       ? [`summary=${JSON.stringify(operation.summary)}`]
       : []),
