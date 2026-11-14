@@ -109,52 +109,57 @@ export const authorizeStep = step({
  *
  * This is the key demonstration of container morphisms:
  * the request schema is a function of the previous response.
+ *
+ * `when` states which authorize responses the step can follow. TypeScript
+ * infers the type guard from the predicate, so `prev` in `request` is the
+ * success variant and `prev.code` needs no check.
  */
 export const exchangeStep = dependentStep({
   name: "exchange",
-  dependsOn: "authorize",
+  dependsOn: authorizeStep,
   description: "Exchange authorization code for access token",
-  request: (
-    prev: z.infer<typeof AuthorizeResponseSchema>,
-  ) => {
-    // Only valid if authorize succeeded
-    if (prev.type !== "success") {
-      // Return a schema that will never validate (protocol violation)
-      return z.never();
-    }
-    return z.object({
+  when: (prev) => prev.type === "success",
+  request: (prev) =>
+    z.object({
       grant_type: z.literal("authorization_code"),
       code: z.literal(prev.code), // THE KEY: code comes from authorize response
       redirect_uri: z.url().optional(),
       client_id: z.string(),
       client_secret: z.string(),
-    });
-  },
+    }),
   response: ExchangeResponseSchema,
 });
+
+/** A successful token response. */
+type TokenSuccess = Extract<
+  z.infer<typeof ExchangeResponseSchema>,
+  { type: "success" }
+>;
 
 /**
  * Step 3: Token Refresh
  *
  * Client uses refresh token to get new access token.
  * Can be called multiple times (Kleene star pattern).
+ *
+ * Needs a successful exchange that issued a refresh token. The guard
+ * combines two conditions, which TypeScript does not infer a type guard
+ * from, so the guard type is written out.
  */
 export const refreshStep = dependentStep({
   name: "refresh",
-  dependsOn: "exchange",
+  dependsOn: exchangeStep,
   description: "Refresh access token using refresh token",
-  request: (prev: z.infer<typeof ExchangeResponseSchema>) => {
-    if (prev.type !== "success" || !prev.refresh_token) {
-      return z.never();
-    }
-    return z.object({
+  when: (prev): prev is TokenSuccess & { refresh_token: string } =>
+    prev.type === "success" && prev.refresh_token !== undefined,
+  request: (prev) =>
+    z.object({
       grant_type: z.literal("refresh_token"),
       refresh_token: z.literal(prev.refresh_token), // From exchange response
       client_id: z.string(),
       client_secret: z.string().optional(),
       scope: z.string().optional(),
-    });
-  },
+    }),
   response: ExchangeResponseSchema,
 });
 
@@ -165,19 +170,16 @@ export const refreshStep = dependentStep({
  */
 export const revokeStep = dependentStep({
   name: "revoke",
-  dependsOn: "exchange",
+  dependsOn: exchangeStep,
   description: "Revoke access or refresh token",
-  request: (prev: z.infer<typeof ExchangeResponseSchema>) => {
-    if (prev.type !== "success") {
-      return z.never();
-    }
-    return z.object({
+  when: (prev) => prev.type === "success",
+  request: () =>
+    z.object({
       token: z.string(), // access_token or refresh_token
       token_type_hint: z.enum(["access_token", "refresh_token"]).optional(),
       client_id: z.string(),
       client_secret: z.string().optional(),
-    });
-  },
+    }),
   response: z.object({
     // RFC 7009 - revocation response is empty on success
     revoked: z.literal(true),
@@ -199,11 +201,14 @@ export const revokeStep = dependentStep({
  *
  * Enforced at compile time:
  * 1. You can't call `exchange` without first calling `authorize`
- * 2. The shape of each request
+ * 2. You can't call `exchange` until the session knows `authorize` succeeded
+ *    (`session.narrow("authorize", (r) => r.type === "success")`); the same
+ *    for `refresh` and `revoke` after `exchange`
+ * 3. The shape of each request
  *
- * Enforced at runtime, through the schema each step derives:
- * 3. The `code` in `exchange` must match what `authorize` returned
- * 4. `exchange` needs a successful `authorize`, `refresh` a `refresh_token`
+ * Enforced at runtime:
+ * 4. The `code` in `exchange` must match what `authorize` returned
+ * 5. The `when` guard of each step, for callers that bypass the types
  */
 export const oauth2AuthCodeProtocol = protocol({
   name: "OAuth2AuthorizationCode",
