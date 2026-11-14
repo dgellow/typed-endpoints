@@ -18,6 +18,8 @@ const Edges = z.object({
   count: z.number().int().optional(),
   // 0.3 is a multiple of 0.1, although 0.3 / 0.1 is not 3 in binary.
   step: z.number().multipleOf(0.1).optional(),
+  // The bound of every integer, written for a number that is not one.
+  huge: z.number().max(Number.MAX_SAFE_INTEGER).optional(),
   // Optional is not nullable.
   flag: z.boolean().optional(),
   // Absent, null and a value are three things.

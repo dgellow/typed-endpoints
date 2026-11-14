@@ -26,7 +26,7 @@ export interface Api {
   edges: {
     create: {
       path: "/api/edges";
-      body: { short?: string | undefined; digits?: string | undefined; plain?: string | undefined; word?: string | undefined; count?: number | undefined; step?: number | undefined; flag?: boolean | undefined; maybe?: string | null | undefined; when?: string | undefined; id?: string | undefined; email?: string | undefined; };
+      body: { short?: string | undefined; digits?: string | undefined; plain?: string | undefined; word?: string | undefined; count?: number | undefined; step?: number | undefined; huge?: number | undefined; flag?: boolean | undefined; maybe?: string | null | undefined; when?: string | undefined; id?: string | undefined; email?: string | undefined; };
       response: { received: string[]; maybe?: string | null | undefined; count?: number | undefined; };
     };
   };

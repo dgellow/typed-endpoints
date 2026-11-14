@@ -77,6 +77,14 @@ status=0
 AXUM_URL="$url" deno test --allow-read --allow-net --allow-env=AXUM_URL \
   e2e_tests/rust/against_axum.ts "$@" || status=$?
 
+# A 500 says nothing to the client, so it has to be in the log: the suite
+# makes one handler fail, and the server reports it with its cause.
+if [ "$status" -eq 0 ] && [ "$#" -eq 0 ] &&
+  ! grep -q 'a handler failed.*GET /api/echo/{+path}.*the backend is down' "$log"; then
+  echo "error: the failure of a handler is not in the server's log" >&2
+  status=1
+fi
+
 if [ "$status" -ne 0 ]; then
   echo "--- server log ---" >&2
   cat "$log" >&2

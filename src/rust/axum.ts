@@ -138,8 +138,8 @@ function banner(title: string): string[] {
 /**
  * Render a contract as the source of a Rust module.
  *
- * Operations that stream server-sent events are listed in a comment and
- * left out.
+ * Operations that stream server-sent events are listed in the module's
+ * documentation and left out.
  */
 export function renderAxum(
   contract: Contract,
@@ -241,6 +241,61 @@ export function renderAxum(
     "//! [`router`]. A request reaches a handler once it fits the contract,",
     "//! as the type the handler takes; what a handler returns is checked",
     "//! against the contract before it is sent.",
+    "//!",
+    "//! # Crates",
+    "//!",
+    "//! `axum` 0.8, `serde` with `derive`, `serde_json`, `tracing`, and",
+    "//! `fancy-regex` for the patterns of the contract.",
+    "//!",
+    "//! # Types",
+    "//!",
+    "//! A type says what Rust's types can say; a field's documentation says",
+    "//! what else the contract requires of it, which is checked on the way in",
+    "//! and on the way out. A member that is an `Option` is left out when it",
+    "//! is `None`, unless its documentation says it is written `null`.",
+    "//!",
+    "//! # Answers",
+    "//!",
+    "//! | Status | When | Body |",
+    "//! | --- | --- | --- |",
+    "//! | 200 | the handler returned a response | the response |",
+    "//! | 204 | the operation has no response | none |",
+    "//! | a declared status | the handler returned that error | its body |",
+    "//! | 400 | the request does not fit the contract | see below |",
+    '//! | 415 | the body is not JSON | `{"error": "..."}` |',
+    '//! | 500 | the handler failed or broke the contract | `{"error": "Internal Server Error"}` |',
+    "//!",
+    "//! A 400 names the part of the request and every issue with it:",
+    "//!",
+    "//! ```json",
+    "//! {",
+    '//!   "error": "Validation error: tags: Too big: expected array to have <=4 items",',
+    '//!   "in": "body",',
+    '//!   "issues": [',
+    "//!     {",
+    '//!       "code": "too_big",',
+    '//!       "message": "Too big: expected array to have <=4 items",',
+    '//!       "path": ["tags"]',
+    "//!     }",
+    "//!   ]",
+    "//! }",
+    "//! ```",
+    "//!",
+    "//! The cause of a 500 is not in its body. It is reported through",
+    "//! `tracing`, at the error level: an application without a subscriber",
+    "//! sees nothing.",
+    ...(skipped.length > 0
+      ? [
+        "//!",
+        "//! # Not served",
+        "//!",
+        "//! Server-sent event streams are not generated yet:",
+        "//!",
+        ...skipped.map((operation) =>
+          `//! - \`${operation.method} ${operation.path}\``
+        ),
+      ]
+      : []),
     "",
     ...imports(rendered, models),
     "",
@@ -263,14 +318,6 @@ export function renderAxum(
     lines.push(...handlerSignature(item));
   });
   lines.push("}", "");
-
-  if (skipped.length > 0) {
-    lines.push("// Not generated: server-sent event streams.");
-    for (const operation of skipped) {
-      lines.push(`//   ${operation.method} ${operation.path}`);
-    }
-    lines.push("");
-  }
 
   // Written before the router: what it does depends on the contract.
   const contractModule = data.render();
