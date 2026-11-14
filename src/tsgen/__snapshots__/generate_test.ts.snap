@@ -144,6 +144,10 @@ export type CategoriesGetResponse = Recursive[];
 export type CategoriesPostRequest = { name: string; kind?: "leaf" | "branch" | undefined; label?: "the \\\\"root\\\\"" | undefined; };
 export type CategoriesPostResponse = Recursive;
 
+// GET /api/jobs/[id]
+export type JobsByIdParams = { id: string; };
+export type JobsByIdEvents = { progress: { percent: number; }; done: { finishedAt: string; }; };
+
 // GET /api/users/[id]/posts/[postId]
 export type UsersByIdPostsByPostIdParams = { id: string; postId: string; };
 export type UsersByIdPostsByPostIdResponse = { id: string; };
@@ -172,6 +176,15 @@ export interface Api {
       response: Recursive;
     };
   };
+  jobs: {
+    subscribe: {
+      params: { id: string; };
+      events: {
+        progress: { percent: number; };
+        done: { finishedAt: string; };
+      };
+    };
+  };
   users: {
     posts: {
       retrieve: {
@@ -193,6 +206,7 @@ snapshot[`generateTypes: a collection under a parameter is a list 1`] = `
 export const apiRoutes = {
   categoriesList: { method: "GET", path: "/api/categories" },
   categoriesCreate: { method: "POST", path: "/api/categories" },
+  jobsRetrieve: { method: "GET", path: "/api/jobs/{id}" },
   usersPostsRetrieve: { method: "GET", path: "/api/users/{id}/posts/{postId}" },
   usersPostsList: { method: "GET", path: "/api/users/{id}/posts" },
 } as const;

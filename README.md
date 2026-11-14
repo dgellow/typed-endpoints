@@ -100,12 +100,22 @@ This generates types like:
 
 ```typescript
 // GET /api/users
+export type UsersGetQuery = { limit?: number | undefined };
 export type UsersGetResponse = { id: string; name: string; email: string }[];
 
 // POST /api/users
 export type UsersPostRequest = { name: string; email: string };
 export type UsersPostResponse = { id: string; name: string; email: string };
 ```
+
+Request types (`Request`, `Query`, `Params`) describe what a caller sends: a
+field with a default is optional. Response types describe what arrives over
+JSON: a `z.date()` is a `string`, and schemas JSON cannot carry (`z.bigint()`,
+`z.map()`, `z.set()`) fail generation with the path of the field. A recursive
+schema becomes a named type; give it a name with `.meta({ id: "Name" })`.
+
+Generation fails when two endpoints would produce the same type name, client
+method or route id, and names both endpoints.
 
 ### Typed Client
 
@@ -193,7 +203,8 @@ Available pagination styles:
 Each style generates appropriate query params and response fields. Supports:
 
 - Custom field names (e.g., `items: "data"`, `cursor: "nextCursor"`)
-- Dot-notation for nested response structure: `nextUrl: "links.next"`
+- Dot-notation for nested response structure, in `url.paginated()` only:
+  `nextUrl: "links.next"`
 - Extra query/response fields via `extraQuery` and `extraResponse`
 
 Pagination metadata is included in:
@@ -206,7 +217,7 @@ Pagination metadata is included in:
 Define typed SSE endpoints with `sseEndpoint`:
 
 ```typescript
-// routes/api/tasks/[id]/events.ts
+// routes/api/tasks/[id].ts
 import { createApiHandlers, sseEndpoint } from "@dgellow/typed-endpoints/fresh";
 import { z } from "zod";
 
@@ -353,6 +364,14 @@ Options:
 - `outputPath` - Output file path (default: "static/openapi.json")
 - `info` - OpenAPI info object (title, version, description)
 - `servers` - OpenAPI servers array
+- `strict` - Throw when a route file cannot be imported or two operations share
+  an `operationId` (default: false, which logs and continues)
+- `failOnError` - Fail the build when generation fails; implies `strict`
+  (default: false, which logs the error and lets the build finish)
+
+Every operation gets an `operationId`: the endpoint's own, or one derived from
+method and path (`GET /api/users/[id]` → `usersRetrieve`). `--format routes`
+uses the same ids as keys.
 
 ### `protocolTypesPlugin(options)`
 
@@ -363,6 +382,7 @@ Options:
 - `protocolModule` - Path to the protocol module file (required)
 - `outputPath` - Output file path (default: "src/protocol-types.ts")
 - `config` - Path to deno.json (for import map resolution)
+- `failOnError` - Fail the build when generation fails (default: false)
 
 ### `generateTypes(options)`
 
@@ -500,12 +520,16 @@ approximation:
 **What we track at compile time:**
 
 - Which step _names_ have been completed (via union type `TDone`)
-- Which steps are available next (via `AvailableSteps<TSteps, TDone>`)
+- Which steps are available next (via `AvailableSteps<TSteps, TDone>`): a step
+  needs its `dependsOn` step and every step its `requestMapping` reads from
+- The shape of each request, including for dependent and mapped steps
 
 **What we enforce at runtime:**
 
 - The actual dependent typing (e.g., `code` in exchange must equal `code` from
   authorize)
+- Which _variant_ of a response a step needs (e.g., exchange after a failed
+  authorize is rejected at runtime, not by the compiler)
 - Schema validation via Zod
 
 The `request: (prev) => Schema` function is what André Videla calls a
@@ -585,7 +609,7 @@ const refreshStep = dependentStep({
   name: "refresh",
   dependsOn: "exchange",
   request: (prev) => {
-    if (prev.type !== "success" || !prev.refresh_token) return z.never();
+    if (!prev.refresh_token) return z.never();
     return z.object({
       grant_type: z.literal("refresh_token"),
       refresh_token: z.literal(prev.refresh_token), // From exchange response
@@ -600,7 +624,6 @@ const oauth2Protocol = protocol({
   name: "OAuth2AuthorizationCode",
   description: "OAuth 2.0 Authorization Code Grant (RFC 6749 Section 4.1)",
   initial: "authorize",
-  terminal: ["revoke"],
   steps: {
     authorize: authorizeStep,
     exchange: exchangeStep,
@@ -608,6 +631,9 @@ const oauth2Protocol = protocol({
   },
 });
 ```
+
+The reference implementation in `src/protocol/oauth.ts` also has a `revoke`
+step, declared as `terminal`.
 
 ### Core Primitives
 
@@ -625,6 +651,10 @@ The DSL maps category theory concepts from André's research to TypeScript:
 | `choice()`        | Coproduct (+)           | One of several alternatives                   |
 | `branch()`        | Conditional             | Branch based on predicate                     |
 | `parallel()`      | Tensor (⊗)              | Concurrent execution                          |
+
+`sequence()`, `repeat()`, `repeat1()`, `choice()`, `branch()` and `parallel()`
+build descriptions only. A session executes steps by their dependencies and does
+not interpret these nodes.
 
 ### Protocol Introspection
 
@@ -694,15 +724,18 @@ const { response: auth, session: s1 } = await session.execute("authorize", {
 });
 
 if (auth.type === "error") {
-  // TypeScript knows: only "authorize" is available (can retry)
-  // s1.execute("exchange", ...) would be a compile error!
+  // The compiler tracks that "authorize" ran, not which variant it returned:
+  // s1.execute("exchange", ...) compiles here and is rejected at runtime,
+  // because the exchange step answers a failed authorize with z.never().
   return;
 }
 
-// After successful authorize, "exchange" is now available
+// After authorize, "exchange" is available. Calling it before authorize is a
+// compile error. The request is typed: a missing or misspelled field does not
+// compile.
 const { response: tokens, session: s2 } = await s1.execute("exchange", {
   grant_type: "authorization_code",
-  code: auth.code, // Must match the code from authorize response
+  code: auth.code, // Checked at runtime: must equal the code authorize returned
   client_id: "my-client",
   client_secret: "secret",
 });
@@ -715,7 +748,9 @@ console.log(s2.responses.exchange.access_token); // typed as string
 Key features:
 
 - **Compile-time step enforcement**: Can only execute steps whose dependencies
-  are satisfied
+  have run
+- **Typed requests**: The request of every step kind is checked against its
+  schema type
 - **Literal type preservation**: `dependsOn: "authorize"` is preserved as the
   literal `"authorize"`, not widened to `string`
 - **Accumulating state**: Session responses are typed as they accumulate
@@ -738,6 +773,10 @@ export const apiRoutes = {
   authExchange: { method: "POST", path: "/api/auth/exchange" },
 } as const;
 ```
+
+A key is the endpoint's `operationId` (`authLogin` and `authExchange` above are
+set on the endpoints). An endpoint without one gets a derived id:
+`POST /api/auth/login` → `authLoginCreate`.
 
 Use with the HTTP executor:
 
@@ -778,7 +817,11 @@ Features:
 
 - **Route mapping**: Steps map to HTTP endpoints via `operationId`
 - **Auth propagation**: Automatically inject tokens from previous step responses
-- **Path parameters**: `{userId}` in paths resolved from request object
+- **Request mapping**: `{userId}` in the path is filled from the request; for a
+  step created from an endpoint each remaining field goes to the query string or
+  the JSON body according to the endpoint's `query` and `body` schemas; for a
+  hand-written step the remaining fields go to the body, or to the query string
+  for GET and HEAD
 - **Error handling**: `HttpError` class with status, statusText, and body
 
 ### Endpoint Composition
@@ -839,8 +882,9 @@ Benefits:
 - **Single source of truth**: Schemas defined once in endpoint, composed into
   protocol
 - **No duplication**: Change endpoint schema, protocol automatically updates
-- **Type-safe**: TypeScript infers request/response types from endpoint
-  `__apiDef`
+- **Runtime validation from the endpoint**: requests and responses are checked
+  against the endpoint's schemas. The static request and response types of a
+  composed step are not inferred yet (they are `unknown`)
 - **Backward compatible**: `step()` and `dependentStep()` still work for manual
   definitions
 

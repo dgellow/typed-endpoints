@@ -128,7 +128,7 @@ function isParamSegment(segment: string): boolean {
 }
 
 /** Whether the last path segment is a parameter, e.g. `/users/[id]`. */
-function endsWithParam(path: string): boolean {
+export function endsWithParam(path: string): boolean {
   return isParamSegment(path.split("/").filter(Boolean).at(-1) ?? "");
 }
 

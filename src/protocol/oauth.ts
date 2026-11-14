@@ -197,10 +197,13 @@ export const revokeStep = dependentStep({
  *   [authenticated] → refresh → [authenticated | error]
  *   [authenticated] → revoke → [revoked]
  *
- * The type system enforces:
+ * Enforced at compile time:
  * 1. You can't call `exchange` without first calling `authorize`
- * 2. The `code` in `exchange` must match what `authorize` returned
- * 3. You can't `refresh` without a valid `refresh_token` from `exchange`
+ * 2. The shape of each request
+ *
+ * Enforced at runtime, through the schema each step derives:
+ * 3. The `code` in `exchange` must match what `authorize` returned
+ * 4. `exchange` needs a successful `authorize`, `refresh` a `refresh_token`
  */
 export const oauth2AuthCodeProtocol = protocol({
   name: "OAuth2AuthorizationCode",
@@ -225,48 +228,3 @@ export type AuthorizeRequest = z.infer<typeof AuthorizeRequestSchema>;
 export type AuthorizeResponse = z.infer<typeof AuthorizeResponseSchema>;
 export type TokenResponse = z.infer<typeof TokenResponseSchema>;
 export type ExchangeResponse = z.infer<typeof ExchangeResponseSchema>;
-
-// =============================================================================
-// Example Usage (commented out - for documentation)
-// =============================================================================
-
-/*
-// How you would use this protocol with a type-safe client:
-
-const client = createProtocolClient(oauth2AuthCodeProtocol);
-
-// Step 1: Start authorization
-const authResult = await client.authorize({
-  response_type: "code",
-  client_id: "my-client",
-  redirect_uri: "https://myapp.com/callback",
-  scope: "read write",
-  state: "random-state-string",
-});
-
-if (authResult.type === "error") {
-  console.error("Auth failed:", authResult.error);
-  return;
-}
-
-// Step 2: Exchange code for tokens
-// TypeScript KNOWS authResult.code exists here because type narrowed
-const tokens = await client.exchange({
-  grant_type: "authorization_code",
-  code: authResult.code,  // <-- This is type-safe!
-  client_id: "my-client",
-  client_secret: "my-secret",
-});
-
-if (tokens.type === "error") {
-  console.error("Exchange failed:", tokens.error);
-  return;
-}
-
-// Step 3: Later, refresh the token
-const newTokens = await client.refresh({
-  grant_type: "refresh_token",
-  refresh_token: tokens.refresh_token!,  // <-- Type-safe!
-  client_id: "my-client",
-});
-*/
