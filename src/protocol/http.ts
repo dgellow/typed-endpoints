@@ -5,7 +5,7 @@
  * generated route metadata to map operationIds to HTTP endpoints.
  */
 
-import type { AnyStep, Protocol } from "./types.ts";
+import type { AnyStep, Protocol, RequestLocations } from "./types.ts";
 import type { ExecutionContext, StepExecutor } from "./client.ts";
 
 // =============================================================================
@@ -117,17 +117,17 @@ export function createHttpExecutor<
       }
 
       const { method, path } = route;
-      const resolvedPath = resolvePath(
+      const parts = splitRequest(
+        stepName,
+        method,
         path,
-        request as Record<string, unknown>,
+        request,
+        step.requestLocations,
       );
-      const url = config.baseUrl + resolvedPath;
+      const url = config.baseUrl + parts.path + parts.query;
 
       // Build headers
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-        ...config.headers,
-      };
+      const headers: Record<string, string> = { ...config.headers };
 
       // Auto-inject auth token from previous step response
       if (config.auth) {
@@ -143,14 +143,11 @@ export function createHttpExecutor<
       }
 
       // Build request options
-      const requestInit: RequestInit = {
-        method,
-        headers,
-      };
+      const requestInit: RequestInit = { method, headers };
 
-      // Add body for non-GET methods
-      if (method !== "GET" && method !== "HEAD") {
-        requestInit.body = JSON.stringify(request);
+      if (parts.body !== undefined) {
+        headers["Content-Type"] ??= "application/json";
+        requestInit.body = JSON.stringify(parts.body);
       }
 
       // Execute request
@@ -182,22 +179,89 @@ export function createHttpExecutor<
 // Helpers
 // =============================================================================
 
+function hasRequestBody(method: string): boolean {
+  return method !== "GET" && method !== "HEAD";
+}
+
+function appendQuery(params: URLSearchParams, key: string, value: unknown) {
+  if (value === undefined || value === null) return;
+  if (Array.isArray(value)) {
+    for (const item of value) appendQuery(params, key, item);
+  } else {
+    params.append(
+      key,
+      typeof value === "object" ? JSON.stringify(value) : String(value),
+    );
+  }
+}
+
 /**
- * Resolve path parameters from request object.
+ * Split a step's flat request into the path, query string and body of an
+ * HTTP request.
  *
- * Replaces {param} placeholders in the path with values from the request.
+ * Each field goes where the step's `requestLocations` says. A field that is
+ * not listed there goes:
+ * - into the path, if the route template has a `{parameter}` of that name
+ * - otherwise into the JSON body, for methods that have one
+ * - otherwise into the query string (GET and HEAD)
  *
  * @example
- * resolvePath("/users/{userId}/posts/{postId}", { userId: "123", postId: "456" })
- * // Returns: "/users/123/posts/456"
+ * splitRequest("posts", "GET", "/users/{userId}/posts", { userId: "1", limit: 5 })
+ * // { path: "/users/1/posts", query: "?limit=5", body: undefined }
  */
-function resolvePath(path: string, request: Record<string, unknown>): string {
-  return path.replace(/\{(\w+)\}/g, (_, key) => {
-    if (key in request && request[key] !== undefined) {
-      return encodeURIComponent(String(request[key]));
+function splitRequest(
+  stepName: string,
+  method: string,
+  template: string,
+  request: unknown,
+  locations: RequestLocations | undefined,
+): { path: string; query: string; body: unknown } {
+  const withBody = hasRequestBody(method);
+  const pathKeys = [...template.matchAll(/\{(\w+)\}/g)].map((m) => m[1]);
+
+  const isRecord = typeof request === "object" && request !== null &&
+    !Array.isArray(request);
+  if (!isRecord) {
+    // Not an object of fields: it can only be the body.
+    if (pathKeys.length > 0) {
+      throw new Error(
+        `Step "${stepName}": ${method} ${template} has path parameters, but the request is not an object`,
+      );
     }
-    return `{${key}}`;
+    return {
+      path: template,
+      query: "",
+      body: withBody ? request : undefined,
+    };
+  }
+
+  const fields = request as Record<string, unknown>;
+  const query = new URLSearchParams();
+  const body: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(fields)) {
+    const targets = locations?.[key] ??
+      [pathKeys.includes(key) ? "path" : withBody ? "body" : "query"];
+    if (targets.includes("query")) appendQuery(query, key, value);
+    if (targets.includes("body")) body[key] = value;
+  }
+
+  const path = template.replace(/\{(\w+)\}/g, (_, key: string) => {
+    const value = fields[key];
+    if (value === undefined || value === null) {
+      throw new Error(
+        `Step "${stepName}": the request has no value for path parameter "${key}" of ${method} ${template}`,
+      );
+    }
+    return encodeURIComponent(String(value));
   });
+
+  const queryString = query.toString();
+  return {
+    path,
+    query: queryString ? `?${queryString}` : "",
+    body: withBody ? body : undefined,
+  };
 }
 
 /**

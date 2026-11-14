@@ -4,7 +4,7 @@
  * Tests protocol composition from endpoints using fromEndpoint/fromEndpointDependent.
  */
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { z } from "zod";
 
 import { createApiHandlers, endpoint } from "../integrations/fresh.ts";
@@ -651,4 +651,119 @@ Deno.test("createHttpExecutor includes default headers", async () => {
   assertEquals(headerLog[0]["X-Client-Version"], "1.0.0");
   assertEquals(headerLog[0]["X-Request-ID"], "req-123");
   assertEquals(headerLog[0]["Content-Type"], "application/json");
+});
+
+// =============================================================================
+// Request field locations
+// =============================================================================
+
+/** A fetch that records method, URL, body and Content-Type. */
+function recordingFetch(response: unknown = {}) {
+  const calls: {
+    method: string;
+    url: string;
+    body: unknown;
+    contentType: string | undefined;
+  }[] = [];
+  const fetchFn: typeof fetch = (input, init) => {
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    calls.push({
+      method: init?.method ?? "GET",
+      url: String(input),
+      body: typeof init?.body === "string" ? JSON.parse(init.body) : init?.body,
+      contentType: headers["Content-Type"],
+    });
+    return Promise.resolve(Response.json(response));
+  };
+  return { calls, fetchFn };
+}
+
+Deno.test("fromEndpoint records where each request field goes", () => {
+  const handler = createApiHandlers({
+    PUT: endpoint({
+      params: z.object({ id: z.string() }),
+      query: z.object({ dryRun: z.string().optional() }),
+      // `id` is declared in the path and in the body.
+      body: z.object({ id: z.string(), name: z.string() }),
+      handler: () => Response.json({}),
+    }),
+  });
+
+  const created = fromEndpoint(handler, "PUT", { name: "update" });
+
+  assertEquals(created.requestLocations, {
+    id: ["body", "path"],
+    name: ["body"],
+    dryRun: ["query"],
+  });
+});
+
+Deno.test("createHttpExecutor sends a field to every place it is declared in", async () => {
+  const handler = createApiHandlers({
+    PUT: endpoint({
+      params: z.object({ id: z.string() }),
+      query: z.object({ dryRun: z.string().optional() }),
+      body: z.object({ id: z.string(), name: z.string() }),
+      handler: () => Response.json({}),
+    }),
+  });
+  const proto = protocol({
+    name: "Update",
+    initial: "update",
+    steps: { update: fromEndpoint(handler, "PUT", { name: "update" }) },
+  });
+  const { calls, fetchFn } = recordingFetch();
+  const executor = createHttpExecutor(proto, {
+    baseUrl: "https://api.example.com",
+    routes: { update: { method: "PUT", path: "/api/items/{id}" } },
+    fetch: fetchFn,
+  });
+
+  await createSession(proto, executor).execute("update", {
+    id: "i/1",
+    name: "N",
+    dryRun: "1",
+  });
+
+  assertEquals(calls, [{
+    method: "PUT",
+    url: "https://api.example.com/api/items/i%2F1?dryRun=1",
+    body: { id: "i/1", name: "N" },
+    contentType: "application/json",
+  }]);
+});
+
+Deno.test("createHttpExecutor sends no body and no Content-Type for GET", async () => {
+  const { calls, fetchFn } = recordingFetch({ id: "u1", name: "User" });
+  const executor = createHttpExecutor(usersProtocol, {
+    baseUrl: "https://api.example.com",
+    routes: testRoutes,
+    fetch: fetchFn,
+  });
+
+  await createSession(usersProtocol, executor).execute("getUser", {
+    userId: "u1",
+  });
+
+  assertEquals(calls, [{
+    method: "GET",
+    url: "https://api.example.com/api/users/u1",
+    body: undefined,
+    contentType: undefined,
+  }]);
+});
+
+Deno.test("fromEndpoint rejects a request schema it cannot merge", () => {
+  const handler = createApiHandlers({
+    POST: endpoint({
+      body: z.array(z.string()),
+      handler: () => Response.json({}),
+    }),
+  });
+
+  assertThrows(
+    () => fromEndpoint(handler, "POST", { name: "bulk" }),
+    Error,
+    "its body schema is not a plain object schema",
+  );
 });
