@@ -83,18 +83,39 @@ export type DependencyOf<T> = T extends
  * - dependent step: the input type of the schema its `request` function
  *   returns. A branch that returns `z.never()` contributes nothing.
  *
- * Values forwarded from earlier steps are typed by their base type here
- * (`code: string`); that they equal the earlier value is checked at runtime.
+ * The fields a mapped step forwards from earlier steps are optional: left
+ * out, the session fills them in. Given, they are typed by their base type
+ * (`code: string`), and that they equal the earlier value is checked at
+ * runtime.
  */
 export type StepInput<T> = T extends
   { __kind: "step"; request: infer R extends z.ZodType } ? z.input<R>
-  : T extends
-    { __kind: "mapped_step"; requestSchema: infer R extends z.ZodType }
-    ? z.input<R>
+  : T extends {
+    __kind: "mapped_step";
+    requestSchema: infer R extends z.ZodType;
+    requestMapping: infer M;
+  } ? Forwarded<z.input<R>, keyof M>
   : T extends {
     __kind: "dependent_step";
     request: (prev: never) => infer R extends z.ZodType;
   } ? z.input<R>
+  : never;
+
+/**
+ * A request type with the fields `TFields` optional: they are forwarded
+ * from earlier responses, and the session fills in the ones left out.
+ */
+export type Forwarded<TInput, TFields> = TInput extends unknown ? {
+    [
+      K in keyof (
+        & Omit<TInput, TFields & keyof TInput>
+        & Partial<Pick<TInput, TFields & keyof TInput>>
+      )
+    ]: (
+      & Omit<TInput, TFields & keyof TInput>
+      & Partial<Pick<TInput, TFields & keyof TInput>>
+    )[K];
+  }
   : never;
 
 // -----------------------------------------------------------------------------
@@ -625,8 +646,10 @@ export class ProtocolSession<
       this.responses as Record<string, unknown>,
     );
 
-    // Validate request
-    const reqResult = requestSchema.safeParse(request);
+    // Validate request, with the forwarded fields it leaves out filled in
+    const reqResult = requestSchema.safeParse(
+      completeRequest(step, request, this.responses as Record<string, unknown>),
+    );
     if (!reqResult.success) {
       throw new InvalidRequestError(
         `Invalid request for "${stepName}": ${reqResult.error.message}`,
@@ -770,8 +793,9 @@ export class ProtocolSession<
     const name = this.protocol.onAbandon as string | undefined;
     let released: Abandonment | undefined;
     if (name !== undefined && last.canExecute(name)) {
-      const request = filledRequest(
+      const request = completeRequest(
         this.protocol.steps[name],
+        {},
         last.responses as Record<string, unknown>,
       );
       const { response } = await last.#perform(name as never, request);
@@ -814,24 +838,34 @@ export interface Abandonment {
 }
 
 /**
- * The request of a step the session runs by itself: the forwarded fields
- * of a mapped step, from the responses they are mapped to.
+ * A request with the forwarded fields it leaves out filled in.
+ *
+ * For a mapped step, each field of `requestMapping` that the request does
+ * not carry is taken from the response it is mapped to. A field the
+ * request does carry is left as it is: the step's schema then requires it
+ * to equal the forwarded value. Other steps, and requests that are not
+ * objects, are returned unchanged. Shared by sessions and by `runPlan()`.
  */
-function filledRequest(
+export function completeRequest(
   step: AnyStep,
+  request: unknown,
   responses: Readonly<Record<string, unknown>>,
-): Record<string, unknown> {
-  const request: Record<string, unknown> = {};
+): unknown {
   if (step.__kind !== "mapped_step") return request;
+  if (typeof request !== "object" || request === null) return request;
+  if (Array.isArray(request)) return request;
+
+  const complete: Record<string, unknown> = { ...request };
   for (
     const [field, mapping] of Object.entries(
       (step as MappedStep).requestMapping,
     )
   ) {
-    if (!isFieldMapping(mapping)) continue;
-    request[field] = getNestedValue(responses[mapping.step], mapping.path);
+    if (!isFieldMapping(mapping) || complete[field] !== undefined) continue;
+    const value = getNestedValue(responses[mapping.step], mapping.path);
+    if (value !== undefined) complete[field] = value;
   }
-  return request;
+  return complete;
 }
 
 /**

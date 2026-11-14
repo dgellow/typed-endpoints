@@ -74,6 +74,7 @@ import type {
   StepResponse,
 } from "./types.ts";
 import {
+  completeRequest,
   type ExecutionContext,
   type HasPath,
   type NeedsOf,
@@ -541,7 +542,9 @@ async function runStep(
     step,
     run.responses,
   );
-  const parsedRequest = requestSchema.safeParse(request);
+  const parsedRequest = requestSchema.safeParse(
+    completeRequest(step, request, run.responses),
+  );
   if (!parsedRequest.success) {
     throw new InvalidRequestError(
       `Invalid request for "${step.name}": ${parsedRequest.error.message}`,

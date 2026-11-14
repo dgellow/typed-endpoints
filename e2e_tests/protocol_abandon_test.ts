@@ -133,8 +133,8 @@ Deno.test("E2E abandon: a block left early releases the lock on the server", asy
     const renewals = await (async () => {
       await using session = start();
       const acquired = await session.execute("acquire", { resource: "db" });
-      const { token } = acquired.response;
-      const renewed = await acquired.session.execute("renew", { token });
+      // The token is forwarded: the session fills it into the path.
+      const renewed = await acquired.session.execute("renew", {});
       // The lock is held while the block runs.
       assertEquals(held.size, 1);
       return renewed.response.renewals;

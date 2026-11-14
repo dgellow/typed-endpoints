@@ -2358,6 +2358,27 @@ enforcement to `dependentStep()` with `z.literal()`. The mapping is plain data
 that tooling (tsgen, OpenAPI, build-time validation) can inspect without
 executing code.
 
+The declaration determines the value, so the caller does not restate it. The
+forwarded fields are optional in the request of `execute()` and of a plan; the
+session fills in the ones left out from the response they are mapped to:
+
+```typescript
+const { session } = await start.execute("authorize", request);
+// `code` comes from the response of "authorize"
+await session.execute("exchange", {
+  grant_type: "authorization_code",
+  client_id: "app",
+  client_secret: "secret",
+});
+```
+
+A value that is left out cannot be stale or foreign: after a renewal
+(`renewing()`) the field is the renewed value. A forwarded field that is given
+is still checked against the earlier response, so existing calls keep working
+and a wrong value is refused with `InvalidRequestError` before the executor
+runs. A mapped step whose every required field is forwarded takes `{}`
+(`src/protocol/forwarded_test.ts`).
+
 **When to use each:**
 
 - `mappedStep()` — literal field forwarding (the common case)
