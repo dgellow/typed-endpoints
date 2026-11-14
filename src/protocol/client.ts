@@ -19,6 +19,7 @@ import type {
   DependentStep,
   MappedStep,
   Protocol,
+  Renewal,
   StepResponse,
 } from "./types.ts";
 import { zodType } from "../core/zod_internals.ts";
@@ -132,6 +133,49 @@ export type DropSeen<TSeen extends Seen, K extends string> = {
 export type RevokedBy<T> = T extends { readonly revokes: readonly (infer R)[] }
   ? R & string
   : never;
+
+/** The step whose response every response of step `T` renews. */
+export type AlwaysRenewedBy<T> = T extends
+  { readonly renews: Renewal<infer S, infer _TNew, infer TAlways> }
+  ? [TAlways] extends [true] ? S : never
+  : never;
+
+/** The steps that are done after step `K` ran. */
+export type DoneAfter<
+  TSteps extends Record<string, AnyStep>,
+  TDone extends string,
+  K extends keyof TSteps & string,
+> = Exclude<TDone | K | AlwaysRenewedBy<TSteps[K]>, RevokedBy<TSteps[K]>>;
+
+/**
+ * `TSeen` after what step `K` renews (`renewing()`): the renewed step is
+ * known by the type of the replacement, or, when not every response
+ * renews, by that type or what was known before.
+ */
+export type RenewedSeen<
+  TSteps extends Record<string, AnyStep>,
+  TDone extends string,
+  TSeen extends Seen,
+  K extends keyof TSteps,
+> = TSteps[K] extends
+  { readonly renews: Renewal<infer S, infer TNew, infer TAlways> }
+  ? S extends keyof TSteps & string
+    ? [TAlways] extends [true] ? SetSeen<TSeen, S, TNew>
+    : S extends TDone ? SetSeen<TSeen, S, SeenOf<TSteps, TSeen, S> | TNew>
+    : TSeen
+  : TSeen
+  : TSeen;
+
+/** What a session knows about responses after step `K` ran. */
+export type SeenAfter<
+  TSteps extends Record<string, AnyStep>,
+  TDone extends string,
+  TSeen extends Seen,
+  K extends keyof TSteps & string,
+> = DropSeen<
+  RenewedSeen<TSteps, TDone, TSeen, K>,
+  K | RevokedBy<TSteps[K]>
+>;
 
 /** The type a dependent step's `request` function accepts as `prev`. */
 export type PrevOf<T> = T extends {
@@ -284,6 +328,54 @@ export function present<const P extends string>(
 
 function isNeverSchema(schema: z.ZodType): boolean {
   return zodType(schema) === "never";
+}
+
+/**
+ * The responses held after a step answered: the step's own response is
+ * stored, a renewal (`renewing()`) replaces the renewed step's response,
+ * and the responses of revoked steps (`revoking()`) are removed.
+ *
+ * Shared by sessions, plans and the fuzzer, so the three agree on what a
+ * step does to the state.
+ *
+ * @param protocolName Name of the protocol, for errors.
+ * @param stepName Name of the step that answered.
+ * @param step The step.
+ * @param responses The responses held before.
+ * @param response The step's response, parsed by its schema.
+ */
+export function responsesAfter(
+  protocolName: string,
+  stepName: string,
+  step: AnyStep,
+  responses: Readonly<Record<string, unknown>>,
+  response: unknown,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...responses, [stepName]: response };
+
+  const renews = (step as { renews?: Renewal }).renews;
+  if (renews) {
+    const replacement = renews.combine
+      ? renews.combine(response, responses[renews.step])
+      : response;
+    if (replacement !== undefined) {
+      // What stands in for a step's response has to be one.
+      const parsed = renews.response.safeParse(replacement);
+      if (!parsed.success) {
+        throw new InvalidResponseError(
+          `The response of "${stepName}" cannot renew "${renews.step}": ${parsed.error.message}`,
+          protocolName,
+          stepName,
+          parsed.error.issues,
+        );
+      }
+      next[renews.step] = parsed.data;
+    }
+  }
+
+  const revoked = (step as { revokes?: readonly string[] }).revokes ?? [];
+  for (const name of revoked) delete next[name];
+  return next;
 }
 
 // =============================================================================
@@ -479,8 +571,8 @@ export class ProtocolSession<
     ExecuteResult<
       StepResponse<TSteps[K]>,
       TSteps,
-      Exclude<TDone | K, RevokedBy<TSteps[K]>>,
-      DropSeen<TSeen, K | RevokedBy<TSteps[K]>>
+      DoneAfter<TSteps, TDone & string, K>,
+      SeenAfter<TSteps, TDone & string, TSeen, K>
     >
   > {
     const step = this.protocol.steps[stepName];
@@ -541,15 +633,16 @@ export class ProtocolSession<
 
     // Create new session with updated state. Steps this one revokes count
     // as not executed: their responses leave the session.
-    const revoked = (step as { revokes?: readonly string[] }).revokes ?? [];
-    const newResponses: Record<string, unknown> = {
-      ...this.responses,
-      [stepName]: resResult.data,
-    };
-    for (const name of revoked) delete newResponses[name];
+    const newResponses = responsesAfter(
+      protocolName,
+      stepName,
+      step,
+      this.responses as Record<string, unknown>,
+      resResult.data,
+    );
 
-    type NewDone = Exclude<TDone | K, RevokedBy<TSteps[K]>>;
-    type NewSeen = DropSeen<TSeen, K | RevokedBy<TSteps[K]>>;
+    type NewDone = DoneAfter<TSteps, TDone & string, K>;
+    type NewSeen = SeenAfter<TSteps, TDone & string, TSeen, K>;
     const newSession = new ProtocolSession<TSteps, NewDone, NewSeen>(
       this.protocol,
       this.executor,

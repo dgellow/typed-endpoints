@@ -68,6 +68,7 @@ import type {
   Choice,
   Parallel,
   ProtocolNode,
+  Renewal,
   Repeat,
   Sequence,
   StepResponse,
@@ -78,6 +79,7 @@ import {
   type NeedsOf,
   type PrevOf,
   requestSchemaOf,
+  responsesAfter,
   type RevokedBy,
   type StepExecutor,
   type StepInput,
@@ -170,7 +172,9 @@ export type RevokesIn<N> = N extends AnyStep ? RevokedBy<N>
 /**
  * What is known after a node has run, given what was known before it.
  *
- * - step: its response becomes known, the steps it revokes are forgotten
+ * - step: its response becomes known, the response of a step it renews
+ *   is known by the type of the replacement, the steps it revokes are
+ *   forgotten
  * - sequence: each element in turn
  * - repeat: what holds whether it ran or not (it may run zero times)
  * - choice, branch: what every option agrees on
@@ -192,13 +196,41 @@ export type After<N, K extends Known = NothingKnown> = N extends AnyStep
 
 /** `After` for a step. */
 export type AfterStep<N, K extends Known> = N extends
-  { readonly name: infer TName extends string } ? {
-    readonly [P in Exclude<keyof K | TName, RevokedBy<N>>]: P extends TName
-      ? StepResponse<N>
-      : P extends keyof K ? K[P]
-      : never;
-  }
+  { readonly name: infer TName extends string } ? Forget<
+    Renewed<
+      N,
+      {
+        readonly [P in keyof K | TName]: P extends TName ? StepResponse<N>
+          : P extends keyof K ? K[P]
+          : never;
+      }
+    >,
+    RevokedBy<N>
+  >
   : K;
+
+/**
+ * `K` after what step `N` renews (`renewing()`): the renewed step is known
+ * by the type of the replacement; when not every response renews, by that
+ * type or what was known before.
+ */
+export type Renewed<N, K extends Known> = N extends
+  { readonly renews: Renewal<infer S, infer TNew, infer TAlways> }
+  ? [TAlways] extends [true] ? {
+      readonly [P in keyof K | S]: P extends S ? TNew
+        : P extends keyof K ? K[P]
+        : never;
+    }
+  : S extends keyof K ? {
+      readonly [P in keyof K]: P extends S ? K[P] | TNew : K[P];
+    }
+  : K
+  : K;
+
+/** `K` without the steps `TNames`. */
+export type Forget<K extends Known, TNames> = {
+  readonly [P in Exclude<keyof K, TNames>]: K[P];
+};
 
 /** `After` for the elements of a sequence, in order. */
 export type AfterEach<T extends readonly unknown[], K extends Known> = T extends
@@ -469,7 +501,7 @@ interface Run {
   readonly executor: StepExecutor;
   readonly maxRepetitions: number;
   /** Latest response of each step that ran, by step name. */
-  readonly responses: Record<string, unknown>;
+  responses: Record<string, unknown>;
   /** Names of the steps that ran, in completion order. */
   readonly history: string[];
   /** What ran in this run, for a parallel node to merge into its parent. */
@@ -477,15 +509,19 @@ interface Run {
 }
 
 interface StepEvent {
-  readonly name: string;
+  readonly step: AnyStep;
   readonly response: unknown;
-  readonly revokes: readonly string[];
 }
 
 function record(run: Run, event: StepEvent): void {
-  run.responses[event.name] = event.response;
-  run.history.push(event.name);
-  for (const name of event.revokes) delete run.responses[name];
+  run.responses = responsesAfter(
+    run.name,
+    event.step.name,
+    event.step,
+    run.responses,
+    event.response,
+  );
+  run.history.push(event.step.name);
   run.events.push(event);
 }
 
@@ -536,11 +572,7 @@ async function runStep(
     );
   }
 
-  record(run, {
-    name: step.name,
-    response: parsedResponse.data,
-    revokes: (step as { revokes?: readonly string[] }).revokes ?? [],
-  });
+  record(run, { step, response: parsedResponse.data });
   return parsedResponse.data;
 }
 

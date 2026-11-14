@@ -15,7 +15,11 @@ import {
   type FuzzReport,
 } from "./fuzz.ts";
 import { fromStep } from "./mapping.ts";
-import { oauth2AuthCodeProtocol } from "./oauth.ts";
+import {
+  ExchangeResponseSchema,
+  exchangeStep,
+  oauth2AuthCodeProtocol,
+} from "./oauth.ts";
 
 // -----------------------------------------------------------------------------
 // An authorization server
@@ -32,15 +36,26 @@ interface Defects {
   readonly malformedTokens?: boolean;
 }
 
+/** Things a correct server may do (RFC 6749, section 6). */
+interface Behaviour {
+  /** Each refresh issues a new refresh token and ends the old one. */
+  readonly rotatesRefreshTokens?: boolean;
+  /** A refresh response carries no refresh token; the old one stays. */
+  readonly omitsRefreshTokenOnRefresh?: boolean;
+}
+
 /**
  * An OAuth 2.0 authorization server, as an executor. Refusals are error
  * variants, as in the RFC, not thrown errors.
  */
-function authorizationServer(defects: Defects = {}): StepExecutor {
+function authorizationServer(
+  defects: Defects & Behaviour = {},
+): StepExecutor {
   interface Grant {
     /** Every access token issued for the grant; the last one is current. */
     readonly access: string[];
-    readonly refresh?: string;
+    /** Every refresh token issued for the grant; the last one is current. */
+    readonly refresh: string[];
     revoked: boolean;
   }
   const codes = new Map<string, { used: boolean }>();
@@ -48,12 +63,13 @@ function authorizationServer(defects: Defects = {}): StepExecutor {
   let counter = 0;
   const next = (prefix: string) => `${prefix}-${++counter}`;
 
-  const tokens = (grant: Grant) => ({
+  const tokens = (grant: Grant, withRefreshToken = true) => ({
     type: "success" as const,
     access_token: grant.access.at(-1),
     ...(!defects.malformedTokens && { token_type: "Bearer" as const }),
     expires_in: 3600,
-    ...(grant.refresh && { refresh_token: grant.refresh }),
+    ...(withRefreshToken && grant.refresh.length > 0 &&
+      { refresh_token: grant.refresh.at(-1) }),
   });
   const invalidGrant = { type: "error" as const, error: "invalid_grant" };
 
@@ -88,8 +104,9 @@ function authorizationServer(defects: Defects = {}): StepExecutor {
           // Some clients get no refresh token.
           const grant: Grant = {
             access: [next("access")],
-            ...(request.client_id.length % 2 === 0 &&
-              { refresh: next("refresh") }),
+            refresh: request.client_id.length % 2 === 0
+              ? [next("refresh")]
+              : [],
             revoked: false,
           };
           grants.push(grant);
@@ -97,19 +114,22 @@ function authorizationServer(defects: Defects = {}): StepExecutor {
         }
         case "refresh": {
           const grant = grants.find((g) =>
-            g.refresh === request.refresh_token &&
+            g.refresh.at(-1) === request.refresh_token &&
             (!g.revoked || defects.refreshSurvivesRevoke)
           );
           if (!grant) return Promise.resolve(invalidGrant);
           grant.access.push(next("access"));
-          return Promise.resolve(tokens(grant));
+          if (defects.rotatesRefreshTokens) grant.refresh.push(next("refresh"));
+          return Promise.resolve(
+            tokens(grant, !defects.omitsRefreshTokenOnRefresh),
+          );
         }
         case "revoke": {
           // Revoking any token of a grant ends the grant.
           for (const grant of grants) {
             if (
               grant.access.includes(request.token) ||
-              grant.refresh === request.token
+              grant.refresh.includes(request.token)
             ) {
               grant.revoked = true;
             }
@@ -128,9 +148,13 @@ function authorizationServer(defects: Defects = {}): StepExecutor {
 const isRefusal = (_step: string, response: unknown) =>
   (response as { type?: string }).type === "error";
 
-function fuzzOAuth(defects: Defects = {}, seed = 1): Promise<FuzzReport> {
+function fuzzOAuth(
+  defects: Defects & Behaviour = {},
+  seed = 1,
+  protocolUnderTest: typeof oauth2AuthCodeProtocol = oauth2AuthCodeProtocol,
+): Promise<FuzzReport> {
   return fuzzProtocol(
-    oauth2AuthCodeProtocol,
+    protocolUnderTest,
     () => authorizationServer(defects),
     {
       seed,
@@ -253,6 +277,74 @@ Deno.test("fuzz: the same seed gives the same report", async () => {
   const two = await fuzzOAuth({ reusableCodes: true });
   assertEquals(formatFuzzReport(one), formatFuzzReport(two));
   assertEquals(one.findings.length, two.findings.length);
+});
+
+// -----------------------------------------------------------------------------
+// Tokens that move on: renewing()
+// -----------------------------------------------------------------------------
+
+/**
+ * The protocol as it was before `refresh` renewed `exchange`: every
+ * refresh has to send the refresh token of the exchange.
+ */
+const staleProtocol = protocol({
+  ...oauth2AuthCodeProtocol,
+  steps: {
+    ...oauth2AuthCodeProtocol.steps,
+    refresh: dependentStep({
+      name: "refresh",
+      dependsOn: exchangeStep,
+      when: (prev): prev is typeof prev & { refresh_token: string } =>
+        prev.type === "success" && prev.refresh_token !== undefined,
+      request: (prev) =>
+        z.object({
+          grant_type: z.literal("refresh_token"),
+          refresh_token: z.literal(prev.refresh_token),
+          client_id: z.string(),
+        }),
+      response: ExchangeResponseSchema,
+    }),
+  },
+}) as unknown as typeof oauth2AuthCodeProtocol;
+
+Deno.test("fuzz: without renewing, a rotating server declines the second refresh", async () => {
+  const report = await fuzzOAuth(
+    { rotatesRefreshTokens: true },
+    1,
+    staleProtocol,
+  );
+
+  // The protocol allows a second refresh with the first refresh token; the
+  // server answers `invalid_grant`. That is a valid response of the step,
+  // so it is no finding. It is counted: an allowed `refresh` was declined.
+  assertEquals(report.findings, [], formatFuzzReport(report));
+  assertEquals(report.declined.refresh > 0, true, formatFuzzReport(report));
+
+  // With `refresh` renewing `exchange`, the same server declines none.
+  const following = await fuzzOAuth({ rotatesRefreshTokens: true }, 1);
+  assertEquals(following.declined.refresh, undefined);
+  // What it still declines is the user saying no.
+  assertEquals(Object.keys(following.declined), ["authorize"]);
+});
+
+Deno.test("fuzz: with renewing, rotation and omitted refresh tokens are followed", async () => {
+  for (
+    const behaviour of [
+      { rotatesRefreshTokens: true },
+      { omitsRefreshTokenOnRefresh: true },
+      { rotatesRefreshTokens: true, omitsRefreshTokenOnRefresh: false },
+    ]
+  ) {
+    for (let seed = 0; seed < 10; seed++) {
+      const report = await fuzzOAuth(behaviour, seed);
+      assertEquals(
+        report.findings,
+        [],
+        `${JSON.stringify(behaviour)}\n${formatFuzzReport(report)}`,
+      );
+      assertEquals(report.covered.includes("refresh"), true);
+    }
+  }
 });
 
 // -----------------------------------------------------------------------------

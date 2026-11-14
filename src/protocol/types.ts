@@ -254,6 +254,41 @@ export interface Parallel<
 }
 
 // =============================================================================
+// Renewal
+// =============================================================================
+
+/**
+ * What a step declares with `renewing()`: its response takes the place of
+ * the latest response of another step.
+ *
+ * `TNew` is the type the renewed step's response then has; `TAlways` says
+ * whether every response renews, or only those `combine` returns a value
+ * for.
+ */
+export interface Renewal<
+  TStep extends string = string,
+  TNew = unknown,
+  TAlways extends boolean = boolean,
+> {
+  /** Name of the step whose response is replaced. */
+  readonly step: TStep;
+  /** Response schema of that step; the replacement is parsed with it. */
+  readonly response: z.ZodType;
+  /**
+   * Computes the replacement from this step's response and the response
+   * it replaces (`undefined` if that step has not run). Returning
+   * `undefined` leaves things as they are. Without it, this step's
+   * response is the replacement.
+   */
+  // deno-lint-ignore no-explicit-any
+  readonly combine?: (response: any, previous: any) => unknown;
+  /** Type-level only, never set: the type of the replacement. */
+  readonly "~new"?: TNew;
+  /** Type-level only, never set: whether every response renews. */
+  readonly "~always"?: TAlways;
+}
+
+// =============================================================================
 // Protocol Definition
 // =============================================================================
 

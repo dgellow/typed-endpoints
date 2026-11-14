@@ -1047,7 +1047,8 @@ const exchangeStep = dependentStep({
   response: ExchangeResponse,
 });
 
-// Step 3: Token Refresh - depends on exchange response
+// Step 3: Token Refresh - depends on exchange response. The reference
+// implementation wraps it in renewing(): see "Renewal" below.
 const refreshStep = dependentStep({
   name: "refresh",
   dependsOn: exchangeStep,
@@ -1399,6 +1400,73 @@ await granted.execute("exchange", request); // throws SessionSpentError
 Each session value then executes one step; a failed `execute()` does not spend
 it.
 
+#### Renewal
+
+A dependent step reads the latest response of the one step it depends on. Some
+values move on: a refresh returns new tokens, a page returns the next cursor.
+`renewing()` declares that the response of a step takes the place of an earlier
+step's response:
+
+```typescript
+// Every response of `nextPage` is the latest page.
+const nextPage = renewing(
+  dependentStep({
+    name: "nextPage",
+    dependsOn: firstPage,
+    when: present("cursor"),
+    request: (page) => z.object({ cursor: z.literal(page.cursor) }),
+    response: PageSchema,
+  }),
+  firstPage,
+);
+
+// Only a successful refresh renews the tokens, and a response without a
+// refresh token keeps the one there was (RFC 6749, section 6).
+const refresh = renewing(
+  dependentStep({ name: "refresh", dependsOn: exchange, ... }),
+  exchange,
+  (response, previous) =>
+    response.type === "success"
+      ? {
+        ...response,
+        refresh_token: response.refresh_token ?? previous?.refresh_token,
+      }
+      : undefined,
+);
+```
+
+After a renewing step, every step that depends on the renewed one reads the new
+response:
+
+- the second `refresh` has to send the refresh token the first one returned;
+  sending the token of the `exchange` again is an `InvalidRequestError` before
+  the request leaves the client
+- `revoke` names the current access token, not the one of the `exchange`
+- the request for page three is built from the cursor of page two
+
+The second form takes a function of the step's response and the response it
+would replace. Its result is the replacement; `undefined` renews nothing. The
+replacement is parsed with the renewed step's response schema.
+
+What the session knew about the renewed response (`narrow()`, `ready()`) is
+replaced by the type of the replacement: after a `refresh`, the session knows
+the exchange succeeded but not that it has a refresh token, so a further
+`refresh` needs `ready("refresh")` again, and `revoke` does not. In a plan the
+same knowledge flows through `After`.
+
+A session's type changes with every step, which makes a loop over session values
+awkward to type. A plan loops with `repeat`:
+
+```typescript
+// firstPage >> (has a cursor ? nextPage : nothing)*
+const browse = sequence(
+  firstPage,
+  repeat(
+    branch(firstPage, present("cursor"), { then: nextPage, else: sequence() }),
+  ),
+);
+```
+
 Key features:
 
 - **Compile-time step enforcement**: Can only execute steps whose dependencies
@@ -1645,15 +1713,20 @@ Limits:
   revocation is one (RFC 7009, section 2.2: the answer is 200 for a token the
   server does not know). Leave it out with `probes: (step) => step !== "revoke"`
 - A replay is sent only for a request made for a response that has since been
-  revoked. A request made for a response that was merely superseded (a second
-  login) may still be good
+  revoked, or for one that response renewed. A request made for a response that
+  was merely superseded (a second login) may still be good
+- An allowed call the server answers with a refusal of its own (an error
+  variant) is no finding: a user may deny an authorization. `report.declined`
+  counts them by step. A step that should always succeed and is listed there
+  says the protocol does not follow the server: a refresh token that rotates
+  while the protocol keeps sending the first one shows up as `refresh` declined
 - Requests come from `arbitrary()`. A step whose request cannot be generated is
   counted in `report.skipped` and needs an entry in `requests`
 
 Run against the OAuth reference protocol, the fuzzer found a gap in the protocol
 itself: `revoke` accepted any string as the token, so a session could believe a
 grant revoked while the server kept it alive. The request is now limited to the
-tokens the exchange issued.
+current tokens of the grant.
 
 ### Values From Schemas
 

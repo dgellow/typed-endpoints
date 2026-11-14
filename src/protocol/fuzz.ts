@@ -42,6 +42,7 @@ import { zodType } from "../core/zod_internals.ts";
 import {
   type ExecutionContext,
   requestSchemaOf,
+  responsesAfter,
   type StepExecutor,
 } from "./client.ts";
 import { StepNotAvailableError, StepRefusedError } from "./errors.ts";
@@ -151,6 +152,14 @@ export interface FuzzReport {
    * step name. A step listed here needs an entry in `requests`.
    */
   readonly skipped: Readonly<Record<string, number>>;
+  /**
+   * Allowed calls the server answered with a response `isRefusal` calls a
+   * refusal, by step name. These are not findings: a user may deny an
+   * authorization. A step listed here that should always succeed says the
+   * protocol does not follow the server, for instance a refresh token
+   * that rotates while the protocol keeps sending the first one.
+   */
+  readonly declined: Readonly<Record<string, number>>;
   /** Steps the server accepted at least once. */
   readonly covered: readonly string[];
   /** What was found, in the order it happened. */
@@ -208,7 +217,7 @@ export interface FuzzOptions<TSteps> {
 
 /** The state of one walk. */
 interface Walk {
-  readonly responses: Record<string, unknown>;
+  responses: Record<string, unknown>;
   readonly calls: FuzzCall[];
   /**
    * The last request the server accepted, by step, with the response of
@@ -217,6 +226,11 @@ interface Walk {
   readonly accepted: Map<string, { request: unknown; basis: unknown }>;
   /** Responses that were revoked. */
   readonly revoked: Set<unknown>;
+  /**
+   * For a response that renewed another (`renewing()`), the response it
+   * took the place of. Revoking a response revokes what it renewed.
+   */
+  readonly renewedFrom: Map<unknown, unknown>;
   /** How often each probe was sent in this walk. */
   readonly probed: Map<string, number>;
 }
@@ -259,6 +273,7 @@ export async function fuzzProtocol<TSteps extends Record<string, AnyStep>>(
     FORBIDDEN_REASONS.map((reason) => [reason, { sent: 0, refused: 0 }]),
   ) as Record<ForbiddenReason, { sent: number; refused: number }>;
   const skipped: Record<string, number> = {};
+  const declined: Record<string, number> = {};
   const findings: FuzzFinding[] = [];
 
   const skip = (name: string) => {
@@ -346,6 +361,7 @@ export async function fuzzProtocol<TSteps extends Record<string, AnyStep>>(
       calls: [],
       accepted: new Map(),
       revoked: new Set(),
+      renewedFrom: new Map(),
       probed: new Map(),
     };
     const context = (): ExecutionContext => ({
@@ -483,13 +499,33 @@ export async function fuzzProtocol<TSteps extends Record<string, AnyStep>>(
 
       allowed.accepted++;
       everAccepted.add(name);
-      walk.responses[name] = parsed.data;
+      if (options.isRefusal?.(name, parsed.data)) {
+        declined[name] = (declined[name] ?? 0) + 1;
+      }
       walk.accepted.set(name, { request, basis });
       walk.calls.push({ step: name, request, response: parsed.data });
-      const revoked = (step as { revokes?: readonly string[] }).revokes ?? [];
-      for (const gone of revoked) {
-        if (gone in walk.responses) walk.revoked.add(walk.responses[gone]);
-        delete walk.responses[gone];
+      const before = walk.responses;
+      walk.responses = responsesAfter(
+        protocol.name,
+        name,
+        step,
+        before,
+        parsed.data,
+      );
+      for (const [other, earlier] of Object.entries(before)) {
+        const now = walk.responses[other];
+        if (other === name || now === earlier) continue;
+        if (other in walk.responses) {
+          // Renewed: the new response stands in for the earlier one.
+          walk.renewedFrom.set(now, earlier);
+        } else {
+          // Revoked, and with it every response it had renewed.
+          let gone: unknown = earlier;
+          while (gone !== undefined && !walk.revoked.has(gone)) {
+            walk.revoked.add(gone);
+            gone = walk.renewedFrom.get(gone);
+          }
+        }
       }
       if (terminal.has(name)) break;
     }
@@ -508,6 +544,7 @@ export async function fuzzProtocol<TSteps extends Record<string, AnyStep>>(
     allowed,
     forbidden,
     skipped,
+    declined,
     covered: steps.map(([name]) => name).filter((name) =>
       everAccepted.has(name)
     ),
@@ -529,6 +566,14 @@ export function formatFuzzReport(report: FuzzReport): string {
     }),
     `covered: ${report.covered.join(", ") || "nothing"}`,
   ];
+  const declined = Object.entries(report.declined);
+  if (declined.length > 0) {
+    lines.push(
+      `allowed calls answered with a refusal: ${
+        declined.map(([s, n]) => `${s} (${n})`).join(", ")
+      }`,
+    );
+  }
   const skipped = Object.entries(report.skipped);
   if (skipped.length > 0) {
     lines.push(
