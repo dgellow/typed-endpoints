@@ -720,3 +720,52 @@ Deno.test("createClient.subscribe joins multi-line data and accepts CRLF", async
 
   assertEquals(events, [{ event: "line", data: ["a", "b"], id: undefined }]);
 });
+
+// =============================================================================
+// Typed query
+// =============================================================================
+
+Deno.test("createClient types the query from the Api definition", async () => {
+  type QueryApi = {
+    users: {
+      // every key optional: the options argument stays optional
+      list: {
+        query: { limit?: number | undefined; cursor?: string | undefined };
+        response: string[];
+      };
+      // a required key: the options argument is required
+      retrieve: {
+        query: { expand: "posts" | "none" };
+        response: { id: string };
+      };
+    };
+  };
+
+  const urls: string[] = [];
+  const client = createClient<QueryApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: createMockFetch((url) => {
+      urls.push(url);
+      return Response.json([]);
+    }),
+  });
+
+  await client.users.list();
+  await client.users.list({ query: { limit: 5 } });
+  await client.users.retrieve("1", { query: { expand: "posts" } });
+
+  // @ts-expect-error unknown query key
+  await client.users.list({ query: { nope: 1 } });
+  // @ts-expect-error wrong value type
+  await client.users.list({ query: { limit: "5" } });
+  // @ts-expect-error the query has a required key
+  await client.users.retrieve("1");
+  // @ts-expect-error value outside the union
+  await client.users.retrieve("1", { query: { expand: "all" } });
+
+  assertEquals(urls.slice(0, 3), [
+    "http://localhost:3000/api/users",
+    "http://localhost:3000/api/users?limit=5",
+    "http://localhost:3000/api/users/1?expand=posts",
+  ]);
+});

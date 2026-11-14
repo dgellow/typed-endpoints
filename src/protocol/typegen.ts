@@ -13,7 +13,7 @@ import type { ZodType } from "zod";
 import type { Protocol } from "./types.ts";
 import { isFieldMapping } from "./mapping.ts";
 import { topologicalSort } from "./dsl.ts";
-import { zodToTypeString } from "../tsgen/zod.ts";
+import { TypeDeclarations, zodToTypeString } from "../tsgen/zod.ts";
 
 // =============================================================================
 // Zod Internals (same pattern as src/tsgen/zod.ts)
@@ -32,6 +32,9 @@ function getTypeName(def: Record<string, unknown>): string {
 // =============================================================================
 // Helpers
 // =============================================================================
+
+/** Converts a schema to type text, collecting named (recursive) types. */
+type ToType = (schema: unknown) => string;
 
 function toPascalCase(name: string): string {
   return name.charAt(0).toUpperCase() + name.slice(1);
@@ -82,6 +85,7 @@ function generateBrandedObject(
   stepName: string,
   brandedPaths: Set<string>,
   prefix: string,
+  toType: ToType,
 ): string {
   const def = getDef(schema);
   const shape = def.shape as Record<string, unknown>;
@@ -100,7 +104,7 @@ function generateBrandedObject(
     const innerType = isOptional ? getTypeName(innerDef) : fieldType;
 
     if (brandedPaths.has(fullPath)) {
-      const baseType = zodToTypeString(innerSchema as ZodType);
+      const baseType = toType(innerSchema);
       const branded = `StepOutput<${baseType}, "${stepName}", "${fullPath}">`;
       if (isOptional) {
         return `${key}${optionalMark}: ${branded} | undefined`;
@@ -117,6 +121,7 @@ function generateBrandedObject(
         stepName,
         brandedPaths,
         fullPath,
+        toType,
       );
       if (isOptional) {
         return `${key}${optionalMark}: ${nested} | undefined`;
@@ -124,7 +129,7 @@ function generateBrandedObject(
       return `${key}: ${nested}`;
     }
 
-    const typeStr = zodToTypeString(fieldSchema as ZodType);
+    const typeStr = toType(fieldSchema);
     return `${key}${optionalMark}: ${typeStr}`;
   });
 
@@ -135,6 +140,7 @@ function generateResponseType(
   schema: unknown,
   stepName: string,
   brandedPaths: Set<string>,
+  toType: ToType,
 ): string {
   const def = getDef(schema);
   const typeName = getTypeName(def);
@@ -144,23 +150,24 @@ function generateResponseType(
     const variants = options.map((opt) => {
       const optDef = getDef(opt);
       if (getTypeName(optDef) === "object") {
-        return generateBrandedObject(opt, stepName, brandedPaths, "");
+        return generateBrandedObject(opt, stepName, brandedPaths, "", toType);
       }
-      return zodToTypeString(opt as ZodType);
+      return toType(opt);
     });
     return variants.join("\n  | ");
   }
 
   if (typeName === "object") {
-    return generateBrandedObject(schema, stepName, brandedPaths, "");
+    return generateBrandedObject(schema, stepName, brandedPaths, "", toType);
   }
 
-  return zodToTypeString(schema as ZodType);
+  return toType(schema);
 }
 
 function generateMappedRequestType(
   requestSchema: unknown,
   requestMapping: Record<string, unknown>,
+  toType: ToType,
 ): string {
   const def = getDef(requestSchema);
   const shape = def.shape as Record<string, unknown>;
@@ -177,7 +184,7 @@ function generateMappedRequestType(
     const mapping = requestMapping[key];
     if (isFieldMapping(mapping)) {
       const innerSchema = isOptional ? fieldDef.innerType : fieldSchema;
-      const baseType = zodToTypeString(innerSchema as ZodType);
+      const baseType = toType(innerSchema);
       const branded =
         `StepOutput<${baseType}, "${mapping.step}", "${mapping.path}">`;
       if (isOptional) {
@@ -186,7 +193,7 @@ function generateMappedRequestType(
       return `${key}: ${branded}`;
     }
 
-    const typeStr = zodToTypeString(fieldSchema as ZodType);
+    const typeStr = toType(fieldSchema);
     return `${key}${optionalMark}: ${typeStr}`;
   });
 
@@ -209,6 +216,10 @@ export function generateProtocolTypes(proto: Protocol<string, any>): string {
   const brandedOutputs = collectBrandedOutputs(steps);
   // deno-lint-ignore no-explicit-any
   const sortedSteps = topologicalSort(proto as any);
+
+  const declarations = new TypeDeclarations();
+  const toType: ToType = (schema) =>
+    zodToTypeString(schema as ZodType, { declarations });
 
   const lines: string[] = [];
 
@@ -238,21 +249,42 @@ export function generateProtocolTypes(proto: Protocol<string, any>): string {
     lines.push(`// Step: ${stepName}`);
 
     if (kind === "step") {
-      const reqType = zodToTypeString(step.request as ZodType);
+      const reqType = toType(step.request);
       lines.push(`export type ${pascal}Request = ${reqType};`);
     } else if (kind === "mapped_step") {
       const reqType = generateMappedRequestType(
         step.requestSchema,
         step.requestMapping as Record<string, unknown>,
+        toType,
       );
       lines.push(`export type ${pascal}Request = ${reqType};`);
     }
 
     const brands = brandedOutputs.get(stepName) ?? new Set<string>();
-    const resType = generateResponseType(step.response, stepName, brands);
+    const resType = generateResponseType(
+      step.response,
+      stepName,
+      brands,
+      toType,
+    );
     lines.push(`export type ${pascal}Response = ${resType};`);
 
     lines.push("");
+  }
+
+  // Named types for recursive schemas go after the brand, before the steps.
+  if (declarations.size > 0) {
+    const named = declarations.entries().map(([name, text]) =>
+      `export type ${name} = ${text};`
+    );
+    const firstStep = lines.findIndex((line) => line.startsWith("// Step: "));
+    lines.splice(
+      firstStep === -1 ? lines.length : firstStep,
+      0,
+      "// Named types",
+      ...named,
+      "",
+    );
   }
 
   return lines.join("\n");

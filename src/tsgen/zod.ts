@@ -1,205 +1,486 @@
+/**
+ * Zod schema → TypeScript type text.
+ *
+ * Walks the schema definition, so it needs no TypeScript compiler. Written
+ * for Zod v4 (`schema._zod.def`).
+ *
+ * @module
+ */
+
 import type { ZodType } from "zod";
 
+// =============================================================================
+// Options
+// =============================================================================
+
+export interface TypeStringOptions {
+  /**
+   * Which side of the schema to describe. Default: `"output"`.
+   *
+   * - `"output"`: what parsing produces (`z.output`).
+   * - `"input"`: what a caller provides (`z.input`). Fields with a default
+   *   are optional, a pipe is described by its input side. One deliberate
+   *   difference from `z.input`: a coerced schema (`z.coerce.number()`) is
+   *   described by its target type, not `unknown`, because a client
+   *   serialises the value and the server coerces it back.
+   */
+  readonly io?: "input" | "output";
+  /**
+   * Describe the value as it exists after a JSON round trip. Default: off.
+   *
+   * With `"json"`, an output `Date` is a `string`, and schemas that JSON
+   * cannot carry (bigint, symbol, map, set, function, promise) are rejected
+   * with an error that names the path.
+   */
+  readonly wire?: "json";
+  /**
+   * Collects named declarations. Required for recursive schemas, which
+   * cannot be written as one inline type.
+   */
+  readonly declarations?: TypeDeclarations;
+}
+
 /**
- * Convert a Zod schema to a TypeScript type string.
- * Custom implementation for Zod v4 that doesn't require TypeScript compiler.
+ * Named type declarations produced while converting schemas.
+ *
+ * Share one instance across all conversions that end up in the same file.
  */
-export function zodToTypeString(schema: ZodType): string {
-  return convert(schema);
+export class TypeDeclarations {
+  readonly #names = new Map<unknown, Map<string, string>>();
+  readonly #texts = new Map<string, string>();
+  readonly #used = new Set<string>();
+
+  /** Name already given to this schema in this mode, if any. */
+  nameOf(schema: unknown, mode: string): string | undefined {
+    return this.#names.get(schema)?.get(mode);
+  }
+
+  /** Give this schema a name in this mode. */
+  assign(schema: unknown, mode: string, preferred: string): string {
+    let name = preferred;
+    for (let n = 2; this.#used.has(name); n++) name = `${preferred}${n}`;
+    this.#used.add(name);
+
+    let byMode = this.#names.get(schema);
+    if (!byMode) this.#names.set(schema, byMode = new Map());
+    byMode.set(mode, name);
+    return name;
+  }
+
+  /** Record the type text of a named declaration. */
+  define(name: string, text: string): void {
+    this.#texts.set(name, text);
+  }
+
+  /** `[name, type text]` in definition order. */
+  entries(): [string, string][] {
+    return [...this.#texts];
+  }
+
+  get size(): number {
+    return this.#texts.size;
+  }
 }
 
-/** Get the internal def object from a Zod schema (works with v3 and v4) */
-function getDef(schema: unknown): Record<string, unknown> {
-  const s = schema as Record<string, unknown>;
-  const zod = s._zod as Record<string, unknown> | undefined;
-  return (zod?.def ?? s._def ?? {}) as Record<string, unknown>;
+// =============================================================================
+// Internals
+// =============================================================================
+
+type Def = Record<string, unknown>;
+
+/** Precedence of a type expression, lowest binds loosest. */
+const Prec = { Function: 0, Union: 1, Intersection: 2, Atom: 3 } as const;
+type Prec = (typeof Prec)[keyof typeof Prec];
+
+interface Node {
+  readonly text: string;
+  readonly prec: Prec;
 }
 
-/** Get the type name from a def object */
-function getTypeName(def: Record<string, unknown>): string {
-  return (def.type ?? def.typeName ?? "unknown") as string;
+interface State {
+  readonly io: "input" | "output";
+  readonly wire: "json" | undefined;
+  readonly mode: string;
+  readonly declarations: TypeDeclarations;
+  /** Object and lazy schemas currently being converted (cycle detection). */
+  readonly active: Set<unknown>;
+  readonly path: string[];
 }
 
-function convert(schema: unknown): string {
+function internals(schema: unknown): Def {
+  return ((schema as Def)?._zod ?? {}) as Def;
+}
+
+function getDef(schema: unknown): Def {
+  return (internals(schema).def ?? {}) as Def;
+}
+
+function getType(schema: unknown): string {
+  return (getDef(schema).type ?? "unknown") as string;
+}
+
+const atom = (text: string): Node => ({ text, prec: Prec.Atom });
+
+/** Text of `node` where an expression of at least `min` precedence is needed. */
+function wrap(node: Node, min: Prec): string {
+  return node.prec < min ? `(${node.text})` : node.text;
+}
+
+function literalText(value: unknown): string {
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "bigint") return `${value}n`;
+  return String(value);
+}
+
+function propertyKey(key: string): string {
+  return /^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key);
+}
+
+function templateText(text: string): string {
+  return text.replace(/[\\`]/g, "\\$&").replace(/\$\{/g, "\\${");
+}
+
+function unionOf(nodes: Node[]): Node {
+  if (nodes.length === 1) return nodes[0];
+  return {
+    text: nodes.map((n) => wrap(n, Prec.Union)).join(" | "),
+    prec: Prec.Union,
+  };
+}
+
+function isOptionalKey(schema: unknown, state: State): boolean {
+  const zod = internals(schema);
+  const flag = state.io === "input" ? zod.optin : zod.optout;
+  if (flag !== undefined) return flag === "optional";
+  // Fallback for schemas that do not carry the flag.
+  const type = getType(schema);
+  if (type === "optional") return true;
+  return state.io === "input" && (type === "default" || type === "prefault");
+}
+
+function description(schema: unknown): string | undefined {
+  const value = (schema as { description?: unknown })?.description;
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+function preferredName(schema: unknown, state: State): string {
+  let id: unknown;
+  try {
+    id = (schema as { meta?: () => { id?: unknown } | undefined }).meta?.()?.id;
+  } catch {
+    // Not a schema with a registry; fall through to the generated name.
+  }
+  const base = typeof id === "string" && /^[A-Za-z_$][\w$]*$/.test(id)
+    ? id
+    : "Recursive";
+  return state.io === "input" ? `${base}Input` : base;
+}
+
+function notJson(what: string, state: State): never {
+  const where = state.path.length > 0 ? state.path.join(".") : "(root)";
+  throw new Error(
+    `Cannot describe ${what} at ${where} as JSON: JSON has no representation for it`,
+  );
+}
+
+// =============================================================================
+// Conversion
+// =============================================================================
+
+function convert(schema: unknown, state: State): Node {
+  const type = getType(schema);
+  // Objects (getter recursion) and lazy schemas are where a cycle closes.
+  if (type !== "object" && type !== "lazy") return convertInner(schema, state);
+
+  const known = state.declarations.nameOf(schema, state.mode);
+  if (known) return atom(known);
+
+  if (state.active.has(schema)) {
+    return atom(
+      state.declarations.assign(
+        schema,
+        state.mode,
+        preferredName(schema, state),
+      ),
+    );
+  }
+
+  state.active.add(schema);
+  const node = convertInner(schema, state);
+  state.active.delete(schema);
+
+  const name = state.declarations.nameOf(schema, state.mode);
+  if (!name) return node;
+  state.declarations.define(name, node.text);
+  return atom(name);
+}
+
+function convertObject(def: Def, state: State): Node {
+  const shape = def.shape as Record<string, unknown>;
+  const props = Object.keys(shape).map((key) => {
+    state.path.push(key);
+    const value = shape[key];
+    const optional = isOptionalKey(value, state) ? "?" : "";
+    const doc = description(value);
+    const docText = doc ? `/** ${doc.replace(/\*\//g, "*\\/")} */ ` : "";
+    const text = `${docText}${propertyKey(key)}${optional}: ${
+      convert(value, state).text
+    }`;
+    state.path.pop();
+    return text;
+  });
+
+  // catchall: absent or never → closed; unknown/any → open in place;
+  // anything else → a separate index signature, as z.infer does.
+  const catchallType = def.catchall ? getType(def.catchall) : "never";
+  let indexed: string | undefined;
+  if (catchallType === "unknown" || catchallType === "any") {
+    props.push(`[key: string]: ${catchallType}`);
+  } else if (catchallType !== "never") {
+    state.path.push("[key]");
+    indexed = `{ [key: string]: ${convert(def.catchall, state).text}; }`;
+    state.path.pop();
+  }
+
+  const own = props.length === 0 ? "{}" : `{ ${props.join("; ")}; }`;
+  if (!indexed) return atom(own);
+  return { text: `${own} & ${indexed}`, prec: Prec.Intersection };
+}
+
+function convertTuple(def: Def, state: State): Node {
+  const items = def.items as unknown[];
+  // Trailing optional elements are optional tuple members.
+  let firstOptional = items.length;
+  while (firstOptional > 0 && isOptionalKey(items[firstOptional - 1], state)) {
+    firstOptional--;
+  }
+
+  const parts = items.map((item, i) => {
+    state.path.push(String(i));
+    const node = convert(item, state);
+    state.path.pop();
+    return i >= firstOptional ? `${wrap(node, Prec.Atom)}?` : node.text;
+  });
+  if (def.rest) {
+    parts.push(`...${wrap(convert(def.rest, state), Prec.Atom)}[]`);
+  }
+  return atom(`[${parts.join(", ")}]`);
+}
+
+function convertRecord(def: Def, state: State): Node {
+  const key = def.keyType ? convert(def.keyType, state).text : "string";
+  const value = convert(def.valueType, state).text;
+  const record = `Record<${key}, ${value}>`;
+
+  // z.partialRecord() keeps an enum or literal key type but drops the list
+  // of required keys.
+  const keyType = getType(def.keyType);
+  const enumerable = keyType === "enum" || keyType === "literal";
+  const partial = enumerable && internals(def.keyType).values === undefined;
+  return atom(partial ? `Partial<${record}>` : record);
+}
+
+function convertReadonly(def: Def, state: State): Node {
+  const inner = convert(def.innerType, state);
+  switch (getType(def.innerType)) {
+    case "array":
+    case "tuple":
+      return { text: `readonly ${inner.text}`, prec: Prec.Union };
+    case "map":
+      return atom(inner.text.replace(/^Map</, "ReadonlyMap<"));
+    case "set":
+      return atom(inner.text.replace(/^Set</, "ReadonlySet<"));
+    case "object":
+    case "record":
+      return atom(`Readonly<${inner.text}>`);
+    default:
+      return inner;
+  }
+}
+
+function convertTemplateLiteral(def: Def, state: State): Node {
+  const parts = (def.parts as unknown[]).map((part) => {
+    const isSchema = typeof part === "object" && part !== null &&
+      "_zod" in part;
+    if (isSchema) return `\${${convert(part, state).text}}`;
+    return templateText(String(part));
+  });
+  return atom(`\`${parts.join("")}\``);
+}
+
+function convertInner(schema: unknown, state: State): Node {
   const def = getDef(schema);
-  const typeName = getTypeName(def);
+  const json = state.wire === "json";
 
-  switch (typeName) {
+  switch (getType(schema)) {
     // Primitives
     case "string":
-      return "string";
+      return atom("string");
     case "number":
     case "int":
-      return "number";
+    case "nan":
+      return atom("number");
     case "boolean":
-      return "boolean";
+    case "success":
+      return atom("boolean");
     case "bigint":
-      return "bigint";
-    case "date":
-      return "Date";
+      return json ? notJson("z.bigint()", state) : atom("bigint");
     case "symbol":
-      return "symbol";
+      return json ? notJson("z.symbol()", state) : atom("symbol");
+    case "date":
+      // JSON.stringify writes a Date as an ISO string; nothing revives it.
+      return atom(json && state.io === "output" ? "string" : "Date");
+    case "file":
+      return atom("File");
 
     // Special types
     case "any":
-      return "any";
+      return atom("any");
     case "unknown":
-      return "unknown";
+      return atom("unknown");
     case "never":
-      return "never";
+      return atom("never");
     case "void":
-      return "void";
+      return atom("void");
     case "null":
-      return "null";
+      return atom("null");
     case "undefined":
-      return "undefined";
-    case "nan":
-      return "number";
-    case "file":
-      return "File";
+      return atom("undefined");
 
-    // Literal
-    case "literal": {
-      const values = def.values as unknown[];
-      return values
-        .map((v) => (typeof v === "string" ? `"${v}"` : String(v)))
-        .join(" | ");
-    }
+    case "literal":
+      return unionOf(
+        (def.values as unknown[]).map((v) => {
+          if (json && typeof v === "bigint") notJson("a bigint literal", state);
+          return atom(literalText(v));
+        }),
+      );
 
-    // Enum
-    case "enum": {
-      const entries = def.entries as Record<string, string | number>;
-      const values = Object.values(entries);
-      return values
-        .map((v) => (typeof v === "string" ? `"${v}"` : String(v)))
-        .join(" | ");
-    }
+    case "enum":
+      return unionOf(
+        Object.values(def.entries as Record<string, unknown>)
+          .map((v) => atom(literalText(v))),
+      );
 
-    // Array
-    case "array": {
-      const inner = convert(def.element);
-      if (inner.includes("|") && !inner.startsWith("(")) {
-        return `(${inner})[]`;
-      }
-      return `${inner}[]`;
-    }
-
-    // Object
-    case "object": {
-      const shape = def.shape as Record<string, unknown>;
-      const entries = Object.entries(shape);
-      if (entries.length === 0) {
-        return "{}";
-      }
-      const props = entries.map(([key, value]) => {
-        const isOptional = getTypeName(getDef(value)) === "optional";
-        const typeStr = convert(value);
-        const optionalMark = isOptional ? "?" : "";
-        return `${key}${optionalMark}: ${typeStr}`;
-      });
-      return `{ ${props.join("; ")}; }`;
-    }
-
-    // Optional
-    case "optional": {
-      const inner = convert(def.innerType);
-      return `${inner} | undefined`;
-    }
-
-    // Nullable
-    case "nullable": {
-      const inner = convert(def.innerType);
-      return `${inner} | null`;
-    }
-
-    // Union
-    case "union": {
-      const options = def.options as unknown[];
-      return options.map(convert).join(" | ");
-    }
-
-    // Intersection
-    case "intersection": {
-      const left = convert(def.left);
-      const right = convert(def.right);
-      return `${left} & ${right}`;
-    }
-
-    // Tuple
-    case "tuple": {
-      const items = def.items as unknown[];
-      const itemTypes = items.map(convert);
-      if (def.rest) {
-        return `[${itemTypes.join(", ")}, ...${convert(def.rest)}[]]`;
-      }
-      return `[${itemTypes.join(", ")}]`;
-    }
-
-    // Record
-    case "record": {
-      const keyType = def.keyType ? convert(def.keyType) : "string";
-      const valueType = convert(def.valueType);
-      return `Record<${keyType}, ${valueType}>`;
-    }
-
-    // Map
-    case "map": {
-      const keyType = convert(def.keyType);
-      const valueType = convert(def.valueType);
-      return `Map<${keyType}, ${valueType}>`;
-    }
-
-    // Set
-    case "set": {
-      const valueType = convert(def.valueType);
-      return `Set<${valueType}>`;
-    }
-
-    // Promise
-    case "promise": {
-      const inner = convert(def.innerType);
-      return `Promise<${inner}>`;
-    }
-
-    // Function
-    case "function": {
-      const inputType = def.input ? convert(def.input) : "[]";
-      const outputType = def.output ? convert(def.output) : "void";
-      return `(...args: ${inputType}) => ${outputType}`;
-    }
-
-    // Lazy (recursive types)
-    case "lazy": {
-      const getter = def.getter as () => unknown;
-      return convert(getter());
-    }
-
-    // Wrappers that pass through to inner type
-    case "default":
-    case "prefault":
-    case "catch":
-    case "readonly":
-    case "nonoptional":
-    case "success":
-      return convert(def.innerType);
-
-    // Transform
-    case "transform":
-      return "unknown";
-
-    // Pipe (schema chaining)
-    case "pipe":
-      return convert(def.out);
-
-    // Custom validators
-    case "custom":
-      return "unknown";
-
-    // Template literals
     case "template_literal":
-      return "string";
+      return convertTemplateLiteral(def, state);
 
+    case "array":
+      return atom(`${wrap(convert(def.element, state), Prec.Atom)}[]`);
+
+    case "object":
+      return convertObject(def, state);
+
+    case "tuple":
+      return convertTuple(def, state);
+
+    case "record":
+      return convertRecord(def, state);
+
+    case "map": {
+      if (json) notJson("z.map()", state);
+      const key = convert(def.keyType, state).text;
+      return atom(`Map<${key}, ${convert(def.valueType, state).text}>`);
+    }
+
+    case "set":
+      if (json) notJson("z.set()", state);
+      return atom(`Set<${convert(def.valueType, state).text}>`);
+
+    case "promise":
+      if (json) notJson("z.promise()", state);
+      return atom(`Promise<${convert(def.innerType, state).text}>`);
+
+    case "function": {
+      if (json) notJson("z.function()", state);
+      const input = def.input ? convert(def.input, state).text : "[]";
+      const output = def.output ? convert(def.output, state).text : "void";
+      return { text: `(...args: ${input}) => ${output}`, prec: Prec.Function };
+    }
+
+    case "optional":
+      return unionOf([convert(def.innerType, state), atom("undefined")]);
+
+    case "nullable":
+      return unionOf([convert(def.innerType, state), atom("null")]);
+
+    case "union":
+      return unionOf((def.options as unknown[]).map((o) => convert(o, state)));
+
+    case "intersection": {
+      const left = wrap(convert(def.left, state), Prec.Intersection);
+      const right = wrap(convert(def.right, state), Prec.Intersection);
+      return { text: `${left} & ${right}`, prec: Prec.Intersection };
+    }
+
+    case "lazy":
+      return convert((def.getter as () => unknown)(), state);
+
+    case "default":
+    case "prefault": {
+      const inner = convert(def.innerType, state);
+      // As an object key the "?" marks it; standalone it accepts undefined.
+      return state.io === "input" ? unionOf([inner, atom("undefined")]) : inner;
+    }
+
+    case "nonoptional": {
+      const inner = def.innerType;
+      return convert(
+        getType(inner) === "optional" ? getDef(inner).innerType : inner,
+        state,
+      );
+    }
+
+    case "catch":
+      return convert(def.innerType, state);
+
+    case "readonly":
+      return convertReadonly(def, state);
+
+    case "pipe":
+      return convert(state.io === "input" ? def.in : def.out, state);
+
+    // The result of a transform or a custom check is not in the schema.
+    case "transform":
+    case "custom":
     default:
-      return "unknown";
+      return atom("unknown");
   }
+}
+
+// =============================================================================
+// Public API
+// =============================================================================
+
+/**
+ * Convert a Zod schema to a TypeScript type string.
+ *
+ * A recursive schema becomes a named declaration in `options.declarations`
+ * and the returned text is that name. Without `declarations`, a recursive
+ * schema is an error.
+ */
+export function zodToTypeString(
+  schema: ZodType,
+  options: TypeStringOptions = {},
+): string {
+  const io = options.io ?? "output";
+  const declarations = options.declarations ?? new TypeDeclarations();
+  const state: State = {
+    io,
+    wire: options.wire,
+    mode: `${io}:${options.wire ?? ""}`,
+    declarations,
+    active: new Set(),
+    path: [],
+  };
+
+  const { text } = convert(schema, state);
+
+  if (!options.declarations && declarations.size > 0) {
+    const names = declarations.entries().map(([name]) => name).join(", ");
+    throw new Error(
+      `The schema is recursive (${names}). Pass \`declarations\` to zodToTypeString to collect the named types it needs.`,
+    );
+  }
+
+  return text;
 }

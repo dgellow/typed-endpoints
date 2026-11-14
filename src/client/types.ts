@@ -54,36 +54,50 @@ export interface RequestOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * Options for a method. When the method definition declares a `query` type,
+ * `query` is typed by it; it is required only if it has required keys.
+ */
+export type MethodOptions<M> = M extends { query: infer Q } ?
+    & Omit<RequestOptions, "query">
+    & (Record<never, never> extends Q ? { query?: Q } : { query: Q })
+  : RequestOptions;
+
+/** The trailing options argument of a method. */
+export type OptionsArg<M> = M extends { query: infer Q }
+  ? Record<never, never> extends Q ? [options?: MethodOptions<M>]
+  : [options: MethodOptions<M>]
+  : [options?: RequestOptions];
+
 /** List method - no required params, returns array */
-export type ListMethod<M extends MethodDef> = M["query"] extends
-  Record<string, unknown>
-  ? (options: RequestOptions & { query: M["query"] }) => Promise<M["response"]>
-  : (options?: RequestOptions) => Promise<M["response"]>;
+export type ListMethod<M extends MethodDef> = (
+  ...args: OptionsArg<M>
+) => Promise<M["response"]>;
 
 /** Retrieve method - requires id param */
 export type RetrieveMethod<M extends MethodDef> = (
   id: string,
-  options?: RequestOptions,
+  ...args: OptionsArg<M>
 ) => Promise<M["response"]>;
 
 /** Create method - requires body */
 export type CreateMethod<M extends MethodDef> = M["body"] extends undefined
-  ? (options?: RequestOptions) => Promise<M["response"]>
-  : (body: M["body"], options?: RequestOptions) => Promise<M["response"]>;
+  ? (...args: OptionsArg<M>) => Promise<M["response"]>
+  : (body: M["body"], ...args: OptionsArg<M>) => Promise<M["response"]>;
 
 /** Update method - requires id and body */
 export type UpdateMethod<M extends MethodDef> = M["body"] extends undefined
-  ? (id: string, options?: RequestOptions) => Promise<M["response"]>
+  ? (id: string, ...args: OptionsArg<M>) => Promise<M["response"]>
   : (
     id: string,
     body: M["body"],
-    options?: RequestOptions,
+    ...args: OptionsArg<M>
   ) => Promise<M["response"]>;
 
 /** Delete method - requires id */
 export type DeleteMethod<M extends MethodDef> = (
   id: string,
-  options?: RequestOptions,
+  ...args: OptionsArg<M>
 ) => Promise<M["response"]>;
 
 // =============================================================================
