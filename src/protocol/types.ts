@@ -28,6 +28,12 @@ export interface StepRoute {
   readonly path: string;
 }
 
+/** What makes a step's response an outcome of its HTTP call. */
+export interface StepOutcome {
+  /** Statuses of the error responses the endpoint declares. */
+  readonly errors: readonly number[];
+}
+
 /**
  * Where each field of a step's request is sent over HTTP.
  *
@@ -73,6 +79,13 @@ export interface Step<
    * route table for it.
    */
   readonly route?: StepRoute;
+  /**
+   * Set when the step's response is an outcome, `{ ok, status, body }`
+   * (`fromEndpoint()` with `outcome: true`): the error statuses the
+   * endpoint declares. The HTTP executor answers those as a response and
+   * does not throw for them.
+   */
+  readonly outcome?: StepOutcome;
 }
 
 /**
@@ -119,6 +132,13 @@ export interface DependentStep<
    * route table for it.
    */
   readonly route?: StepRoute;
+  /**
+   * Set when the step's response is an outcome, `{ ok, status, body }`
+   * (`fromEndpoint()` with `outcome: true`): the error statuses the
+   * endpoint declares. The HTTP executor answers those as a response and
+   * does not throw for them.
+   */
+  readonly outcome?: StepOutcome;
 }
 
 /**
@@ -162,6 +182,13 @@ export interface MappedStep<
    * route table for it.
    */
   readonly route?: StepRoute;
+  /**
+   * Set when the step's response is an outcome, `{ ok, status, body }`
+   * (`fromEndpoint()` with `outcome: true`): the error statuses the
+   * endpoint declares. The HTTP executor answers those as a response and
+   * does not throw for them.
+   */
+  readonly outcome?: StepOutcome;
 }
 
 // =============================================================================

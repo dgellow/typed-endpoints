@@ -1007,3 +1007,124 @@ Deno.test("a session rejects a response the step's schema does not accept", asyn
     InvalidResponseError,
   );
 });
+
+// =============================================================================
+// Outcomes: declared error statuses as responses
+// =============================================================================
+
+const outcomeHandlers = {
+  __apiDef: {
+    GET: {
+      params: z.object({ id: z.string() }),
+      response: z.object({ id: z.string() }),
+      responses: {
+        // A success entry: `response` covers it.
+        200: z.object({ id: z.string() }),
+        404: z.object({ error: z.literal("not_found") }),
+        409: { schema: z.object({ current: z.number() }), name: "Conflict" },
+      },
+    },
+    DELETE: { params: z.object({ id: z.string() }) },
+  },
+};
+
+Deno.test("fromEndpoint with outcome: the response is a variant per declared error status", () => {
+  const get = fromEndpoint(outcomeHandlers, "GET", {
+    name: "get",
+    path: "/items/{id}",
+    outcome: true,
+  });
+  assertEquals(get.outcome, { errors: [404, 409] });
+
+  const accepts = (value: unknown) => get.response.safeParse(value).success;
+  assertEquals(accepts({ ok: true, status: 200, body: { id: "a" } }), true);
+  assertEquals(
+    accepts({ ok: false, status: 404, body: { error: "not_found" } }),
+    true,
+  );
+  assertEquals(accepts({ ok: false, status: 409, body: { current: 3 } }), true);
+  // A body under the wrong status, an undeclared status, a bare response.
+  assertEquals(
+    accepts({ ok: false, status: 404, body: { current: 3 } }),
+    false,
+  );
+  assertEquals(accepts({ ok: false, status: 500, body: {} }), false);
+  assertEquals(accepts({ id: "a" }), false);
+
+  // Without declared errors the outcome is the success alone.
+  const del = fromEndpoint(outcomeHandlers, "DELETE", {
+    name: "del",
+    path: "/items/{id}",
+    outcome: true,
+  });
+  assertEquals(del.outcome, { errors: [] });
+  assertEquals(
+    del.response.safeParse({ ok: true, status: 204, body: {} }).success,
+    true,
+  );
+
+  // Without `outcome`, as before.
+  const plain = fromEndpoint(outcomeHandlers, "GET", { name: "get" });
+  assertEquals(plain.outcome, undefined);
+  assertEquals(plain.response.safeParse({ id: "a" }).success, true);
+});
+
+Deno.test("createHttpExecutor answers a declared error status as a response", async () => {
+  const proto = protocol({
+    name: "Items",
+    initial: "get",
+    steps: {
+      get: fromEndpoint(outcomeHandlers, "GET", {
+        name: "get",
+        path: "/items/{id}",
+        outcome: true,
+      }),
+      del: fromEndpoint(outcomeHandlers, "DELETE", {
+        name: "del",
+        path: "/items/{id}",
+        outcome: true,
+      }),
+    },
+  });
+  const answers: Record<string, () => Response> = {
+    found: () => Response.json({ id: "found" }),
+    missing: () => Response.json({ error: "not_found" }, { status: 404 }),
+    // A declared status with a body that is not JSON.
+    stale: () => new Response("conflict", { status: 409 }),
+    broken: () => new Response("boom", { status: 500 }),
+    gone: () => new Response(null, { status: 204 }),
+  };
+  const executor = createHttpExecutor(proto, {
+    baseUrl: "https://api.example.com",
+    fetch: (input) =>
+      Promise.resolve(answers[String(input).split("/").at(-1)!]()),
+  });
+  const context = { protocol: "Items", history: [], responses: {} };
+  const get = (id: string) => executor.execute("get", { id }, context);
+
+  assertEquals(await get("found"), {
+    ok: true,
+    status: 200,
+    body: { id: "found" },
+  });
+  assertEquals(await get("missing"), {
+    ok: false,
+    status: 404,
+    body: { error: "not_found" },
+  });
+  assertEquals(await get("stale"), {
+    ok: false,
+    status: 409,
+    body: "conflict",
+  });
+
+  // Not declared: an error, as for any step.
+  const error = await assertRejects(() => get("broken"), HttpError);
+  assertEquals(error.status, 500);
+
+  assertEquals(await executor.execute("del", { id: "gone" }, context), {
+    ok: true,
+    status: 204,
+    body: {},
+  });
+});

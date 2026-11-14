@@ -497,6 +497,8 @@ if (result.ok) {
 - The client does not validate an error body, as it does not validate a
   response. A handler sends a declared error as a `Response`, which is not
   checked against the declared schema
+- A protocol step can have the same outcomes as its response: see "Steps that
+  branch on an HTTP status"
 
 ### Pagination
 
@@ -1757,7 +1759,8 @@ Features:
   the JSON body according to the endpoint's `query` and `body` schemas; for a
   hand-written step the remaining fields go to the body, or to the query string
   for GET and HEAD
-- **Error handling**: `HttpError` class with status, statusText, and body
+- **Error handling**: `HttpError` class with status, statusText, and body; a
+  step made with `outcome: true` gets its declared error statuses as responses
 
 ### Endpoint Composition
 
@@ -1831,6 +1834,64 @@ How a step finds its route:
 - `createHttpExecutor()` resolves every step when it is created and fails there,
   naming each step that has no route. `except: ["stepName"]` leaves out steps
   another executor performs
+
+#### Steps that branch on an HTTP status
+
+A real token endpoint answers a bad grant with HTTP 400 and an error body, not
+with a 200 that carries a `type` field. An endpoint declares such responses per
+status, and a step made from it with `outcome: true` has the outcome of the call
+as its response, one variant per declared status:
+
+```typescript
+// routes/api/authorize.ts
+POST: endpoint({
+  body: z.object({ client_id: z.string(), scope: z.string() }),
+  response: z.object({ code: z.string() }),
+  responses: { 403: z.object({ error: z.literal("access_denied") }) },
+  handler: ...,
+}),
+
+const authorize = fromEndpoint(authorizeHandler, "POST", {
+  name: "authorize",
+  path: "/api/authorize",
+  outcome: true,
+});
+// response:
+//   | { ok: true; status: number; body: { code: string } }
+//   | { ok: false; status: 403; body: { error: "access_denied" } }
+
+const exchange = fromEndpointMapped(tokenHandler, "POST", {
+  name: "exchange",
+  path: "/api/token",
+  outcome: true,
+  dependsOn: "authorize",
+  // `body.code` is there on the 200 outcome only.
+  requestMapping: { code: fromStep("authorize", "body.code") },
+});
+```
+
+A denied authorization is then a response, not an exception:
+
+```typescript
+const { response, session } = await start.execute("authorize", request);
+response; // { ok: false, status: 403, body: { error: "access_denied" } }
+session.ready("exchange"); // undefined: there is no code to exchange
+
+// In a plan
+branch(authorize, (outcome) => outcome.ok, {
+  then: exchange,
+  else: sequence(),
+});
+```
+
+- The HTTP executor returns a declared error status as
+  `{ ok: false, status,
+  body }`. A status the endpoint does not declare is
+  still an `HttpError`
+- `endpoint()` keeps the declared statuses as literal types, which is what types
+  the variants
+- `fuzzProtocol()` reads refusals from the status:
+  `isRefusal: (_step, response) => !response.ok`
 
 Benefits:
 
