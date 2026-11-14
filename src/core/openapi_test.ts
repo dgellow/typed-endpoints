@@ -169,3 +169,177 @@ Deno.test("generateOpenApiSpec strict mode reports every problem", async () => {
   );
   assertStringIncludes(error.message, "and PATCH /api/items/{id}");
 });
+
+// =============================================================================
+// generateOpenApiSpec: what an operation carries
+// =============================================================================
+
+const DESCRIBED_DIR =
+  new URL("./fixtures/described/routes/api", import.meta.url).pathname;
+
+Deno.test("generateOpenApiSpec passes info and servers through", async () => {
+  const spec = await generateOpenApiSpec({
+    routesDir: DESCRIBED_DIR,
+    strict: true,
+    info: { title: "Reports", version: "2.1.0", description: "Internal" },
+    servers: [{ url: "https://api.example.test", "x-env": "prod" }],
+  });
+
+  assertEquals(spec.openapi, "3.1.0");
+  assertEquals(spec.info, {
+    title: "Reports",
+    version: "2.1.0",
+    description: "Internal",
+  });
+  assertEquals(spec.servers, [
+    { url: "https://api.example.test", "x-env": "prod" },
+  ]);
+});
+
+Deno.test("generateOpenApiSpec defaults: title, version, no servers", async () => {
+  const spec = await generateOpenApiSpec({
+    routesDir: DESCRIBED_DIR,
+    strict: true,
+  });
+
+  assertEquals(spec.info.title, "API");
+  assertEquals(spec.info.version, "1.0.0");
+  assertEquals(spec.servers, undefined);
+});
+
+Deno.test("generateOpenApiSpec leaves out route files without typed handlers", async () => {
+  const spec = await generateOpenApiSpec({
+    routesDir: DESCRIBED_DIR,
+    strict: true,
+  });
+
+  assertEquals(Object.keys(spec.paths ?? {}).sort(), [
+    "/api/reports",
+    "/api/reports/{id}",
+  ]);
+});
+
+Deno.test("generateOpenApiSpec describes query parameters, metadata and pagination", async () => {
+  const spec = await generateOpenApiSpec({
+    routesDir: DESCRIBED_DIR,
+    strict: true,
+  });
+  // deno-lint-ignore no-explicit-any
+  const list = spec.paths!["/api/reports"].get as any;
+
+  assertEquals(list.summary, "List reports");
+  assertEquals(list.description, "Reports, newest first.");
+  assertEquals(list.tags, ["reports"]);
+  assertEquals(list["x-pagination"], {
+    style: "cursor",
+    items: "data",
+    cursor: "next",
+    cursorParam: "cursor",
+    limitParam: "limit",
+  });
+  assertEquals(list.parameters, [
+    {
+      name: "cursor",
+      in: "query",
+      required: false,
+      schema: { type: "string" },
+    },
+    {
+      name: "limit",
+      in: "query",
+      required: false,
+      schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+    },
+    {
+      name: "tag",
+      in: "query",
+      required: false,
+      schema: { type: "array", items: { type: "string" } },
+    },
+  ]);
+  assertEquals(
+    Object.keys(
+      list.responses["200"].content["application/json"].schema.properties,
+    ),
+    ["data", "next"],
+  );
+});
+
+Deno.test("generateOpenApiSpec registers named bodies and responses as components", async () => {
+  const spec = await generateOpenApiSpec({
+    routesDir: DESCRIBED_DIR,
+    strict: true,
+  });
+  // deno-lint-ignore no-explicit-any
+  const create = spec.paths!["/api/reports"].post as any;
+
+  assertEquals(Object.keys(spec.components?.schemas ?? {}).sort(), [
+    "NewReport",
+    "Report",
+    "ValidationProblem",
+  ]);
+  assertEquals(create.requestBody.content["application/json"].schema, {
+    $ref: "#/components/schemas/NewReport",
+  });
+  assertEquals(create.responses["200"].content["application/json"].schema, {
+    $ref: "#/components/schemas/Report",
+  });
+  // A bare schema under `responses` is inlined.
+  assertEquals(create.responses["409"], {
+    description: "Response 409",
+    content: {
+      "application/json": {
+        schema: {
+          type: "object",
+          properties: { message: { type: "string" } },
+          required: ["message"],
+        },
+      },
+    },
+  });
+  // `{ schema, name }` is a component.
+  assertEquals(create.responses["422"].content["application/json"].schema, {
+    $ref: "#/components/schemas/ValidationProblem",
+  });
+});
+
+Deno.test("generateOpenApiSpec derives path parameters and omits a body outside POST, PUT, PATCH", async () => {
+  const spec = await generateOpenApiSpec({
+    routesDir: DESCRIBED_DIR,
+    strict: true,
+  });
+  // deno-lint-ignore no-explicit-any
+  const item = spec.paths!["/api/reports/{id}"] as any;
+  const idParam = [{
+    name: "id",
+    in: "path",
+    required: true,
+    schema: { type: "string" },
+  }];
+
+  // No `params` schema: the parameter comes from the file name.
+  assertEquals(item.delete.parameters, idParam);
+  // No response schema: a 200 without content.
+  assertEquals(item.delete.responses, { "200": { description: "Success" } });
+
+  assertEquals(item.get.parameters, idParam);
+  assertEquals(item.get.requestBody, undefined);
+  // `responses: { 200 }` stands in for `response`.
+  assertEquals(
+    item.get.responses["200"].content["application/json"].schema.required,
+    ["id"],
+  );
+});
+
+Deno.test("generateOpenApiSpec can run twice over routes with named components", async () => {
+  const first = await generateOpenApiSpec({
+    routesDir: DESCRIBED_DIR,
+    strict: true,
+  });
+  const second = await generateOpenApiSpec({
+    routesDir: DESCRIBED_DIR,
+    strict: true,
+  });
+
+  assertEquals(second, first);
+});
