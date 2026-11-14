@@ -99,10 +99,8 @@ class Notes:
             area=area,
             kind=shape.kind,
             from_=body.from_,
-            # A `class` the request left out is None, and is left out.
-            meta=api.ShapesCreateResponseMeta(
-                data_id=body.meta.data_id, class_=body.meta.class_
-            ),
+            # The same class in the request and in the response.
+            meta=body.meta,
             unit=body.unit,
             note=body.note,
         )
@@ -119,10 +117,7 @@ class Notes:
         def depth(tree: api.TreesCreateBody) -> int:
             return 1 + max((depth(child) for child in tree.children), default=0)
 
-        return api.TreesCreateResponse(
-            depth=depth(body),
-            root=api.TreesCreateResponseRoot.model_validate(body.model_dump()),
-        )
+        return api.TreesCreateResponse(depth=depth(body), root=body)
 
     async def ticks_list(
         self, query: api.TicksListQuery, last_event_id: str | None

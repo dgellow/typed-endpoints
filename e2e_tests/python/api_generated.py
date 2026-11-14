@@ -131,19 +131,13 @@ class _Json(_Model):
     model_config = ConfigDict(strict=True)
 
 
-class _ClosedJson(_Json):
-    """A model of JSON that refuses members it does not name."""
-
-    model_config = ConfigDict(extra="forbid")
-
-
 class EchoRetrieveParams(_Model):
     """The path parameters of `GET /api/echo/{+path}`."""
 
     path: str
 
 
-class EchoRetrieveResponse(_ClosedJson):
+class EchoRetrieveResponse(_Json):
     """The response of `GET /api/echo/{+path}`."""
 
     path: str
@@ -156,7 +150,7 @@ class EdgesListQuery(_Model):
     label: list[str]
 
 
-class EdgesListResponse(_ClosedJson):
+class EdgesListResponse(_Json):
     """The response of `GET /api/edges`."""
 
     labels: list[str]
@@ -191,7 +185,7 @@ class EdgesCreateBody(_Json):
     )
 
 
-class EdgesCreateResponse(_ClosedJson):
+class EdgesCreateResponse(_Json):
     """The response of `POST /api/edges`."""
 
     received: list[str]
@@ -207,7 +201,7 @@ class NotesListQuery(_Model):
     tag: list[str] | None = Field(default=None, exclude_if=_is_none)
 
 
-class Note(_ClosedJson):
+class Note(_Json):
     """A note as the server shows it."""
 
     title: str = Field(min_length=1, max_length=40)
@@ -217,7 +211,7 @@ class Note(_ClosedJson):
     likes: SafeInt
 
 
-class NotesListResponse(_ClosedJson):
+class NotesListResponse(_Json):
     """The response of `GET /api/notes`."""
 
     items: list[Note]
@@ -232,7 +226,7 @@ class NotesCreateBody(_Json):
     pinned: bool | None = Field(default=None, exclude_if=_is_none)
 
 
-class NotesCreateError409(_ClosedJson):
+class NotesCreateError409(_Json):
     """The 409 body of `POST /api/notes`."""
 
     error: Literal["conflict"]
@@ -254,14 +248,14 @@ class NotesDeleteBody(_Json):
     reason: str = Field(min_length=3)
 
 
-class NotesDeleteResponse(_ClosedJson):
+class NotesDeleteResponse(_Json):
     """The response of `DELETE /api/notes/{id}`."""
 
     deleted: Literal[True]
     reason: str
 
 
-class NotFound(_ClosedJson):
+class NotFound(_Json):
     """The 404 body of `DELETE /api/notes/{id}` and `GET /api/notes/{id}`."""
 
     error: Literal["not_found"]
@@ -328,32 +322,10 @@ class OddCreateBody(_Json):
     limit: SafeInt | None = None
 
 
-class OddCreateResponseChain(_ClosedJson):
-    """The member `chain` of `OddCreateResponse`."""
-
-    name: str
-    next: "OddCreateResponseChain | None" = Field(default=None, exclude_if=_is_none)
-    origin: "OddCreateResponseChain | None"
+OddCreateResponseChain = OddCreateBodyChain
 
 
-class OddCreateResponseExpr2(_ClosedJson):
-    """An alternative of the member `expr` of `OddCreateResponse`."""
-
-    op: Literal["neg"]
-    of: "OddCreateResponseExpr"
-
-
-class OddCreateResponseExpr3(_ClosedJson):
-    """An alternative of the member `expr` of `OddCreateResponse`."""
-
-    op: Literal["add"]
-    args: "list[OddCreateResponseExpr]"
-
-
-type OddCreateResponseExpr = float | OddCreateResponseExpr2 | OddCreateResponseExpr3
-
-
-class OddCreateResponse(_ClosedJson):
+class OddCreateResponse(_Json):
     """The response of `POST /api/odd`."""
 
     type_: str = Field(validation_alias="type", serialization_alias="type")
@@ -374,7 +346,7 @@ class OddCreateResponse(_ClosedJson):
         validation_alias="json", serialization_alias="json"
     )
     json_if_any: OddCreateBodyJson | None = None
-    expr: OddCreateResponseExpr
+    expr: OddCreateBodyExpr
     limit: SafeInt | None
 
 
@@ -417,19 +389,10 @@ class ShapesCreateBody(_Json):
     note: str | None
 
 
-class ShapesCreateResponseMeta(_ClosedJson):
-    """The member `meta` of `ShapesCreateResponse`."""
-
-    data_id: str = Field(validation_alias="data-id", serialization_alias="data-id")
-    class_: str | None = Field(
-        default=None,
-        exclude_if=_is_none,
-        validation_alias="class",
-        serialization_alias="class",
-    )
+ShapesCreateResponseMeta = ShapesCreateBodyMeta
 
 
-class ShapesCreateResponse(_ClosedJson):
+class ShapesCreateResponse(_Json):
     """The response of `POST /api/shapes`."""
 
     area: float
@@ -440,13 +403,13 @@ class ShapesCreateResponse(_ClosedJson):
     note: str | None
 
 
-class TicksListTickData(_ClosedJson):
+class TicksListTickData(_Json):
     """The data of the event `tick` of `GET /api/ticks`."""
 
     n: SafeInt
 
 
-class TicksListDoneData(_ClosedJson):
+class TicksListDoneData(_Json):
     """The data of the event `done` of `GET /api/ticks`."""
 
     total: SafeInt
@@ -468,14 +431,10 @@ class TreesCreateBody(_Json):
     children: "list[TreesCreateBody]"
 
 
-class TreesCreateResponseRoot(_ClosedJson):
-    """The member `root` of `TreesCreateResponse`."""
-
-    name: str
-    children: "list[TreesCreateResponseRoot]"
+TreesCreateResponseRoot = TreesCreateBody
 
 
-class TreesCreateResponse(_ClosedJson):
+class TreesCreateResponse(_Json):
     """The response of `POST /api/trees`."""
 
     depth: SafeInt
@@ -485,11 +444,7 @@ class TreesCreateResponse(_ClosedJson):
 OddCreateBodyChain.model_rebuild()
 OddCreateBodyExpr2.model_rebuild()
 OddCreateBodyExpr3.model_rebuild()
-OddCreateResponseChain.model_rebuild()
-OddCreateResponseExpr2.model_rebuild()
-OddCreateResponseExpr3.model_rebuild()
 TreesCreateBody.model_rebuild()
-TreesCreateResponseRoot.model_rebuild()
 
 
 class TicksListTickEvent(_Json):

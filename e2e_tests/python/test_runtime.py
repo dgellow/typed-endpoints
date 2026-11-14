@@ -75,11 +75,15 @@ class Respond(unittest.TestCase):
         rejected: list[Any] = [
             {"id": "1", "likes": 0, "title": "", "tags": []},
             {"id": "1", "likes": "0", "title": "t", "tags": []},
-            {"id": "1", "likes": 0, "title": "t", "tags": [], "secret": "x"},
             None,
         ]
         for wrong in rejected:
             self.assertEqual(respond(wrong), (500, {"error": "Internal Server Error"}))
+
+    def test_a_member_the_response_does_not_name_is_not_sent(self) -> None:
+        # Dropped, as the TypeScript handlers drop it: not a 500.
+        note: dict[str, object] = {"id": "1", "likes": 0, "title": "t", "tags": []}
+        self.assertEqual(respond({**note, "secret": "x"}), (200, note))
 
     def test_a_model_instance_is_checked_again(self) -> None:
         # Pydantic trusts an instance. One built unchecked, or changed

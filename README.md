@@ -1014,7 +1014,7 @@ rules are off, and six more for the tests, each with its reason in
 `e2e_tests/python/pyproject.toml`):
 
 ```python
-class Note(_ClosedJson):
+class Note(_Json):
     """A note as the server shows it."""
 
     title: str = Field(min_length=1, max_length=40)
@@ -1025,8 +1025,8 @@ class Note(_ClosedJson):
 ```
 
 - What a member has to satisfy is in its `Field(...)`
-- What the models have in common (strict, closed, how names are written on the
-  wire) is in four base classes, defined once
+- What the models have in common (strict, how names are written on the wire) is
+  in two base classes, defined once
 - An attribute is in snake case. A name that is something else on the wire has
   an alias; when most names are camel case, the models share Pydantic's
   `to_camel` and only the exceptions say theirs
@@ -1089,17 +1089,17 @@ module does.
 
 What is kept the same on both sides:
 
-|                                                     | TypeScript handlers                                    | Generated FastAPI module                                                                                                                                                            |
-| --------------------------------------------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A body's types                                      | not coerced (`"5"` is not a number)                    | checked as JSON against the contract; `2.0` is the integer `2`, as in JavaScript                                                                                                    |
-| What is a JSON body                                 | what parses, also as `text/plain`; else a 400 or a 415 | the same, and `NaN`, `Infinity` and `1e999` do not parse                                                                                                                            |
-| Query and path parameters                           | coerced from text where the schema says so             | read as JavaScript reads text (`0x10` is 16, blank is 0, `Infinity` is refused by that name); a key given twice is a list, and a list that has to be there is empty without its key |
-| Lengths, bounds, patterns, literals, closed objects | Zod                                                    | the contract's schema, checked by the module; the Pydantic fields state the same constraints                                                                                        |
-| A member that may be left out                       | `undefined`, absent from the response                  | `None`, which is not written. Where the member may also be null, `None` is `null` when it was set and absent when it was not                                                        |
-| What a handler returns or yields                    | parsed by the schema before it is sent                 | validated again as plain data, also when it is a model instance: Pydantic trusts an instance, and one built with `model_construct()` or changed afterwards may not fit its model    |
-| A request that fails validation                     | 400 `{ error, in, issues: [{ path, message, code }] }` | the same answer, word for word: the 27 recorded refusals                                                                                                                            |
-| A field name that is not a Python attribute name    | as written (`from`, `data-id`, `createdAt`)            | a snake-case attribute (`from_`, `data_id`, `created_at`) with the wire name as alias; a request is read by wire names only                                                         |
-| The same object in two operations                   | one type                                               | one class, with a name per operation                                                                                                                                                |
+|                                                                    | TypeScript handlers                                    | Generated FastAPI module                                                                                                                                                                                                     |
+| ------------------------------------------------------------------ | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A body's types                                                     | not coerced (`"5"` is not a number)                    | checked as JSON against the contract; `2.0` is the integer `2`, as in JavaScript                                                                                                                                             |
+| What is a JSON body                                                | what parses, also as `text/plain`; else a 400 or a 415 | the same, and `NaN`, `Infinity` and `1e999` do not parse                                                                                                                                                                     |
+| Query and path parameters                                          | coerced from text where the schema says so             | read as JavaScript reads text (`0x10` is 16, blank is 0, `Infinity` is refused by that name); a key given twice is a list, and a list that has to be there is empty without its key                                          |
+| Lengths, bounds, patterns, literals, closed objects                | Zod                                                    | the contract's schema, checked by the module; the Pydantic fields state the same constraints                                                                                                                                 |
+| A member that may be left out                                      | `undefined`, absent from the response                  | `None`, which is not written. Where the member may also be null, `None` is `null` when it was set and absent when it was not                                                                                                 |
+| What a handler returns or yields                                   | parsed by the schema before it is sent                 | validated again as plain data, also when it is a model instance: Pydantic trusts an instance, and one built with `model_construct()` or changed afterwards may not fit its model                                             |
+| A request that fails validation                                    | 400 `{ error, in, issues: [{ path, message, code }] }` | the same answer, word for word: the 27 recorded refusals                                                                                                                                                                     |
+| A field name that is not a Python attribute name                   | as written (`from`, `data-id`, `createdAt`)            | a snake-case attribute (`from_`, `data_id`, `created_at`) with the wire name as alias; a request is read by wire names only                                                                                                  |
+| The same object in two operations, or on the two sides of a schema | one type                                               | one class, with a name per place. A handler passes a part of the request on as a part of the response (`root=body`). With a default the sides are two classes: a request may leave the member out, a response has to have it |
 
 The description FastAPI serves of the application (`/openapi.json`, `/docs`)
 says what the application answers: for each operation the response model, the
@@ -1136,8 +1136,9 @@ What differs, and what does not cross:
   written as that version writes them) and Pydantic 2.12. Measured: Pydantic
   2.11 accepts `exclude_if` and ignores it, so `None` is written as null, and
   2.10 cannot read a request by wire names only
-- A response is still validated by its Pydantic model, not against the contract,
-  and a model is written per side of a schema
+- A response is validated by its Pydantic model, not against the contract. A
+  member a handler adds that the response does not name is dropped, as the
+  TypeScript handlers drop it
 - Not generated yet: request-dependent responses (`projection()`,
   `selection()`), protocols, and event streams in the Python client (listed in
   its module's docstring)
@@ -1169,15 +1170,16 @@ for item in client.notes_list_items(api.NotesListQuery(tag=["urgent"])):
 | `notes.list.pages()`, `notes.list.items()` | `notes_list_pages()`, `notes_list_items()`: iterators (async iterators on `AsyncClient`) that find the next page by the endpoint's pagination style |
 
 Methods are named after the operation id; there is no resource hierarchy. A body
-field that was not set is not sent, and responses are parsed by strict models. A
-response that is not what the operation declares is an `ApiError` too: a
-declared status with another body (a proxy's 404), and a success that does not
-parse (`ResponseError`). A path parameter that is empty, `.` or `..` is refused
-before a request is sent (`PathError`). A client is a context manager, and
-closes the `httpx` client only if it made it. The URL of a next page is resolved
-against the page that names it, and followed only on the same origin. The
-client's tests run against the fixture's TypeScript handlers and against the
-generated FastAPI application.
+field that was not set is not sent, and responses are parsed by strict models,
+which take a member the client does not know and ignore it. A response that is
+not what the operation declares is an `ApiError` too: a declared status with
+another body (a proxy's 404), and a success that does not parse
+(`ResponseError`). A path parameter that is empty, `.` or `..` is refused before
+a request is sent (`PathError`). A client is a context manager, and closes the
+`httpx` client only if it made it. The URL of a next page is resolved against
+the page that names it, and followed only on the same origin. The client's tests
+run against the fixture's TypeScript handlers and against the generated FastAPI
+application.
 
 The module is built from a contract, which is also available on its own:
 `generateContract()` (`--format contract`) describes every operation with its
