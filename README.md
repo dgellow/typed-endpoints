@@ -1120,7 +1120,10 @@ typed-endpoints -r routes/api -o server/src/api_generated.rs --format axum
 The module needs `axum` 0.8, `serde` (with `derive`), `serde_json`, `tracing`
 and `fancy-regex` (patterns with lookarounds). It is written as Rust is written:
 it passes `cargo fmt --check` under the 2021 and 2024 style editions and
-`cargo clippy -- -D warnings -W clippy::pedantic`. It holds, in this order:
+`cargo clippy -- -D warnings -W clippy::pedantic`, with the toolchain
+`e2e_tests/rust/rust-toolchain.toml` names (Rust 1.100.0; the module was also
+checked with 1.97.0). Clippy's pedantic group grows with every release, so the
+claim is about those versions. It holds, in this order:
 
 - a serde type for every request part, response and declared error body
 - `InternalError`, and an error type per operation that declares errors: one
@@ -1214,15 +1217,18 @@ What does not cross, or not yet:
 - Not generated yet: event streams (listed in a comment in the module), a
   client, request-dependent responses, protocols
 
-How it is checked (`./scripts/test-rust`): the generated module and a
-hand-written implementation of `Handlers` are formatted as rustfmt formats and
-have nothing for clippy to report, its pedantic lints included; the server runs;
-and the conformance tests of the Python section, minus the event streams, hold
-for it with no declared difference. Among them: three bodies nested 40 levels
-deep are checked in milliseconds, a handler that fails outside the contract is a
-500 that does not say why, and `2.0` is accepted where the contract says `2`.
-One behaviour has no permanent test, because the fixture cannot hold it: a
-pattern that does not compile stops the server when the router is built.
+How it is checked (`./scripts/test-rust`, with the pinned toolchain): the
+generated module and a hand-written implementation of `Handlers` are formatted
+as rustfmt formats, and clippy has nothing to report on the generated module,
+its pedantic lints included. The hand-written handlers carry one stated
+exception: they keep their notes in memory and so await nothing, which a
+pedantic lint points out; the server runs; and the conformance tests of the
+Python section, minus the event streams, hold for it with no declared
+difference. Among them: three bodies nested 40 levels deep are checked in
+milliseconds, a handler that fails outside the contract is a 500 that does not
+say why, and `2.0` is accepted where the contract says `2`. One behaviour has no
+permanent test, because the fixture cannot hold it: a pattern that does not
+compile stops the server when the router is built.
 
 ## API
 

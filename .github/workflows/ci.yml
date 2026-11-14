@@ -81,10 +81,11 @@ jobs:
           deno-version: v2.9.x
           cache: true
 
+      # The version is the one e2e_tests/rust/rust-toolchain.toml names.
       - name: Rust toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component clippy
-          rustup default stable
+          channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' e2e_tests/rust/rust-toolchain.toml)"
+          rustup toolchain install "$channel" --profile minimal --component clippy --component rustfmt
 
       - uses: actions/cache@v4
         with:

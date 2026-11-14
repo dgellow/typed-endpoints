@@ -32,12 +32,13 @@ permissions):
   pyright in strict mode over the generated module and the hand-written
   handlers, then the conformance tests against the generated FastAPI
   application. Python is always run through `uv`
-- `./scripts/test-rust` — run `e2e_tests/rust` (needs `cargo`):
-  `cargo fmt
-  --check` (the generated module under the 2021 and 2024 style
+- `./scripts/test-rust` — run `e2e_tests/rust` (needs `cargo` and `rustup`):
+  `cargo fmt --check` (the generated module under the 2021 and 2024 style
   editions) and `cargo clippy -- -D warnings -W clippy::pedantic` over the
   generated module and the hand-written handlers, then the conformance tests
-  against the generated axum server
+  against the generated axum server. The toolchain is the one
+  `e2e_tests/rust/rust-toolchain.toml` pins: pedantic lints are added with every
+  Rust release, so a newer clippy is a change of its own
 
 ## Project Structure
 
