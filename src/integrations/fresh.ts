@@ -13,7 +13,6 @@
 import type { Context } from "@fresh/core";
 import type { z } from "zod";
 import type {
-  ApiDef,
   ApiMethodDef,
   HttpMethod,
   SseEvent,
@@ -37,7 +36,9 @@ export interface FreshApiMethodDef<
   TBodySchema extends z.ZodType | undefined = undefined,
   TQuerySchema extends z.ZodType | undefined = undefined,
   TParamsSchema extends z.ZodType | undefined = undefined,
-> extends ApiMethodDef<TBodySchema, TQuerySchema, TParamsSchema> {
+  TResponseSchema extends z.ZodType | undefined = z.ZodType | undefined,
+> extends
+  ApiMethodDef<TBodySchema, TQuerySchema, TParamsSchema, TResponseSchema> {
   handler: (
     ctx: Context<TState>,
     validated: ValidatedRequest<
@@ -63,9 +64,22 @@ export function endpoint<
   TBodySchema extends z.ZodType | undefined = undefined,
   TQuerySchema extends z.ZodType | undefined = undefined,
   TParamsSchema extends z.ZodType | undefined = undefined,
+  TResponseSchema extends z.ZodType | undefined = undefined,
 >(
-  def: FreshApiMethodDef<TState, TBodySchema, TQuerySchema, TParamsSchema>,
-): FreshApiMethodDef<TState, TBodySchema, TQuerySchema, TParamsSchema> {
+  def: FreshApiMethodDef<
+    TState,
+    TBodySchema,
+    TQuerySchema,
+    TParamsSchema,
+    TResponseSchema
+  >,
+): FreshApiMethodDef<
+  TState,
+  TBodySchema,
+  TQuerySchema,
+  TParamsSchema,
+  TResponseSchema
+> {
   return def;
 }
 
@@ -178,6 +192,20 @@ function isSseEndpoint(def: unknown): boolean {
 }
 
 /**
+ * The method definitions of a route without their handlers, with the schema
+ * types as written. Tooling reads the schemas from here at runtime; protocol
+ * composition (`fromEndpoint()`) reads their types.
+ */
+export type ApiDefOf<TDef> = {
+  readonly [M in keyof TDef]: Omit<TDef[M], "handler">;
+};
+
+/** What `createApiHandlers()` returns: one handler per defined method. */
+export type ApiHandlers<TState, TDef> =
+  & { [M in keyof TDef]: (ctx: Context<TState>) => Promise<Response> }
+  & { __apiDef: ApiDefOf<TDef> };
+
+/**
  * Create Fresh route handlers with automatic validation.
  * Returns handlers compatible with Fresh's file-based routing.
  *
@@ -193,9 +221,7 @@ function isSseEndpoint(def: unknown): boolean {
  */
 export function createApiHandlers<TState, TDef extends Record<string, unknown>>(
   apiDef: TDef,
-): Record<string, (ctx: Context<TState>) => Promise<Response>> & {
-  __apiDef: ApiDef;
-} {
+): ApiHandlers<TState, TDef> {
   const handlers: Record<
     string,
     (ctx: Context<TState>) => Promise<Response>
@@ -274,5 +300,7 @@ export function createApiHandlers<TState, TDef extends Record<string, unknown>>(
     apiDefWithoutHandlers[method as HttpMethod] = rest;
   }
 
-  return Object.assign(handlers, { __apiDef: apiDefWithoutHandlers });
+  return Object.assign(handlers, {
+    __apiDef: apiDefWithoutHandlers,
+  }) as ApiHandlers<TState, TDef>;
 }

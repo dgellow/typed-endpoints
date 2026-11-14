@@ -153,13 +153,13 @@ type KeysOfUnion<T> = T extends unknown ? keyof T : never;
  * error. When the request type is not known statically the mapping is
  * accepted as written; `validateProtocol` still checks it.
  */
-type MappingForRequest<TMapping, TRequest extends z.ZodType> = unknown extends
-  z.input<TRequest> ? TMapping
-  : {
-    readonly [K in keyof TMapping]: K extends KeysOfUnion<z.input<TRequest>>
-      ? TMapping[K]
-      : never;
-  };
+export type MappingForRequest<TMapping, TRequest extends z.ZodType> =
+  unknown extends z.input<TRequest> ? TMapping
+    : {
+      readonly [K in keyof TMapping]: K extends KeysOfUnion<z.input<TRequest>>
+        ? TMapping[K]
+        : never;
+    };
 
 /**
  * Configuration for a mapped step.

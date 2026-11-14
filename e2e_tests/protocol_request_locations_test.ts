@@ -88,7 +88,11 @@ const usersProtocol = protocol({
 
 /** Serve the two handlers; path parameters are matched like Fresh does. */
 function startServer(): { baseUrl: string; close: () => Promise<void> } {
-  const table: [RegExp, typeof postsHandler][] = [
+  type Handler = (ctx: unknown) => Promise<Response>;
+  // A handlers object also carries `__apiDef`, so it is not a plain record
+  // of functions.
+  type Handlers = Record<string, unknown>;
+  const table: [RegExp, Handlers][] = [
     [/^\/api\/users\/(?<userId>[^/]+)\/posts$/, postsHandler],
     [/^\/api\/users\/(?<userId>[^/]+)$/, userHandler],
   ];
@@ -97,14 +101,13 @@ function startServer(): { baseUrl: string; close: () => Promise<void> } {
     const { pathname } = new URL(req.url);
     for (const [pattern, handlers] of table) {
       const match = pattern.exec(pathname);
-      const handler = handlers[req.method];
+      const handler = handlers[req.method] as Handler | undefined;
       if (match && handler) {
         const params = Object.fromEntries(
           Object.entries(match.groups ?? {})
             .map(([key, value]) => [key, decodeURIComponent(value)]),
         );
-        // deno-lint-ignore no-explicit-any
-        return await handler({ req, params } as any);
+        return await handler({ req, params });
       }
     }
     return new Response("Not Found", { status: 404 });

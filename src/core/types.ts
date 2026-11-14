@@ -35,11 +35,12 @@ export interface ApiMethodDef<
   TBodySchema extends z.ZodType | undefined = undefined,
   TQuerySchema extends z.ZodType | undefined = undefined,
   TParamsSchema extends z.ZodType | undefined = undefined,
+  TResponseSchema extends z.ZodType | undefined = z.ZodType | undefined,
 > {
   body?: TBodySchema;
   query?: TQuerySchema;
   params?: TParamsSchema;
-  response?: z.ZodType;
+  response?: TResponseSchema;
   responseName?: string;
   bodyName?: string;
   responses?: Record<number, z.ZodType | { schema: z.ZodType; name?: string }>;

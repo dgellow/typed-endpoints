@@ -882,9 +882,9 @@ Benefits:
 - **Single source of truth**: Schemas defined once in endpoint, composed into
   protocol
 - **No duplication**: Change endpoint schema, protocol automatically updates
-- **Runtime validation from the endpoint**: requests and responses are checked
-  against the endpoint's schemas. The static request and response types of a
-  composed step are not inferred yet (they are `unknown`)
+- **Type-safe**: the step's request type is the endpoint's `body`, `query` and
+  `params` merged into one object, and its response type is the endpoint's
+  `response`; naming a method the handler does not define is a compile error
 - **Backward compatible**: `step()` and `dependentStep()` still work for manual
   definitions
 
