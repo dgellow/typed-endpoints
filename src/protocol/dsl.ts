@@ -29,7 +29,7 @@ import type {
 } from "./types.ts";
 import type { FieldMapping } from "./mapping.ts";
 import { isFieldMapping } from "./mapping.ts";
-import { lookupPath } from "./introspect.ts";
+import { lookupPath, primitiveKind, schemasAtPath } from "./introspect.ts";
 
 // =============================================================================
 // Step Builders
@@ -723,6 +723,108 @@ export type PrevAccepted<TSteps> = {
 };
 
 /**
+ * Steps whose `dependsOn` names a step of the protocol.
+ *
+ * A dependency that is not a step is a compile error on that step: it
+ * could never run.
+ */
+export type DependenciesKnown<TSteps> = {
+  readonly [K in keyof TSteps]: TSteps[K] extends
+    { readonly dependsOn: infer D extends string }
+    ? string extends D ? TSteps[K]
+    : D extends keyof TSteps ? TSteps[K]
+    : TSteps[K] & { readonly dependsOn: keyof TSteps }
+    : TSteps[K];
+};
+
+/**
+ * Only steps. A composition node (`sequence()`, `repeat()`, ...) in the
+ * step map is a compile error: a protocol is a set of steps a session
+ * runs by their dependencies, and a composition is run by `runPlan()`.
+ */
+export type StepsOnly<TSteps> = {
+  readonly [K in keyof TSteps]: TSteps[K] extends
+    { readonly __kind: "step" | "dependent_step" | "mapped_step" } ? TSteps[K]
+    : TSteps[K] & {
+      readonly "a protocol holds steps; a composition is run with runPlan()":
+        never;
+    };
+};
+
+/**
+ * The type at a dot-notation path of `T`, across the members of a union;
+ * `never` when no member has a value there.
+ */
+export type PathValue<T, P extends string> = T extends unknown
+  ? P extends `${infer H}.${infer R}` ? H extends keyof T ? PathValue<T[H], R>
+    : T extends readonly (infer E)[]
+      ? H extends `${number}` ? PathValue<E, R> : never
+    : never
+  : P extends keyof T ? T[P]
+  : T extends readonly (infer E)[] ? P extends `${number}` ? E : never
+  : never
+  : never;
+
+/** Why a field mapping does not fit the protocol it is in. */
+export interface MappingError<TMessage extends string> {
+  /** The reason. */
+  readonly "~mappingError": TMessage;
+}
+
+/**
+ * What is wrong with the field mappings `M` of a mapped step whose request
+ * input is `TRequest`, in a protocol with steps `TSteps`: a union of
+ * messages, `never` when nothing is.
+ *
+ * Checked per mapping: the source step is in the protocol, the path exists
+ * in some response of that step, and the value there is assignable to the
+ * request field. Nothing is said where the types do not say (a response
+ * typed `unknown`, a path typed `string`).
+ */
+export type MappingProblems<TSteps, M, TRequest> = {
+  [F in keyof M & string]: M[F] extends {
+    readonly __kind: "field_mapping";
+    readonly step: infer S extends string;
+    readonly path: infer P extends string;
+  } ? string extends S ? never
+    : string extends P ? never
+    : S extends keyof TSteps
+      ? TSteps[S] extends { readonly response: infer R extends z.ZodType }
+        ? unknown extends z.output<R> ? never
+        : [PathValue<z.output<R>, P>] extends [never]
+          ? `"${S}.${P}" is not in the response of "${S}"`
+        : unknown extends PathValue<z.output<R>, P> ? never
+        : F extends keyof TRequest
+          ? [NonNullable<PathValue<z.output<R>, P>>] extends [TRequest[F]]
+            ? never
+          : `"${S}.${P}" is not assignable to the field "${F}"`
+        : never
+      : never
+    : `"${F}" is mapped from step "${S}", which is not in the protocol`
+    : never;
+}[keyof M & string];
+
+/**
+ * Mapped steps whose field mappings fit the protocol: each source step
+ * exists, each path is in its response, and each value is assignable to
+ * the field it is forwarded to. A mapping that does not fit is a compile
+ * error on its step, with the reason in the required property.
+ */
+export type MappingsResolve<TSteps> = {
+  readonly [K in keyof TSteps]: TSteps[K] extends {
+    readonly __kind: "mapped_step";
+    readonly requestMapping: infer M;
+    readonly requestSchema: infer Q extends z.ZodType;
+  } ? [MappingProblems<TSteps, M, z.input<Q>>] extends [never] ? TSteps[K]
+    : TSteps[K] & {
+      readonly requestMapping: MappingError<
+        MappingProblems<TSteps, M, z.input<Q>>
+      >;
+    }
+    : TSteps[K];
+};
+
+/**
  * Configuration for a protocol.
  */
 export interface ProtocolConfig<
@@ -772,8 +874,11 @@ export function protocol<
 >(
   config: ProtocolConfig<TName, TSteps> & {
     readonly steps: NoInfer<
+      & StepsOnly<TSteps>
       & NamedByKey<TSteps>
+      & DependenciesKnown<TSteps>
       & PrevAccepted<TSteps>
+      & MappingsResolve<TSteps>
       & RevokesKnown<TSteps>
       & RenewsKnown<TSteps>
     >;
@@ -928,7 +1033,14 @@ export function validateProtocol<T extends ProtocolLike>(proto: T): {
   }
 
   for (const [name, step] of Object.entries(proto.steps)) {
-    if (!isStepKind(step)) continue;
+    if (!isStepKind(step)) {
+      errors.push(
+        `"${name}" is a ${
+          (step as { __kind: string }).__kind
+        } node; a protocol holds steps, and a composition is run with runPlan()`,
+      );
+      continue;
+    }
 
     // Steps are identified by their key
     if (step.name !== name) {
@@ -979,6 +1091,27 @@ export function validateProtocol<T extends ProtocolLike>(proto: T): {
         errors.push(
           `Step "${name}" maps field "${field}" from "${mapping.step}.${mapping.path}", which is not in the response schema of "${mapping.step}"`,
         );
+      }
+
+      // A forwarded value has to be of the kind the field takes. Only
+      // primitive kinds are compared: where a schema does not say, the
+      // mapping is accepted.
+      const [target] = schemasAtPath(step.requestSchema, [field], "input");
+      const wanted = target === undefined
+        ? undefined
+        : primitiveKind(target, "input");
+      if (source && isStepKind(source) && wanted !== undefined) {
+        const given = new Set(
+          schemasAtPath(source.response, mapping.path.split("."), "output")
+            .map((schema) => primitiveKind(schema, "output")),
+        );
+        for (const kind of given) {
+          if (kind !== undefined && kind !== wanted) {
+            errors.push(
+              `Step "${name}" maps field "${field}" (${wanted}) from "${mapping.step}.${mapping.path}" (${kind})`,
+            );
+          }
+        }
       }
     }
   }

@@ -7,7 +7,16 @@ import { assertEquals, assertThrows } from "@std/assert";
 import { z } from "zod";
 
 import { createMockExecutor, createSession } from "./client.ts";
-import { mappedStep, protocol, step, validateProtocol } from "./dsl.ts";
+import {
+  mappedStep,
+  type MappingProblems,
+  type PathValue,
+  protocol,
+  repeat,
+  sequence,
+  step,
+  validateProtocol,
+} from "./dsl.ts";
 import { lookupPath } from "./introspect.ts";
 import { deriveSchemaWithLiterals, fromStep } from "./mapping.ts";
 
@@ -103,6 +112,7 @@ Deno.test("validateProtocol rejects a mapping path that the source response lack
     initial: "login",
     steps: {
       login,
+      // @ts-expect-error "login.session.tokn" is not in the response
       profile: mappedStep({
         name: "profile",
         dependsOn: "login",
@@ -145,6 +155,7 @@ Deno.test("createSession refuses a protocol that fails validation", () => {
     initial: "login",
     steps: {
       login,
+      // @ts-expect-error "login.nope" is not in the response
       profile: mappedStep({
         name: "profile",
         dependsOn: "login",
@@ -194,6 +205,211 @@ Deno.test("protocol rejects a step name that differs from its key at compile tim
 // =============================================================================
 // lookupPath
 // =============================================================================
+
+Deno.test("protocol rejects a dependency that is not one of its steps", () => {
+  const never = false as boolean;
+  if (never) {
+    protocol({
+      name: "Dangling",
+      initial: "login",
+      steps: {
+        login,
+        // @ts-expect-error "logn" is not a step of the protocol
+        profile: mappedStep({
+          name: "profile",
+          dependsOn: "logn",
+          requestMapping: {},
+          requestSchema: z.object({}),
+          response: z.object({}),
+        }),
+      },
+    });
+  }
+});
+
+Deno.test("protocol rejects a composition node among its steps", () => {
+  const ping = step({
+    name: "ping",
+    request: z.object({}),
+    response: z.object({}),
+  });
+  const never = false as boolean;
+  if (never) {
+    protocol({
+      name: "Mixed",
+      initial: "ping",
+      steps: {
+        ping,
+        // @ts-expect-error a protocol holds steps; run a composition with runPlan()
+        twice: sequence(ping, ping),
+      },
+    });
+  }
+
+  assertEquals(
+    errorsOf({
+      __kind: "protocol",
+      name: "Mixed",
+      initial: "ping",
+      steps: { ping, twice: sequence(ping, ping), many: repeat(ping) },
+    }),
+    [
+      '"twice" is a sequence node; a protocol holds steps, and a composition is run with runPlan()',
+      '"many" is a repeat node; a protocol holds steps, and a composition is run with runPlan()',
+    ],
+  );
+});
+
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends
+  (<T>() => T extends B ? 1 : 2) ? true : false;
+function assertType<_T extends true>(): void {}
+
+Deno.test("PathValue is the type at a path, across the members of a union", () => {
+  type Response = z.output<typeof login.response>;
+  assertType<Equal<PathValue<Response, "session.token">, string>>();
+  assertType<Equal<PathValue<Response, "roles.0.name">, string>>();
+  assertType<Equal<PathValue<Response, "type">, "ok" | "error">>();
+  assertType<Equal<PathValue<Response, "message">, string>>();
+  assertType<Equal<PathValue<Response, "session.tokn">, never>>();
+  assertType<Equal<PathValue<Response, "roles.name">, never>>();
+  assertType<Equal<PathValue<{ a?: { b: number } }, "a.b">, number>>();
+  assertType<
+    Equal<PathValue<{ by: Record<string, { n: 1 }> }, "by.any.n">, 1>
+  >();
+});
+
+Deno.test("protocol checks a mapped value against the field it is forwarded to", () => {
+  type Steps = { login: typeof login };
+  type Problems<M, TRequest> = MappingProblems<Steps, M, TRequest>;
+  type From<S extends string, P extends string> = {
+    readonly __kind: "field_mapping";
+    readonly step: S;
+    readonly path: P;
+  };
+
+  // A string forwarded to a string: nothing wrong.
+  assertType<
+    Equal<
+      Problems<{ token: From<"login", "session.token"> }, { token: string }>,
+      never
+    >
+  >();
+  // A string forwarded to a number.
+  assertType<
+    Equal<
+      Problems<{ count: From<"login", "session.token"> }, { count: number }>,
+      '"login.session.token" is not assignable to the field "count"'
+    >
+  >();
+  // A literal union forwarded to a narrower one.
+  assertType<
+    Equal<
+      Problems<{ kind: From<"login", "type"> }, { kind: "ok" }>,
+      '"login.type" is not assignable to the field "kind"'
+    >
+  >();
+  // Several mappings: every problem is reported.
+  assertType<
+    Equal<
+      Problems<
+        { a: From<"login", "nope">; b: From<"logout", "x"> },
+        { a: string; b: string }
+      >,
+      | '"login.nope" is not in the response of "login"'
+      | '"b" is mapped from step "logout", which is not in the protocol'
+    >
+  >();
+  // Where the types do not say, nothing is said.
+  assertType<
+    Equal<Problems<{ a: From<string, string> }, { a: string }>, never>
+  >();
+
+  const never = false as boolean;
+  if (never) {
+    protocol({
+      name: "Mismatch",
+      initial: "login",
+      steps: {
+        login,
+        // @ts-expect-error "login.session.token" is not assignable to "count"
+        count: mappedStep({
+          name: "count",
+          dependsOn: "login",
+          requestMapping: { count: fromStep("login", "session.token") },
+          requestSchema: z.object({ count: z.number() }),
+          response: z.object({}),
+        }),
+      },
+    });
+  }
+
+  // The same mismatch, at run time, for a protocol that got past the types.
+  assertEquals(
+    errorsOf({
+      __kind: "protocol",
+      name: "Mismatch",
+      initial: "login",
+      steps: {
+        login,
+        count: mappedStep({
+          name: "count",
+          dependsOn: "login",
+          requestMapping: {
+            count: fromStep("login", "session.token"),
+            flag: fromStep("login", "type"),
+            name: fromStep("login", "roles.0.name"),
+          },
+          requestSchema: z.object({
+            count: z.number().int(),
+            flag: z.boolean().optional(),
+            // A string from a string, through an enum on the way in.
+            name: z.enum(["admin", "user"]),
+          }),
+          response: z.object({}),
+        }),
+      },
+    }),
+    [
+      'Step "count" maps field "count" (number) from "login.session.token" (string)',
+      'Step "count" maps field "flag" (boolean) from "login.type" (string)',
+    ],
+  );
+});
+
+Deno.test("a response typed unknown, a record and an optional source are accepted", () => {
+  const open = step({
+    name: "open",
+    request: z.object({}),
+    response: z.object({
+      anything: z.unknown(),
+      byName: z.record(z.string(), z.object({ id: z.string() })),
+      maybe: z.string().optional(),
+    }),
+  });
+  const proto = protocol({
+    name: "Loose",
+    initial: "open",
+    steps: {
+      open,
+      use: mappedStep({
+        name: "use",
+        dependsOn: "open",
+        requestMapping: {
+          a: fromStep("open", "anything"),
+          b: fromStep("open", "byName.first.id"),
+          c: fromStep("open", "maybe"),
+        },
+        requestSchema: z.object({
+          a: z.string(),
+          b: z.string(),
+          c: z.string(),
+        }),
+        response: z.object({}),
+      }),
+    },
+  });
+  assertEquals(validateProtocol(proto), { valid: true, errors: [] });
+});
 
 Deno.test("lookupPath distinguishes found, missing and unknown", () => {
   const schema = z.object({

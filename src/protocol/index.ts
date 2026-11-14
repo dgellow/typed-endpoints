@@ -108,12 +108,17 @@ export {
 // DSL config types
 export type {
   AcceptedBy,
+  DependenciesKnown,
   DependentStepAfterConfig,
   DependentStepConfig,
   KeysOfUnion,
   MappedStepConfig,
+  MappingError,
   MappingForRequest,
+  MappingProblems,
+  MappingsResolve,
   NamedByKey,
+  PathValue,
   PrevAccepted,
   ProtocolConfig,
   ProtocolLike,
@@ -122,6 +127,7 @@ export type {
   StepConfig,
   StepRef,
   StepRefResponse,
+  StepsOnly,
 } from "./dsl.ts";
 
 // Field mapping

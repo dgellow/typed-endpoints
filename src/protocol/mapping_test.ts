@@ -222,6 +222,7 @@ Deno.test("validateProtocol validates mapped step dependencies exist", () => {
         request: z.object({}),
         response: z.object({ id: z.string() }),
       }),
+      // @ts-expect-error "also_missing" is not a step of the protocol
       bad: mappedStep({
         name: "bad",
         dependsOn: "missing",
