@@ -22,27 +22,27 @@ interface MethodDefWithPagination extends
     z.ZodType | undefined,
     z.ZodType | undefined
   > {
-  __pagination?: AnyPaginationMeta;
+  readonly __pagination?: AnyPaginationMeta;
 }
 
 extendZodWithOpenApi(z);
 
 export interface OpenApiInfo {
-  title?: string;
-  version?: string;
-  description?: string;
+  readonly title?: string;
+  readonly version?: string;
+  readonly description?: string;
 }
 
 export interface OpenApiServer {
-  url: string;
-  description?: string;
-  [key: `x-${string}`]: unknown;
+  readonly url: string;
+  readonly description?: string;
+  readonly [key: `x-${string}`]: unknown;
 }
 
 export interface GeneratorOptions {
-  routesDir?: string;
-  info?: OpenApiInfo;
-  servers?: OpenApiServer[];
+  readonly routesDir?: string;
+  readonly info?: OpenApiInfo;
+  readonly servers?: OpenApiServer[];
   /**
    * Fail when a route cannot be described. Default: false.
    *
@@ -51,11 +51,11 @@ export interface GeneratorOptions {
    *   emitted without one.
    * - `true`: both cases throw, with a message that lists every problem.
    */
-  strict?: boolean;
+  readonly strict?: boolean;
 }
 
 export interface RouteModule {
-  handler?: { __apiDef?: ApiDef };
+  readonly handler?: { __apiDef?: ApiDef };
 }
 
 /**

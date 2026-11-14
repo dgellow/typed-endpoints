@@ -12,14 +12,14 @@ function formatZodErrors(error: z.ZodError): string {
 }
 
 export interface ValidationResult<TBody, TQuery, TParams> {
-  success: true;
-  data: ValidatedRequest<TBody, TQuery, TParams>;
+  readonly success: true;
+  readonly data: ValidatedRequest<TBody, TQuery, TParams>;
 }
 
 export interface ValidationError {
-  success: false;
-  error: string;
-  type: "body" | "query" | "params" | "json";
+  readonly success: false;
+  readonly error: string;
+  readonly type: "body" | "query" | "params" | "json";
 }
 
 export type ValidationOutcome<TBody, TQuery, TParams> =
@@ -27,9 +27,9 @@ export type ValidationOutcome<TBody, TQuery, TParams> =
   | ValidationError;
 
 export interface RawRequest {
-  json: () => Promise<unknown>;
-  url: string;
-  params?: Record<string, string>;
+  readonly json: () => Promise<unknown>;
+  readonly url: string;
+  readonly params?: Record<string, string>;
 }
 
 /**

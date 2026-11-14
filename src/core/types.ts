@@ -26,9 +26,9 @@ export interface ValidatedRequest<
   TQuery = unknown,
   TParams = unknown,
 > {
-  body: TBody;
-  query: TQuery;
-  params: TParams;
+  readonly body: TBody;
+  readonly query: TQuery;
+  readonly params: TParams;
 }
 
 export interface ApiMethodDef<
@@ -37,21 +37,24 @@ export interface ApiMethodDef<
   TParamsSchema extends z.ZodType | undefined = undefined,
   TResponseSchema extends z.ZodType | undefined = z.ZodType | undefined,
 > {
-  body?: TBodySchema;
-  query?: TQuerySchema;
-  params?: TParamsSchema;
-  response?: TResponseSchema;
-  responseName?: string;
-  bodyName?: string;
-  responses?: Record<number, z.ZodType | { schema: z.ZodType; name?: string }>;
-  public?: boolean;
-  summary?: string;
-  description?: string;
-  tags?: string[];
+  readonly body?: TBodySchema;
+  readonly query?: TQuerySchema;
+  readonly params?: TParamsSchema;
+  readonly response?: TResponseSchema;
+  readonly responseName?: string;
+  readonly bodyName?: string;
+  readonly responses?: Record<
+    number,
+    z.ZodType | { schema: z.ZodType; name?: string }
+  >;
+  readonly public?: boolean;
+  readonly summary?: string;
+  readonly description?: string;
+  readonly tags?: string[];
   /** Operation ID for protocol step mapping and route generation */
-  operationId?: string;
+  readonly operationId?: string;
   /** Pagination metadata (set by pagination helpers) */
-  __pagination?: AnyPaginationMeta;
+  readonly __pagination?: AnyPaginationMeta;
 }
 
 export type ApiDef = {
@@ -90,15 +93,15 @@ export interface SseMethodDef<
   TParamsSchema extends z.ZodType | undefined = undefined,
   TEvents extends SseEventDef = SseEventDef,
 > {
-  query?: TQuerySchema;
-  params?: TParamsSchema;
-  events: TEvents;
-  public?: boolean;
-  summary?: string;
-  description?: string;
-  tags?: string[];
+  readonly query?: TQuerySchema;
+  readonly params?: TParamsSchema;
+  readonly events: TEvents;
+  readonly public?: boolean;
+  readonly summary?: string;
+  readonly description?: string;
+  readonly tags?: string[];
   /** Operation ID for protocol step mapping and route generation */
-  operationId?: string;
+  readonly operationId?: string;
 }
 
 /** Typed SSE event for handlers - discriminated union of all event types */

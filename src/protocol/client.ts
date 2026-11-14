@@ -117,9 +117,9 @@ export interface StepExecutor {
 }
 
 export interface ExecutionContext {
-  protocol: string;
-  history: string[];
-  responses: Record<string, unknown>;
+  readonly protocol: string;
+  readonly history: string[];
+  readonly responses: Record<string, unknown>;
 }
 
 // =============================================================================
@@ -147,8 +147,8 @@ export interface ExecuteResult<
   TSteps extends Record<string, AnyStep>,
   TNewDone extends keyof TSteps,
 > {
-  response: TResponse;
-  session: ProtocolSession<TSteps, TNewDone>;
+  readonly response: TResponse;
+  readonly session: ProtocolSession<TSteps, TNewDone>;
 }
 
 // =============================================================================

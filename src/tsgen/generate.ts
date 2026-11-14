@@ -20,22 +20,22 @@ import {
 
 export interface TypeGenOptions {
   /** Directories containing route files. Defaults to ["routes/api"] */
-  routesDirs?: string[];
+  readonly routesDirs?: string[];
   /** Output file path. If provided, writes generated types to this file */
-  output?: string;
+  readonly output?: string;
   /**
    * Path to deno.json config file. When provided, route files are imported
    * in a subprocess that uses the config's import map. This is needed when
    * running the CLI as an external package.
    */
-  config?: string;
+  readonly config?: string;
   /**
    * Output format. Defaults to "types" for backwards compatibility.
    * - "types": Flat type exports (UsersGetResponse, etc.)
    * - "client": Resource-based Api interface for use with createClient()
    * - "routes": Runtime route metadata for use with createHttpExecutor()
    */
-  format?: "types" | "client" | "routes";
+  readonly format?: "types" | "client" | "routes";
 }
 
 // =============================================================================
@@ -92,18 +92,18 @@ async function extractWithConfig(
 
 interface EndpointType {
   /** Base of the generated type names, e.g. `UsersByIdGet`. */
-  name: string;
+  readonly name: string;
   /** URL path in file-route notation, e.g. `/api/users/[id]`. */
-  path: string;
-  method: string;
-  filePath: string;
-  request?: string;
-  query?: string;
-  params?: string;
-  response?: string;
-  events?: Readonly<Record<string, string>>;
-  pagination?: AnyPaginationMeta;
-  operationId?: string;
+  readonly path: string;
+  readonly method: string;
+  readonly filePath: string;
+  readonly request?: string;
+  readonly query?: string;
+  readonly params?: string;
+  readonly response?: string;
+  readonly events?: Readonly<Record<string, string>>;
+  readonly pagination?: AnyPaginationMeta;
+  readonly operationId?: string;
 }
 
 function describe(endpoint: EndpointType): string {
@@ -376,12 +376,12 @@ function generateRoutesFormat(endpoints: EndpointType[]): string {
 // =============================================================================
 
 interface ResourceMethod {
-  endpoint: EndpointType;
+  readonly endpoint: EndpointType;
 }
 
 interface ResourceNode {
-  methods: Record<string, ResourceMethod>;
-  children: Record<string, ResourceNode>;
+  readonly methods: Record<string, ResourceMethod>;
+  readonly children: Record<string, ResourceNode>;
 }
 
 /** Style-specific pagination fields, in output order. */

@@ -51,13 +51,13 @@ export type {
 
 export interface ClientConfig {
   /** Base URL for all requests (e.g., "http://localhost:3000") */
-  baseUrl: string;
+  readonly baseUrl: string;
   /** Base path prefix (e.g., "/api"). Defaults to "/api" */
-  basePath?: string;
+  readonly basePath?: string;
   /** Default headers to include in all requests */
-  headers?: Record<string, string>;
+  readonly headers?: Record<string, string>;
   /** Custom fetch implementation */
-  fetch?: typeof fetch;
+  readonly fetch?: typeof fetch;
 }
 
 /**

@@ -15,27 +15,27 @@ import { generateProtocolTypesFromModule } from "../protocol/typegen.ts";
 
 export interface OpenApiPluginOptions extends GeneratorOptions {
   /** Output path for the spec file. Default: static/openapi.json */
-  outputPath?: string;
+  readonly outputPath?: string;
   /**
    * Fail the build when the spec cannot be generated. Default: false, which
    * logs the error and lets the build finish without (or with a stale) spec.
    * Enabling it also enables `strict`.
    */
-  failOnError?: boolean;
+  readonly failOnError?: boolean;
 }
 
 export interface ProtocolTypesPluginOptions {
   /** Path to the protocol module file */
-  protocolModule: string;
+  readonly protocolModule: string;
   /** Output path for the generated types. Default: src/protocol-types.ts */
-  outputPath?: string;
+  readonly outputPath?: string;
   /** Path to deno.json config (for import map resolution) */
-  config?: string;
+  readonly config?: string;
   /**
    * Fail the build when the types cannot be generated. Default: false, which
    * logs the error and lets the build finish without (or with stale) types.
    */
-  failOnError?: boolean;
+  readonly failOnError?: boolean;
 }
 
 /**
