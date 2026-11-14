@@ -607,6 +607,82 @@ for are dropped. What the client's type says is then what the server sent. A
 handler that builds its own `Response` is trusted; `select()` implements a
 projection by hand. The client does not check what it receives.
 
+#### Selections written as one string
+
+Many APIs take the selection as one string, with nesting:
+`GET /posts?select=id,author(name),comments(text,by(name))`. `selection()`
+declares it, and the client parses the string of each call at the type level:
+
+```typescript
+import { selection, selectOf } from "@dgellow/typed-endpoints";
+
+const Author = z.object({ id: z.string(), name: z.string() });
+const Post = z.object({
+  id: z.string(),
+  title: z.string(),
+  author: Author,
+  reviewer: Author.nullable(),
+  comments: z.array(z.object({ text: z.string(), by: Author })),
+});
+
+// routes/api/posts.ts
+export const handler = createApiHandlers({
+  GET: endpoint({
+    query: z.object({ select: selectOf(Post) }),
+    response: z.array(selection(Post, "select")),
+    // Complete objects; the response schema cuts them down.
+    handler: async () => await getPosts(),
+  }),
+});
+```
+
+```typescript
+const posts = await client.posts.list({
+  query: { select: "id,author(name),comments(text,by(name))" },
+});
+// { id: string; author: { name: string };
+//   comments: { text: string; by: { name: string } }[] }[]
+
+posts[0].comments[0].by.name; // string
+posts[0].title; // compile error: not selected
+
+client.posts.list({ query: { select: "id,author(age)" } });
+// TS2322: Type '"id,author(age)"' is not assignable to type
+//   '"id,author(age)" & SelectError<"\"author.age\" is not a field">'.
+```
+
+| Select string                 | Response type                                       |
+| ----------------------------- | --------------------------------------------------- |
+| `"id,author(name)"`           | `{ id: string; author: { name: string } }`          |
+| `"reviewer(name)"`            | `{ reviewer: { name: string } \| null }`            |
+| `"*,author(name)"`            | every property, `author` cut down to `name`         |
+| parameter absent              | the complete object                                 |
+| a `string` that is no literal | every property optional, at every depth             |
+| `"id,nope"`, `"title(x)"`     | compile error: not a field; has no fields to select |
+| `"id,author(name"`, `"id,,"`  | compile error: missing `)`; expected a field name   |
+
+Grammar: `select = item ("," item)*`, `item = name | name "(" select ")"`, `*`
+for every property of a level; spaces around items are ignored. Optional and
+nullable properties stay optional and nullable; a selection inside an array
+applies to each element.
+
+How it works:
+
+- The parser is a recursive descent written in template literal types
+  (`ParseSelect`), the way postgrest-js types its `select()` argument: each
+  production returns what it parsed and the rest of the string. `Selected`
+  applies the tree to the object type
+- The same grammar is parsed at run time by `parseSelect()`. The tests hold the
+  two together: one literal has to be a value of the type the type-level parser
+  gives and equal to what the runtime parser returns, for trees, for error
+  messages, and for the problems found against a schema
+- A family can ask something of the request (`requires`). `Selection` asks for a
+  parameter of type `SelectError<reason>` when the string does not fit, which no
+  string is. That is what turns an unknown field into a compile error at the
+  call, with the reason in it
+- `selectOf(Post)` is the query schema: it refuses, with the same reasons, a
+  string the types would refuse. A client that does not use the types gets a 400
+
 ### Server-Sent Events (SSE)
 
 Define typed SSE endpoints with `sseEndpoint`:

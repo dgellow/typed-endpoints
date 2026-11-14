@@ -42,6 +42,8 @@ src/
 │   ├── zod_internals.ts # The only reader of schema._zod (def, type, checks, unwrap, optionality)
 │   ├── arbitrary.ts # arbitrary(schema): a seeded, valid value of any schema
 │   ├── dependent.ts # projection(), expansion(): response type depends on the request
+│   ├── selection.ts # selection(), selectOf(), parseSelect(): ?select=id,author(name)
+│   ├── selection_types.ts # Type-level select-string parser (ParseSelect, Selected, Selection)
 │   └── dependent_types.ts # Type-level functions (ResponseFamily, Apply, Resolve); no imports
 ├── integrations/   # fresh, bun, hono, next, sveltekit, astro, nitro, fetch; vite (build-time)
 ├── client/         # Typed HTTP client
@@ -139,6 +141,14 @@ type that holds for every request and carries the rule; the client generator
 emits `Dependent<Family, Fallback>` and client methods resolve it against the
 `const`-captured options of each call. A claim about a response type is tested
 against a live server in `e2e_tests/dependent_response_test.ts`.
+
+A family can also constrain the request (`requires`, collected by `Requires`).
+`Selection` parses a select string with template literal types and requires a
+`SelectError<reason>` parameter when it does not fit, which makes an unknown
+field a compile error at the call. The type-level parser and the runtime parser
+(`parseSelect()`) are kept in agreement by tests that check one literal against
+both (`src/core/selection_test.ts`); end to end in
+`e2e_tests/selection_test.ts`.
 
 ## Key Concepts (Protocol Module)
 

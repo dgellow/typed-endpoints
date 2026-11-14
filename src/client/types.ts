@@ -59,7 +59,11 @@ export type ResourceDef = Record<string, any>;
 // deno-lint-ignore no-explicit-any
 export type ApiSchema = Record<string, any>;
 
-import type { ReadonlyDeep, Resolve } from "../core/dependent_types.ts";
+import type {
+  ReadonlyDeep,
+  Requires,
+  Resolve,
+} from "../core/dependent_types.ts";
 
 // =============================================================================
 // Client method signatures
@@ -187,6 +191,10 @@ export type CapturedOptionsArg<M, O, TNames extends string = never> =
  * call is a tuple whose members are known, and a list computed elsewhere
  * is an array whose members are not. Any other endpoint has the fixed
  * response type.
+ *
+ * The options also have to meet what the families require of them
+ * (`Requires`): a select string that names an unknown property is rejected
+ * at the call, with the reason in the error.
  */
 export type Method<
   M extends MethodDef,
@@ -194,7 +202,10 @@ export type Method<
   TNames extends string = never,
 > = M extends { dependent: true }
   ? <const O extends ReadonlyDeep<MethodOptions<M, TNames>>>(
-    ...args: [...TLead, ...CapturedOptionsArg<M, O, TNames>]
+    ...args: [
+      ...TLead,
+      ...CapturedOptionsArg<M, O & Requires<M["response"], O>, TNames>,
+    ]
   ) => Promise<Resolve<M["response"], O>>
   : (...args: [...TLead, ...OptionsArg<M, TNames>]) => Promise<M["response"]>;
 

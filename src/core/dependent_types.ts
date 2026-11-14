@@ -35,6 +35,13 @@ export interface ResponseFamily {
   readonly request: unknown;
   /** The result: the type of the response to that request. */
   readonly response: unknown;
+  /**
+   * A type the request also has to be assignable to. `unknown`, the
+   * default, asks for nothing. A family whose argument has a syntax of its
+   * own (a select string) sets it to reject an argument it cannot read,
+   * where the argument is written.
+   */
+  readonly requires: unknown;
 }
 
 /** The response type family `F` gives for request type `R`. */
@@ -66,6 +73,26 @@ export type Resolve<T, R> = T extends { readonly "~responseFamily"?: infer F }
 export type ResolveIn<T, R> = T extends readonly (infer E)[] ? Resolve<E, R>[]
   : T extends object ? { [K in keyof T]: Resolve<T[K], R> }
   : T;
+
+/**
+ * What the families in `T` require of request type `R`: the intersection
+ * of their `requires`, `unknown` when none asks for anything.
+ */
+export type Requires<T, R> = T extends { readonly "~responseFamily"?: infer F }
+  ? [F] extends [ResponseFamily] ? (F & { readonly request: R })["requires"]
+  : RequiresIn<T, R>
+  : RequiresIn<T, R>;
+
+/** `Requires` for the members of an array or object. */
+export type RequiresIn<T, R> = T extends readonly (infer E)[] ? Requires<E, R>
+  : T extends object ? AllOf<{ [K in keyof T]: [Requires<T[K], R>] }[keyof T]>
+  : unknown;
+
+/** The intersection of the types wrapped in the one-element tuples `U`. */
+export type AllOf<U> = (
+  U extends unknown ? (value: U) => void : never
+) extends (value: infer I) => void ? I extends readonly [infer T] ? T : unknown
+  : unknown;
 
 /** An object type written out, so hovers show properties, not helpers. */
 export type Flatten<T> = { [K in keyof T]: T[K] } & unknown;
@@ -195,7 +222,7 @@ export const DEPENDENT: unique symbol = Symbol.for(
 /** How a schema's type depends on the request. Read by the generators. */
 export interface DependentDescriptor {
   /** The rule. */
-  readonly kind: "projection" | "expansion";
+  readonly kind: "projection" | "expansion" | "selection";
   /** Name of the query parameter the response depends on. */
   readonly param: string;
   /** Schema of the value before the rule is applied. */

@@ -36,6 +36,7 @@ import type {
 import { createSseParser } from "./sse.ts";
 
 export type {
+  AllOf,
   Apply,
   CertainNames,
   Dependent,
@@ -46,10 +47,33 @@ export type {
   Projection,
   QueryList,
   ReadonlyDeep,
+  Requires,
+  RequiresIn,
   Resolve,
   ResolveIn,
   ResponseFamily,
 } from "../core/dependent_types.ts";
+
+export type {
+  ChildrenOf,
+  ParseItem,
+  ParseItems,
+  ParseSelect,
+  PartialDeep,
+  QueryText,
+  SelectableIn,
+  SelectDelimiter,
+  Selected,
+  SelectedBy,
+  SelectError,
+  Selection,
+  SelectIssues,
+  SelectNode,
+  SelectProblem,
+  SelectRequirement,
+  TakeName,
+  TrimSpaces,
+} from "../core/selection_types.ts";
 
 export type {
   AllParams,
