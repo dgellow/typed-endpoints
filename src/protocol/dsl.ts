@@ -22,6 +22,7 @@ import type {
   Parallel,
   Protocol,
   ProtocolNode,
+  Renewal,
   Repeat,
   Sequence,
   Step,
@@ -558,6 +559,123 @@ export function revoking<
 }
 
 /**
+ * Declare that the response of a step takes the place of the latest
+ * response of an earlier step.
+ *
+ * A session keeps the latest response of each step, and a dependent step
+ * reads the response of the one step it depends on. Some values move on:
+ * a refresh returns new tokens, a page returns the next cursor. After a
+ * renewing step, every step that depends on the renewed one reads the new
+ * response: the second refresh has to send the token the first one
+ * returned, and the request for page three is built from page two.
+ *
+ * What the session knew about the renewed step's response (`narrow()`) no
+ * longer holds; it is known by the type of the replacement.
+ *
+ * @example
+ * ```typescript
+ * // Every response of `nextPage` is the latest page.
+ * const nextPage = renewing(
+ *   dependentStep({
+ *     name: "nextPage",
+ *     dependsOn: firstPage,
+ *     when: (page) => page.cursor !== undefined,
+ *     request: (page) => z.object({ cursor: z.literal(page.cursor) }),
+ *     response: PageSchema,
+ *   }),
+ *   firstPage,
+ * );
+ *
+ * // Only a successful refresh renews the tokens, and a response without
+ * // a refresh token keeps the one there was (RFC 6749, section 6).
+ * const refresh = renewing(
+ *   dependentStep({ name: "refresh", dependsOn: exchange, ... }),
+ *   exchange,
+ *   (response, previous) =>
+ *     response.type === "success"
+ *       ? {
+ *         ...response,
+ *         refresh_token: response.refresh_token ?? previous?.refresh_token,
+ *       }
+ *       : undefined,
+ * );
+ * ```
+ *
+ * @param step The step whose response renews.
+ * @param renewed The step whose response is replaced, as the step object.
+ * @param combine Computes the replacement; `undefined` renews nothing.
+ */
+export function renewing<
+  TStep extends { readonly __kind: string; readonly response: z.ZodType },
+  const TRenewed extends StepRef,
+  TNew extends StepRefResponse<TRenewed> | undefined,
+>(
+  step: TStep,
+  renewed: TRenewed,
+  combine: (
+    response: z.output<TStep["response"]>,
+    previous: StepRefResponse<TRenewed> | undefined,
+  ) => TNew,
+): TStep & {
+  readonly renews: Renewal<
+    TRenewed["name"],
+    Exclude<TNew, undefined>,
+    undefined extends TNew ? false : true
+  >;
+};
+/**
+ * Declare that every response of a step is the new response of an earlier
+ * step. The step's response type has to be one the earlier step can have.
+ */
+export function renewing<
+  TStep extends { readonly __kind: string; readonly response: z.ZodType },
+  const TRenewed extends StepRef,
+>(
+  step: TStep,
+  renewed:
+    & TRenewed
+    & ([z.output<TStep["response"]>] extends [StepRefResponse<TRenewed>]
+      ? unknown
+      : {
+        readonly "the response of the renewing step is not one this step can have":
+          never;
+      }),
+): TStep & {
+  readonly renews: Renewal<
+    TRenewed["name"],
+    z.output<TStep["response"]>,
+    true
+  >;
+};
+export function renewing(
+  step: { readonly __kind: string; readonly response: z.ZodType },
+  renewed: StepRef,
+  // deno-lint-ignore no-explicit-any
+  combine?: (response: any, previous: any) => unknown,
+  // deno-lint-ignore no-explicit-any
+): any {
+  const renews: Renewal = {
+    step: renewed.name,
+    response: renewed.response,
+    ...(combine && { combine }),
+  };
+  return { ...step, renews };
+}
+
+/**
+ * Steps whose `renews` names a step of the protocol.
+ *
+ * A renewed name that is not a step is a compile error on that step.
+ */
+export type RenewsKnown<TSteps> = {
+  readonly [K in keyof TSteps]: TSteps[K] extends
+    { readonly renews: { readonly step: infer R } }
+    ? [R] extends [keyof TSteps] ? TSteps[K]
+    : TSteps[K] & { readonly renews: { readonly step: keyof TSteps } }
+    : TSteps[K];
+};
+
+/**
  * Steps whose `revokes` names steps of the protocol.
  *
  * A revoked name that is not a step is a compile error on that step.
@@ -654,7 +772,10 @@ export function protocol<
 >(
   config: ProtocolConfig<TName, TSteps> & {
     readonly steps: NoInfer<
-      NamedByKey<TSteps> & PrevAccepted<TSteps> & RevokesKnown<TSteps>
+      & NamedByKey<TSteps>
+      & PrevAccepted<TSteps>
+      & RevokesKnown<TSteps>
+      & RenewsKnown<TSteps>
     >;
   },
 ): Protocol<TName, TSteps> {
@@ -829,6 +950,12 @@ export function validateProtocol<T extends ProtocolLike>(proto: T): {
       if (!(revoked in proto.steps)) {
         errors.push(`Step "${name}" revokes "${revoked}" which doesn't exist`);
       }
+    }
+
+    // Check the renewed step exists
+    const renews = (step as { renews?: Renewal }).renews;
+    if (renews && !(renews.step in proto.steps)) {
+      errors.push(`Step "${name}" renews "${renews.step}" which doesn't exist`);
     }
 
     if (step.__kind !== "mapped_step") continue;

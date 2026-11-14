@@ -161,6 +161,11 @@ N. TypeScript can't express dependent types, so:
   `After<Node, Known>`) and gives a step that cannot run there the uninhabited
   type `NotReady`. `branch(step, predicate, sides)` names the step it asks about
   and narrows what is known on each side
+- **Renewal**: `renewing(step, renewed, combine?)` makes a step's response the
+  latest response of `renewed` (refresh-token rotation, cursors). One function,
+  `responsesAfter()` in `client.ts`, applies own response, renewal and
+  revocation for sessions, plans and the fuzzer. Types: `SeenAfter`, `DoneAfter`
+  (session), `Renewed` in `AfterStep` (plan)
 - **Fuzzing**: `fuzzProtocol()` walks a protocol with generated requests and
   sends, at every state, the calls forbidden there (`before-dependency`,
   `wrong-variant`, `revoked`, `forged`) to the executor. A forbidden call the

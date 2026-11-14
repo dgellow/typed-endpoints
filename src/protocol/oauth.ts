@@ -11,7 +11,7 @@
  */
 
 import { z } from "zod";
-import { dependentStep, protocol, revoking, step } from "./dsl.ts";
+import { dependentStep, protocol, renewing, revoking, step } from "./dsl.ts";
 
 // =============================================================================
 // Schema Definitions
@@ -152,23 +152,40 @@ type TokenSuccess = Extract<
  * Needs a successful exchange that issued a refresh token. The guard
  * combines two conditions, which TypeScript does not infer a type guard
  * from, so the guard type is written out.
+ *
+ * The step renews `exchange`: a successful refresh returns the tokens that
+ * count from then on. The next refresh has to send the refresh token this
+ * one returned, and `revoke` names the current tokens. A response without
+ * a refresh token keeps the one there was (RFC 6749, section 6: the server
+ * MAY issue a new refresh token). An error response renews nothing.
  */
-export const refreshStep = dependentStep({
-  name: "refresh",
-  dependsOn: exchangeStep,
-  description: "Refresh access token using refresh token",
-  when: (prev): prev is TokenSuccess & { refresh_token: string } =>
-    prev.type === "success" && prev.refresh_token !== undefined,
-  request: (prev) =>
-    z.object({
-      grant_type: z.literal("refresh_token"),
-      refresh_token: z.literal(prev.refresh_token), // From exchange response
-      client_id: z.string(),
-      client_secret: z.string().optional(),
-      scope: z.string().optional(),
-    }),
-  response: ExchangeResponseSchema,
-});
+export const refreshStep = renewing(
+  dependentStep({
+    name: "refresh",
+    dependsOn: exchangeStep,
+    description: "Refresh access token using refresh token",
+    when: (prev): prev is TokenSuccess & { refresh_token: string } =>
+      prev.type === "success" && prev.refresh_token !== undefined,
+    request: (prev) =>
+      z.object({
+        grant_type: z.literal("refresh_token"),
+        refresh_token: z.literal(prev.refresh_token), // The current one
+        client_id: z.string(),
+        client_secret: z.string().optional(),
+        scope: z.string().optional(),
+      }),
+    response: ExchangeResponseSchema,
+  }),
+  exchangeStep,
+  (response, previous) =>
+    response.type === "success"
+      ? {
+        ...response,
+        refresh_token: response.refresh_token ??
+          (previous?.type === "success" ? previous.refresh_token : undefined),
+      }
+      : undefined,
+);
 
 /**
  * Step 4: Token Revocation
@@ -177,9 +194,10 @@ export const refreshStep = dependentStep({
  *
  * The step revokes `exchange`: with the tokens gone, `refresh` and a
  * second `revoke` are no longer available. That only holds for a token of
- * that exchange, so the request is limited to its access token and its
- * refresh token: revoking some other string would leave the grant alive
- * while the session believes it gone.
+ * the grant, so the request is limited to the current access token and
+ * refresh token (the ones of the exchange, or of the latest refresh):
+ * revoking some other string would leave the grant alive while the session
+ * believes it gone.
  */
 export const revokeStep = revoking(
   dependentStep({
@@ -189,7 +207,7 @@ export const revokeStep = revoking(
     when: (prev) => prev.type === "success",
     request: (prev) =>
       z.object({
-        // A token the exchange issued: its access_token or refresh_token
+        // A current token of the grant: access_token or refresh_token
         token: z.literal([
           prev.access_token,
           ...(prev.refresh_token === undefined ? [] : [prev.refresh_token]),
