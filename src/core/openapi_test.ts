@@ -135,25 +135,29 @@ Deno.test("generateOpenApiSpec emits operationIds and URL paths", async () => {
   assertEquals(Object.keys(spec.paths ?? {}).sort(), [
     "/api/items",
     "/api/items/{id}",
+    "/api/items/{id}/copy",
   ]);
 
   const items = spec.paths!["/api/items"];
   const item = spec.paths!["/api/items/{id}"];
+  const copy = spec.paths!["/api/items/{id}/copy"];
   // Derived: the same id that `--format routes` uses as the route key.
   assertEquals(items.get?.operationId, "itemsList");
   assertEquals(item.get?.operationId, "itemsRetrieve");
   // Explicit operationId wins.
   assertEquals(items.post?.operationId, "createItem");
-  // PUT and PATCH both derive "itemsUpdate". A duplicate operationId makes
-  // the spec invalid, so neither gets one.
-  assertEquals(item.put?.operationId, undefined);
-  assertEquals(item.patch?.operationId, undefined);
+  // PUT next to PATCH: "replace" and "update".
+  assertEquals(item.put?.operationId, "itemsReplace");
+  assertEquals(item.patch?.operationId, "itemsUpdate");
   // Not public.
   assertEquals(item.delete, undefined);
+  // A duplicate operationId makes the spec invalid, so neither gets one.
+  assertEquals(copy.post?.operationId, undefined);
+  assertEquals(copy.put?.operationId, undefined);
 
   assertEquals(warnings.length, 2);
   assertStringIncludes(warnings.join("\n"), "broken.ts");
-  assertStringIncludes(warnings.join("\n"), 'operationId "itemsUpdate"');
+  assertStringIncludes(warnings.join("\n"), 'operationId "duplicateItem"');
 });
 
 Deno.test("generateOpenApiSpec strict mode reports every problem", async () => {
@@ -165,9 +169,9 @@ Deno.test("generateOpenApiSpec strict mode reports every problem", async () => {
   assertStringIncludes(error.message, "broken.ts: route module failed to load");
   assertStringIncludes(
     error.message,
-    'operationId "itemsUpdate" is used by PUT /api/items/{id}',
+    'operationId "duplicateItem" is used by POST /api/items/{id}/copy',
   );
-  assertStringIncludes(error.message, "and PATCH /api/items/{id}");
+  assertStringIncludes(error.message, "and PUT /api/items/{id}/copy");
 });
 
 // =============================================================================
