@@ -31,8 +31,8 @@ permissions):
 - `./scripts/test-python` — run `e2e_tests/python` through `uv` (needs `uv`):
   `ruff format --check` and `ruff check` with every rule selected, then pyright
   in strict mode, over the generated modules, the hand-written handlers and the
-  tests, and over FastAPI modules generated for APIs that use only a part of the
-  generator; then the conformance tests against the generated FastAPI
+  tests, and over the modules generated for APIs that use only a part of the
+  generators; then the conformance tests against the generated FastAPI
   application. Python is always run through `uv`
 - `./scripts/test-rust` — run `e2e_tests/rust` (needs `cargo` and `rustup`):
   `cargo fmt --check` (the generated module under the 2021 and 2024 style
@@ -248,15 +248,15 @@ checker) checks each part against the contract, words issues as Zod does, and
 only then builds the Pydantic model. A refusal is an exception the router's own
 route class answers, so `create_router()` needs nothing of the application. The
 request is described for FastAPI's OpenAPI from the contract (`openapi_extra`).
-A block of the fixed part is written only into a module that uses it; modules
-for APIs that use a part (`e2e_tests/python/partial_modules.ts`) are checked by
-ruff and pyright too. Responses are still validated by Pydantic. The one
-declared difference of FastAPI is what the ASGI server does to a path before the
-router has it (`encoded-slash-is-a-slash`). The generated Python client
-(`test_client.py`) is run against the TypeScript and the FastAPI server; logic
-that the fixture does not reach has Python unit tests (`test_pagination.py` for
-pagination styles other than cursor, `test_requests.py` for the request
-handling).
+A block of the fixed part is written only into a module that uses it, in the
+client too; modules for APIs that use a part
+(`e2e_tests/python/partial_modules.ts`) are checked by ruff and pyright too.
+Responses are still validated by Pydantic. The one declared difference of
+FastAPI is what the ASGI server does to a path before the router has it
+(`encoded-slash-is-a-slash`). The generated Python client (`test_client.py`) is
+run against the TypeScript and the FastAPI server; logic that the fixture does
+not reach has Python unit tests (`test_pagination.py` for pagination styles
+other than cursor, `test_requests.py` for the request handling).
 
 Generated code is not just code that works: it is written as a person would
 write it in that language, and the language's own tools say so. For Rust that is

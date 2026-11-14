@@ -1113,9 +1113,12 @@ What differs, and what does not cross:
   the path, and Starlette routes on the decoded one. The TypeScript handlers and
   axum give the handler `a/b`. It is the one difference the suite declares for
   FastAPI, and it asserts it
-- A body nested deeper than the checker follows is refused as a body that is not
-  JSON. Python limits how deep a call goes; measured on the fixture's tree, 400
-  levels are refused
+- How deep a body may nest is each runtime's own limit, and the suite has no
+  case for it. Measured with the fixture's tree, where a level of the tree is
+  two levels of JSON: the FastAPI module accepts 120 levels and refuses 121 as a
+  body that is not JSON (Python limits how deep a call goes), the axum module
+  accepts 63 (serde_json's limit), and the TypeScript handlers accept 1000 and
+  answer 1500 with a 500
 - A `transform()` in a schema is TypeScript code. Python sees the input of a
   request schema; the result of a transform in a response is `Any`
 - A string with a format (`date-time`, `uuid`) stays a `str` with Zod's pattern.
@@ -1179,14 +1182,15 @@ Zod schema, responses the output side.
 How it is checked (`./scripts/test-python`, through `uv`): the generated
 modules, a hand-written implementation of `Handlers` and the tests are formatted
 as `ruff format` formats and pass `ruff check` with every rule selected; they
-pass pyright in strict mode; so do the modules of seven APIs that use only a
-part of what the generator writes (no body, no query, only an event stream),
-which carry only the parts they use; the application runs under uvicorn; and the
-tests that hold for the fixture's TypeScript server hold for it, using the
-TypeScript client generated from the same routes: CRUD, declared errors as
-values, cursor pagination, validation failures, a DELETE body, a catch-all path,
-a recursive schema, event streams (frames, failure and resume, keep-alive), and
-the lens laws of `checkResourceLaws()`.
+pass pyright in strict mode; so do the modules, server and client, of nine APIs
+that use only a part of what the generators write (no body, no query, only an
+event stream, only a paginated list), which carry only the parts they use; the
+application runs under uvicorn; and the tests that hold for the fixture's
+TypeScript server hold for it, using the TypeScript client generated from the
+same routes: CRUD, declared errors as values, cursor pagination, validation
+failures, a DELETE body, a catch-all path, a recursive schema, event streams
+(frames, failure and resume, keep-alive), and the lens laws of
+`checkResourceLaws()`.
 
 ### Other Languages: Rust and axum
 

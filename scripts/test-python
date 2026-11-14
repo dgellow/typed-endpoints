@@ -31,8 +31,9 @@ uv run --frozen ruff check --quiet
 # The generated module and the hand-written handlers, in strict mode.
 uv run --frozen pyright
 
-# The same for APIs that use only a part of what the generator can write:
-# their modules carry only the parts they use, and stand by themselves.
+# The same for APIs that use only a part of what the generators can write:
+# their modules, server and client, carry only the parts they use, and stand
+# by themselves.
 partial() {
   rm -f "$project"/partial_*.py
 }
