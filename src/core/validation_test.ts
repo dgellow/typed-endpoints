@@ -190,3 +190,99 @@ Deno.test("validateRequest passes with no schemas defined", async () => {
   );
   assertEquals(result.success, true);
 });
+
+// =============================================================================
+// Query lists
+// =============================================================================
+
+function queryRequest(search: string) {
+  return {
+    json: () => Promise.resolve(undefined),
+    url: `http://localhost/api/items${search}`,
+    params: {},
+  };
+}
+
+Deno.test("validateRequest: a list field accepts zero, one and several values", async () => {
+  const def = { query: z.object({ tag: z.array(z.string()) }) };
+
+  for (
+    const [search, expected] of [
+      ["", []],
+      ["?tag=a", ["a"]],
+      ["?tag=a&tag=b", ["a", "b"]],
+    ] as const
+  ) {
+    const result = await validateRequest(queryRequest(search), def, "GET");
+    assertEquals(result.success, true, search);
+    if (result.success) assertEquals(result.data.query.tag, [...expected]);
+  }
+});
+
+Deno.test("validateRequest: an optional list stays undefined when absent", async () => {
+  const def = {
+    query: z.object({
+      tag: z.array(z.string()).optional(),
+      sort: z.array(z.string()).default(["name"]),
+    }),
+  };
+
+  const absent = await validateRequest(queryRequest(""), def, "GET");
+  // `tag` is not turned into an empty list: the schema allows leaving it out.
+  assertEquals(absent.success && absent.data.query, { sort: ["name"] });
+
+  const single = await validateRequest(
+    queryRequest("?tag=a&sort=id"),
+    def,
+    "GET",
+  );
+  assertEquals(single.success && single.data.query, {
+    tag: ["a"],
+    sort: ["id"],
+  });
+});
+
+Deno.test("validateRequest: list items are still validated", async () => {
+  const def = { query: z.object({ id: z.array(z.coerce.number().int()) }) };
+
+  const ok = await validateRequest(queryRequest("?id=1"), def, "GET");
+  assertEquals(ok.success && ok.data.query, { id: [1] });
+
+  const bad = await validateRequest(queryRequest("?id=x"), def, "GET");
+  assertEquals(bad.success, false);
+});
+
+Deno.test("validateRequest: a scalar field given several times is rejected by name", async () => {
+  const def = { query: z.object({ sort: z.string() }) };
+  const result = await validateRequest(
+    queryRequest("?sort=a&sort=b"),
+    def,
+    "GET",
+  );
+
+  assertEquals(result.success, false);
+  if (!result.success) {
+    assertEquals(result.type, "query");
+    assertEquals(result.error.includes("sort:"), true, result.error);
+  }
+});
+
+Deno.test("validateRequest: an error at the root has no empty path prefix", async () => {
+  const result = await validateRequest(
+    {
+      json: () => Promise.resolve("not an object"),
+      url: "http://localhost/api/items",
+      params: {},
+    },
+    { body: z.object({ id: z.string() }) },
+    "POST",
+  );
+
+  assertEquals(result.success, false);
+  if (!result.success) {
+    assertEquals(
+      result.error,
+      "Validation error: Invalid input: expected object, received string",
+    );
+  }
+});

@@ -130,7 +130,7 @@ export const cursor = {
 
     const queryShape: MutableShape = {
       [cursorParam]: z.string().optional(),
-      [limitParam]: z.coerce.number().min(1).max(maxLimit).default(
+      [limitParam]: z.coerce.number().int().min(1).max(maxLimit).default(
         defaultLimit,
       ),
     };
@@ -217,7 +217,7 @@ export const cursorId = {
 
     const queryShape: MutableShape = {
       [cursorIdParam]: z.string().optional(),
-      [limitParam]: z.coerce.number().min(1).max(maxLimit).default(
+      [limitParam]: z.coerce.number().int().min(1).max(maxLimit).default(
         defaultLimit,
       ),
     };
@@ -303,8 +303,8 @@ export const offset = {
     const maxLimit = config.maxLimit ?? 100;
 
     const queryShape: MutableShape = {
-      [offsetParam]: z.coerce.number().min(0).default(0),
-      [limitParam]: z.coerce.number().min(1).max(maxLimit).default(
+      [offsetParam]: z.coerce.number().int().min(0).default(0),
+      [limitParam]: z.coerce.number().int().min(1).max(maxLimit).default(
         defaultLimit,
       ),
     };
@@ -398,9 +398,10 @@ export const page = {
     const maxPerPage = config.maxPerPage ?? 100;
 
     const queryShape: MutableShape = {
-      [pageParam]: z.coerce.number().min(1).default(1),
+      [pageParam]: z.coerce.number().int().min(1).default(1),
       [perPageParam]: z.coerce
         .number()
+        .int()
         .min(1)
         .max(maxPerPage)
         .default(defaultPerPage),

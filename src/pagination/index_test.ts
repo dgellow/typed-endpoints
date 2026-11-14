@@ -824,3 +824,23 @@ Deno.test("query string coercion works for all number params", () => {
     assertEquals(pageParsed.data.perPage, 15);
   }
 });
+
+// =============================================================================
+// Page size and position are whole numbers
+// =============================================================================
+
+Deno.test("pagination query parameters reject fractions", () => {
+  const cases = [
+    [cursor.paginated({ item: UserSchema }).query, "limit"],
+    [cursorId.paginated({ item: UserSchema }).query, "limit"],
+    [offset.paginated({ item: UserSchema }).query, "limit"],
+    [offset.paginated({ item: UserSchema }).query, "offset"],
+    [page.paginated({ item: UserSchema }).query, "page"],
+    [page.paginated({ item: UserSchema }).query, "perPage"],
+  ] as const;
+
+  for (const [query, param] of cases) {
+    assertEquals(query.safeParse({ [param]: "2" }).success, true, param);
+    assertEquals(query.safeParse({ [param]: "1.5" }).success, false, param);
+  }
+});

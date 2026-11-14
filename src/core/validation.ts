@@ -4,7 +4,10 @@ import type { ApiMethodDef, ValidatedRequest } from "./types.ts";
 /** Format Zod validation errors into a readable string */
 function formatZodErrors(error: z.ZodError): string {
   return error.issues
-    .map((e) => `${e.path.join(".")}: ${e.message}`)
+    // An issue at the root has no path to prefix.
+    .map((e) =>
+      e.path.length > 0 ? `${e.path.join(".")}: ${e.message}` : e.message
+    )
     .join(", ");
 }
 
@@ -40,6 +43,76 @@ export function parseSearchParams(
   for (const key of new Set(searchParams.keys())) {
     const values = searchParams.getAll(key);
     result[key] = values.length === 1 ? values[0] : values;
+  }
+  return result;
+}
+
+// A query string cannot say whether `?tag=a` is a string or a one-element
+// list, and cannot express an empty list at all. The schema knows which one
+// is meant, so the raw query is shaped by it before validation.
+
+type ZodDef = Record<string, unknown>;
+
+function zodDef(schema: unknown): ZodDef {
+  const zod = (schema as { _zod?: { def?: ZodDef } } | undefined)?._zod;
+  return zod?.def ?? {};
+}
+
+/** Wrapper schema types that carry the described type in `innerType`. */
+const WRAPPERS = new Set([
+  "optional",
+  "nullable",
+  "default",
+  "prefault",
+  "catch",
+  "readonly",
+  "nonoptional",
+]);
+
+/** The schema that describes the raw input, with wrappers removed. */
+function unwrapInput(schema: unknown): unknown {
+  let current = schema;
+  while (true) {
+    const def = zodDef(current);
+    if (WRAPPERS.has(def.type as string)) current = def.innerType;
+    else if (def.type === "pipe") current = def.in;
+    else return current;
+  }
+}
+
+/** Whether the field may be left out (optional, or it has a default). */
+function acceptsMissing(schema: unknown): boolean {
+  const zod = (schema as { _zod?: { optin?: string } } | undefined)?._zod;
+  return zod?.optin === "optional";
+}
+
+/**
+ * Shape raw query values by the query schema: a field declared as a list
+ * receives a list for zero, one or several occurrences of its key.
+ *
+ * Scalar fields are left as parsed, so a scalar key that occurs several
+ * times still fails validation with a message naming the field.
+ */
+export function shapeQueryBySchema(
+  raw: Record<string, string | string[]>,
+  schema: unknown,
+): Record<string, string | string[]> {
+  const root = zodDef(unwrapInput(schema));
+  if (root.type !== "object") return raw;
+
+  const result = { ...raw };
+  for (
+    const [key, field] of Object.entries(root.shape as Record<string, unknown>)
+  ) {
+    const type = zodDef(unwrapInput(field)).type;
+    if (type !== "array" && type !== "set") continue;
+
+    const value = raw[key];
+    if (typeof value === "string") {
+      result[key] = [value];
+    } else if (value === undefined && !acceptsMissing(field)) {
+      result[key] = [];
+    }
   }
   return result;
 }
@@ -93,7 +166,10 @@ export async function validateRequest<
     } catch {
       return { success: false, error: "Invalid request URL", type: "query" };
     }
-    const rawQuery = parseSearchParams(url.searchParams);
+    const rawQuery = shapeQueryBySchema(
+      parseSearchParams(url.searchParams),
+      def.query,
+    );
     const result = def.query.safeParse(rawQuery);
     if (!result.success) {
       return {
