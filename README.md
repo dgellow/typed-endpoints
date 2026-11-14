@@ -450,6 +450,7 @@ src/
 │   ├── types.ts       # Shared types (including SSE)
 │   ├── validation.ts  # Request validation
 │   ├── routes.ts      # Route discovery, path conversion, operationId derivation
+│   ├── zod_internals.ts # Readers for Zod schema internals
 │   └── openapi.ts     # OpenAPI spec generation (x-pagination)
 ├── pagination/
 │   ├── types.ts       # Pagination type definitions

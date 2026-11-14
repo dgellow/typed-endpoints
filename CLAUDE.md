@@ -28,7 +28,8 @@ permissions):
 ```
 src/
 ├── core/           # Shared types, request validation, OpenAPI generation
-│   └── routes.ts   # Route discovery, path conversion, operationId derivation
+│   ├── routes.ts   # Route discovery, path conversion, operationId derivation
+│   └── zod_internals.ts # The only reader of schema._zod (def, type, unwrap, optionality)
 ├── integrations/   # Framework integrations (Fresh v2 runtime, Vite build-time)
 ├── client/         # Typed HTTP client
 │   └── sse.ts      # Incremental text/event-stream parser
@@ -69,6 +70,8 @@ e2e_tests/          # End-to-end tests (protocol flows, Fresh server, CLI, Vite)
 - Step types use `__kind` discriminant for tagged unions
 - Type parameters preserve literal types (use `const` generic modifier)
 - `// deno-lint-ignore no-explicit-any` where variance compatibility requires it
+- Schema introspection goes through `src/core/zod_internals.ts`; no other file
+  reads `schema._zod`
 - Protocol module: `dependentStep()` for dynamic schemas, `mappedStep()` for
   static literal forwarding
 

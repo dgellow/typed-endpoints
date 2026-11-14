@@ -10,6 +10,7 @@
 import type { ZodType } from "zod";
 import {
   isOptionalField,
+  isZodSchema,
   type ZodDef as Def,
   zodDef,
   zodInternals,
@@ -295,9 +296,7 @@ function convertReadonly(def: Def, state: State): Node {
 
 function convertTemplateLiteral(def: Def, state: State): Node {
   const parts = (def.parts as unknown[]).map((part) => {
-    const isSchema = typeof part === "object" && part !== null &&
-      "_zod" in part;
-    if (isSchema) return `\${${convert(part, state).text}}`;
+    if (isZodSchema(part)) return `\${${convert(part, state).text}}`;
     return templateText(String(part));
   });
   return atom(`\`${parts.join("")}\``);
