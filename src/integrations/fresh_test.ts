@@ -1,3 +1,4 @@
+import { assertEquals } from "@std/assert";
 import { assertSnapshot } from "@std/testing/snapshot";
 import { createApiHandlers, endpoint, sseEndpoint } from "./fresh.ts";
 import { z } from "zod";
@@ -508,4 +509,138 @@ Deno.test("url paginated endpoint has no query validation (url pagination)", asy
   const response = await handlers.GET(ctx);
 
   await assertSnapshot(t, { status: response.status });
+});
+
+Deno.test("sseEndpoint: an empty id is sent", async () => {
+  const handlers = createApiHandlers({
+    GET: sseEndpoint({
+      events: { msg: z.object({ n: z.number() }) },
+      async *handler() {
+        yield { event: "msg", data: { n: 1 }, id: "" };
+      },
+    }),
+  });
+
+  const response = await handlers.GET(createMockContext({}));
+
+  assertEquals(await response.text(), 'event: msg\nid: \ndata: {"n":1}\n\n');
+});
+
+Deno.test("sseEndpoint: cancelling the body aborts the signal and ends the handler", async () => {
+  const log: string[] = [];
+  let handlerSignal: AbortSignal | undefined;
+  const errors: unknown[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => errors.push(args);
+
+  try {
+    const handlers = createApiHandlers({
+      GET: sseEndpoint({
+        events: { tick: z.object({ n: z.number() }) },
+        async *handler(_ctx, _validated, signal) {
+          handlerSignal = signal;
+          try {
+            for (let n = 0; n < 100; n++) {
+              log.push(`yield ${n}`);
+              yield { event: "tick", data: { n } };
+              await new Promise((resolve) => setTimeout(resolve, 1));
+            }
+          } finally {
+            log.push("finally");
+          }
+        },
+      }),
+    });
+
+    const response = await handlers.GET(createMockContext({}));
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+    assertEquals(
+      new TextDecoder().decode(first.value),
+      'event: tick\ndata: {"n":0}\n\n',
+    );
+
+    await reader.cancel();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    assertEquals(handlerSignal?.aborted, true);
+    assertEquals(log.at(-1), "finally");
+    // The handler is not resumed after the cancel.
+    assertEquals(log, ["yield 0", "finally"]);
+    assertEquals(errors, []);
+  } finally {
+    console.error = originalError;
+  }
+});
+
+Deno.test("sseEndpoint: the handler is advanced only as the body is read", async () => {
+  let produced = 0;
+  const handlers = createApiHandlers({
+    GET: sseEndpoint({
+      events: { tick: z.object({ n: z.number() }) },
+      async *handler() {
+        for (let n = 0; n < 1000; n++) {
+          produced++;
+          yield { event: "tick", data: { n } };
+        }
+      },
+    }),
+  });
+
+  const response = await handlers.GET(createMockContext({}));
+  const reader = response.body!.getReader();
+  await reader.read();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  // Nothing is produced ahead of the reader.
+  assertEquals(produced, 1);
+  await reader.cancel();
+});
+
+Deno.test("sseEndpoint: a handler error ends the stream after the events sent so far", async () => {
+  const errors: unknown[][] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => errors.push(args);
+
+  try {
+    const handlers = createApiHandlers({
+      GET: sseEndpoint({
+        events: { tick: z.object({ n: z.number() }) },
+        async *handler() {
+          yield { event: "tick", data: { n: 0 } };
+          throw new Error("boom");
+        },
+      }),
+    });
+
+    const response = await handlers.GET(createMockContext({}));
+
+    assertEquals(await response.text(), 'event: tick\ndata: {"n":0}\n\n');
+    assertEquals(errors.length, 1);
+    assertEquals(errors[0][0], "SSE stream error:");
+    assertEquals((errors[0][1] as Error).message, "boom");
+  } finally {
+    console.error = originalError;
+  }
+});
+
+Deno.test("sseEndpoint: a request aborted before the first read produces no events", async () => {
+  const controller = new AbortController();
+  let started = false;
+  const handlers = createApiHandlers({
+    GET: sseEndpoint({
+      events: { tick: z.object({ n: z.number() }) },
+      async *handler() {
+        started = true;
+        yield { event: "tick", data: { n: 0 } };
+      },
+    }),
+  });
+
+  const ctx = createMockContext({ signal: controller.signal });
+  const response = await handlers.GET(ctx);
+  controller.abort();
+
+  assertEquals(await response.text(), "");
+  assertEquals(started, false);
 });
