@@ -1100,8 +1100,120 @@ The DSL maps category theory concepts from André's research to TypeScript:
 | `parallel()`      | Tensor (⊗)              | Concurrent execution                          |
 
 `sequence()`, `repeat()`, `repeat1()`, `choice()`, `branch()` and `parallel()`
-build descriptions only. A session executes steps by their dependencies and does
-not interpret these nodes.
+build nodes that nest. A session does not interpret them: it executes steps by
+their dependencies. `runPlan()` does.
+
+### Running a Composition
+
+A composition has a request type and a response type of its own, computed from
+its nodes (`PlanOf`, `ResultOf`). The definitions are the ones of André Videla's
+containers:
+
+| Node             | Request (`PlanOf`)                                         | Response (`ResultOf`)        |
+| ---------------- | ---------------------------------------------------------- | ---------------------------- |
+| step             | the step's request                                         | the step's response          |
+| `sequence(a, b)` | `{ first: PlanOf<a>, rest: (result) => PlanOf<b> }`        | `[ResultOf<a>, ResultOf<b>]` |
+| `repeat(a)`      | `undefined`, or `{ next: PlanOf<a>, rest: (result) => … }` | `ResultOf<a>[]`              |
+| `choice(a, b)`   | `{ choose, plan }` for one option                          | `{ choice, result }`         |
+| `branch(p, …)`   | `{ ifTrue: (prev) => plan, ifFalse: (prev) => plan }`      | `{ holds, result }`          |
+| `parallel(a, b)` | `[PlanOf<a>, PlanOf<b>]`                                   | `[ResultOf<a>, ResultOf<b>]` |
+
+`rest` of a sequence receives the result of the first node and returns the plan
+of the remaining ones. `rest` of a repetition receives the result of one run and
+returns the plan of the remaining runs, or `undefined` to stop.
+
+A later request that uses an earlier response is a closure: the continuation
+receives the response, typed, and returns the next plan.
+
+```typescript
+import {
+  choice,
+  each,
+  repeat,
+  runPlan,
+  sequence,
+} from "@dgellow/typed-endpoints/protocol";
+
+// OPEN (READ | WRITE)* CLOSE
+const fileSession = sequence(open, repeat(choice(read, write)), close);
+
+const [opened, operations, closed] = await runPlan(fileSession, {
+  first: { path: "notes.txt" },
+  rest: ({ handle }) => ({
+    // One write per line. `each()` builds the plan of a repetition from a list.
+    first: each(lines, (data) => ({
+      choose: "write",
+      plan: { handle, data },
+    })),
+    rest: () => ({ handle }),
+  }),
+}, executor);
+// operations: ({ choice: "read"; result: { data: string } }
+//            | { choice: "write"; result: { written: number } })[]
+```
+
+A repetition whose length depends on the responses returns `undefined` from
+`rest` when it is done:
+
+```typescript
+const poll = (id: string): PlanOf<typeof polling> => ({
+  next: { id },
+  rest: (job) => job.status === "running" ? poll(id) : undefined,
+});
+```
+
+The predicate of a `branch` is asked about the result of the node before it in
+the enclosing sequence. When the predicate is a type guard, each side of the
+plan receives its half of the type:
+
+```typescript
+const login = sequence(
+  authorize,
+  branch((prev: AuthResponse) => prev.type === "success", {
+    then: exchange,
+    else: report,
+  }),
+);
+
+await runPlan(login, {
+  first: { client_id: "app" },
+  rest: () => ({
+    ifTrue: (prev) => ({ code: prev.code }), // prev: the success variant
+    ifFalse: (prev) => ({ reason: prev.error }), // prev: the error variant
+  }),
+}, executor);
+```
+
+A sequence whose branch cannot be asked about the result before it (the
+predicate takes an `AuthResponse`, the node before it returns something else)
+has no plan: `PlanOf` is an uninhabited type that names both sides of the
+mismatch.
+
+What the runner guarantees:
+
+- Every request is parsed with its step's schema before the executor sees it,
+  every response after. A continuation never receives a response its schema
+  rejects.
+- A dependent or mapped step reads the latest response of its dependency,
+  wherever in the plan that step ran. `when`, forwarded values and `revoking()`
+  apply as in a session, with the same errors.
+- Each continuation is called once, with the response it belongs to. A plan
+  holds no session value that could be used twice or after it went stale.
+- The arms of a `parallel` node start from what was known before the node and do
+  not see each other's responses. The node settles when every arm has: no step
+  is in flight when it rejects.
+- `repeat` bounds (`min`, `max`) are checked, the upper one before the request
+  that would exceed it is sent. A plan that never returns `undefined` is stopped
+  after `maxRepetitions` runs (default 10000).
+- A plan whose shape does not fit the node (possible only through `any`) is
+  rejected with `PlanError`, whose `at` is the position in the node tree
+  (`sequence[1][0]`).
+
+Not checked by the types: that the dependency of a dependent step ran earlier in
+the plan. It is a `StepNotAvailableError` at run time.
+
+No plan has a member called `then`. A continuation may be async, and JavaScript
+treats a value with a `then` method as a promise.
 
 ### Protocol Introspection
 

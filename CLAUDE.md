@@ -50,6 +50,7 @@ src/
 │   ├── dsl.ts      # Builders: step(), dependentStep(), mappedStep(); validateProtocol()
 │   ├── mapping.ts  # Declarative field mappings: fromStep()
 │   ├── client.ts   # Type-safe session execution
+│   ├── plan.ts     # PlanOf/ResultOf, runPlan(): runs sequence/repeat/choice/branch/parallel
 │   ├── errors.ts   # ProtocolError hierarchy thrown by sessions
 │   ├── introspect.ts # Zod schema path lookup used by validateProtocol()
 │   ├── http.ts     # HTTP executor for real endpoints
@@ -149,6 +150,13 @@ N. TypeScript can't express dependent types, so:
   only after `session.ready(step)` or `session.narrow(step, guard)`
 - **Runtime**: enforces actual value constraints via Zod (`z.literal()`), and
   the same variant conditions (`when`) for callers that bypass the types
+- **Plans**: a composition node has a request type (`PlanOf`) and a response
+  type (`ResultOf`) by recursion on the node; `runPlan()` interprets it. The
+  request to a sequence is `{ first, rest }` with `rest` a function of the first
+  result; to a repetition, `undefined` or `{ next, rest }`. No plan member is
+  called `then` (a thenable would be called by `await`). A branch predicate is
+  asked about the result before it in the enclosing sequence; a mismatch makes
+  `PlanOf` uninhabited (`BranchMismatch`)
 - **Revocation**: `revoking(step, names)` removes steps from `TDone`/`TSeen` and
   their responses from the session. The types follow the returned session;
   `createSession(..., { singleUse: true })` refuses the earlier value at runtime

@@ -143,6 +143,18 @@ export interface MappedStep<
 // =============================================================================
 
 /**
+ * Anything a composition can contain: a step or another composition.
+ *
+ * Described by the discriminant alone, so that the composition types can
+ * nest (`sequence(open, repeat(choice(read, write)), close)`) without
+ * referring to each other in their constraints.
+ */
+export interface ProtocolNode {
+  /** Discriminant: a step kind or a composition kind. */
+  readonly __kind: string;
+}
+
+/**
  * Sequential composition of steps.
  *
  * Corresponds to the Sequential Product (>>) in container theory:
@@ -151,7 +163,7 @@ export interface MappedStep<
  * The response of each step flows to the next step's request.
  */
 export interface Sequence<
-  TSteps extends readonly AnyStep[] = readonly AnyStep[],
+  TSteps extends readonly ProtocolNode[] = readonly ProtocolNode[],
 > {
   /** Discriminant. */
   readonly __kind: "sequence";
@@ -167,7 +179,7 @@ export interface Sequence<
  *
  * Used for: pagination, retries, write-many-then-close patterns.
  */
-export interface Repeat<TStep extends AnyStep = AnyStep> {
+export interface Repeat<TStep extends ProtocolNode = ProtocolNode> {
   /** Discriminant. */
   readonly __kind: "repeat";
   /** The repeated step. */
@@ -185,7 +197,7 @@ export interface Repeat<TStep extends AnyStep = AnyStep> {
  * c1 + c2 = (c1.req + c2.req) !> choice c1.res c2.res
  */
 export interface Choice<
-  TSteps extends readonly AnyStep[] = readonly AnyStep[],
+  TSteps extends readonly ProtocolNode[] = readonly ProtocolNode[],
 > {
   /** Discriminant. */
   readonly __kind: "choice";
@@ -199,9 +211,10 @@ export interface Choice<
  * Like Choice but the branch is determined by a predicate on the response.
  */
 export interface Branch<
-  TPredicate extends (prev: unknown) => boolean = (prev: unknown) => boolean,
-  TThen extends AnyStep = AnyStep,
-  TElse extends AnyStep = AnyStep,
+  // `never`: a predicate may ask for any parameter type.
+  TPredicate extends (prev: never) => boolean = (prev: never) => boolean,
+  TThen extends ProtocolNode = ProtocolNode,
+  TElse extends ProtocolNode = ProtocolNode,
 > {
   /** Discriminant. */
   readonly __kind: "branch";
@@ -220,7 +233,7 @@ export interface Branch<
  * c1 ⊗ c2 = (c1.req × c2.req) !> (c1.res × c2.res)
  */
 export interface Parallel<
-  TSteps extends readonly AnyStep[] = readonly AnyStep[],
+  TSteps extends readonly ProtocolNode[] = readonly ProtocolNode[],
 > {
   /** Discriminant. */
   readonly __kind: "parallel";

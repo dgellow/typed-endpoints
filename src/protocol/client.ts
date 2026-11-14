@@ -495,91 +495,13 @@ export class ProtocolSession<
       throw new SessionSpentError(protocolName, stepName, this.#spentBy);
     }
 
-    // Get request schema
-    let requestSchema: z.ZodType;
-    if (step.__kind === "step") {
-      requestSchema = step.request;
-    } else if (step.__kind === "mapped_step") {
-      // Mapped step - derive schema with literal replacements
-      const mappedStep = step as MappedStep;
-      if (!(mappedStep.dependsOn in this.responses)) {
-        throw new StepNotAvailableError(
-          `Cannot execute "${stepName}": dependency "${mappedStep.dependsOn}" not satisfied`,
-          protocolName,
-          stepName,
-          mappedStep.dependsOn,
-        );
-      }
-      // Collect the values the mapped fields must carry.
-      const overrides: Record<string, unknown> = {};
-      for (
-        const [field, mapping] of Object.entries(mappedStep.requestMapping)
-      ) {
-        if (!isFieldMapping(mapping)) continue;
-        const sourceResponse = this.responses[
-          mapping.step as keyof typeof this.responses
-        ];
-        if (sourceResponse === undefined) {
-          throw new StepNotAvailableError(
-            `Cannot execute "${stepName}": mapping source "${mapping.step}" for field "${field}" not satisfied`,
-            protocolName,
-            stepName,
-            mapping.step,
-          );
-        }
-        const value = getNestedValue(sourceResponse, mapping.path);
-        if (value === undefined) {
-          // Without this check the field would be required to be undefined,
-          // and a request that leaves it out would pass.
-          throw new StepRefusedError(
-            `Cannot execute "${stepName}": field "${field}" is mapped from "${mapping.step}.${mapping.path}", which the response of "${mapping.step}" does not contain`,
-            protocolName,
-            stepName,
-            mapping.step,
-          );
-        }
-        overrides[field] = value;
-      }
-      requestSchema = deriveSchemaWithLiterals(
-        mappedStep.requestSchema,
-        overrides,
-      );
-    } else {
-      // Dependent step - get previous response and derive schema
-      const depStep = step as DependentStep;
-      const prevResponse = this.responses[
-        depStep.dependsOn as keyof typeof this.responses
-      ];
-      if (prevResponse === undefined) {
-        throw new StepNotAvailableError(
-          `Cannot execute "${stepName}": dependency "${depStep.dependsOn}" not satisfied`,
-          protocolName,
-          stepName,
-          depStep.dependsOn,
-        );
-      }
-      // The step states which responses it can follow.
-      if (depStep.when && !depStep.when(prevResponse)) {
-        throw new StepRefusedError(
-          `Cannot execute "${stepName}": the response of "${depStep.dependsOn}" does not allow this step (its \`when\` guard is false)`,
-          protocolName,
-          stepName,
-          depStep.dependsOn,
-        );
-      }
-      requestSchema = depStep.request(prevResponse);
-
-      // A dependent step answers a response it cannot follow with z.never().
-      // No request can satisfy that, so the request is not what is wrong.
-      if (isNeverSchema(requestSchema)) {
-        throw new StepRefusedError(
-          `Invalid request for "${stepName}": the response of "${depStep.dependsOn}" does not allow this step (its request schema is z.never())`,
-          protocolName,
-          stepName,
-          depStep.dependsOn,
-        );
-      }
-    }
+    // The schema this request has to satisfy, given the responses so far.
+    const requestSchema = requestSchemaOf(
+      protocolName,
+      stepName,
+      step,
+      this.responses as Record<string, unknown>,
+    );
 
     // Validate request
     const reqResult = requestSchema.safeParse(request);
@@ -692,6 +614,109 @@ export class ProtocolSession<
     const last = this.history.at(-1);
     return last !== undefined && this.protocol.terminal.includes(last);
   }
+}
+
+/**
+ * The schema a request to `step` has to satisfy, given the responses of
+ * the steps that ran before.
+ *
+ * - step: its request schema
+ * - mapped step: its schema with every forwarded field fixed to the value
+ *   in the earlier response
+ * - dependent step: the schema its `request` function returns for the
+ *   response of the step it depends on
+ *
+ * Throws `StepNotAvailableError` when a step it depends on has not run and
+ * `StepRefusedError` when that step's response does not allow this one.
+ * Shared by sessions and by `runPlan()`.
+ */
+export function requestSchemaOf(
+  protocolName: string,
+  stepName: string,
+  step: AnyStep,
+  responses: Readonly<Record<string, unknown>>,
+): z.ZodType {
+  let requestSchema: z.ZodType;
+  if (step.__kind === "step") {
+    return step.request;
+  } else if (step.__kind === "mapped_step") {
+    // Mapped step - derive schema with literal replacements
+    const mappedStep = step as MappedStep;
+    if (!(mappedStep.dependsOn in responses)) {
+      throw new StepNotAvailableError(
+        `Cannot execute "${stepName}": dependency "${mappedStep.dependsOn}" not satisfied`,
+        protocolName,
+        stepName,
+        mappedStep.dependsOn,
+      );
+    }
+    // Collect the values the mapped fields must carry.
+    const overrides: Record<string, unknown> = {};
+    for (
+      const [field, mapping] of Object.entries(mappedStep.requestMapping)
+    ) {
+      if (!isFieldMapping(mapping)) continue;
+      const sourceResponse = responses[mapping.step];
+      if (sourceResponse === undefined) {
+        throw new StepNotAvailableError(
+          `Cannot execute "${stepName}": mapping source "${mapping.step}" for field "${field}" not satisfied`,
+          protocolName,
+          stepName,
+          mapping.step,
+        );
+      }
+      const value = getNestedValue(sourceResponse, mapping.path);
+      if (value === undefined) {
+        // Without this check the field would be required to be undefined,
+        // and a request that leaves it out would pass.
+        throw new StepRefusedError(
+          `Cannot execute "${stepName}": field "${field}" is mapped from "${mapping.step}.${mapping.path}", which the response of "${mapping.step}" does not contain`,
+          protocolName,
+          stepName,
+          mapping.step,
+        );
+      }
+      overrides[field] = value;
+    }
+    requestSchema = deriveSchemaWithLiterals(
+      mappedStep.requestSchema,
+      overrides,
+    );
+  } else {
+    // Dependent step - get previous response and derive schema
+    const depStep = step as DependentStep;
+    const prevResponse = responses[depStep.dependsOn];
+    if (prevResponse === undefined) {
+      throw new StepNotAvailableError(
+        `Cannot execute "${stepName}": dependency "${depStep.dependsOn}" not satisfied`,
+        protocolName,
+        stepName,
+        depStep.dependsOn,
+      );
+    }
+    // The step states which responses it can follow.
+    if (depStep.when && !depStep.when(prevResponse)) {
+      throw new StepRefusedError(
+        `Cannot execute "${stepName}": the response of "${depStep.dependsOn}" does not allow this step (its \`when\` guard is false)`,
+        protocolName,
+        stepName,
+        depStep.dependsOn,
+      );
+    }
+    requestSchema = depStep.request(prevResponse);
+
+    // A dependent step answers a response it cannot follow with z.never().
+    // No request can satisfy that, so the request is not what is wrong.
+    if (isNeverSchema(requestSchema)) {
+      throw new StepRefusedError(
+        `Invalid request for "${stepName}": the response of "${depStep.dependsOn}" does not allow this step (its request schema is z.never())`,
+        protocolName,
+        stepName,
+        depStep.dependsOn,
+      );
+    }
+  }
+  return requestSchema;
 }
 
 // =============================================================================
