@@ -328,11 +328,13 @@ export function createClient<Api extends ApiSchema>(
     });
 
     if (!response.ok) {
-      let errorBody: unknown;
+      // The body can be read once: take the text, then try it as JSON.
+      const text = await response.text();
+      let errorBody: unknown = text;
       try {
-        errorBody = await response.json();
+        errorBody = JSON.parse(text);
       } catch {
-        errorBody = await response.text();
+        // Not JSON: the text is the body.
       }
       throw new ClientError(response.status, response.statusText, errorBody);
     }
