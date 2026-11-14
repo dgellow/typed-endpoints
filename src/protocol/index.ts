@@ -162,6 +162,17 @@ export type {
   StepInput,
 } from "./client.ts";
 
+// Session errors
+export {
+  InvalidRequestError,
+  InvalidResponseError,
+  ProtocolError,
+  StepNotAvailableError,
+  StepRefusedError,
+  UnknownStepError,
+} from "./errors.ts";
+export type { ValidationIssues } from "./errors.ts";
+
 // OpenAPI extensions
 export {
   addProtocolsToSpec,

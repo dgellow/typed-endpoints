@@ -4,7 +4,7 @@
  * Tests for type-safe protocol execution.
  */
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { z } from "zod";
 
 import {
@@ -14,6 +14,14 @@ import {
   type StepExecutor,
 } from "./client.ts";
 import { dependentStep, mappedStep, protocol, step } from "./dsl.ts";
+import {
+  InvalidRequestError,
+  InvalidResponseError,
+  ProtocolError,
+  StepNotAvailableError,
+  StepRefusedError,
+  UnknownStepError,
+} from "./errors.ts";
 import { fromStep } from "./mapping.ts";
 import {
   type AuthorizeResponse,
@@ -858,4 +866,97 @@ Deno.test("a mapped step needs every step its mapping reads from", async () => {
   const { session: afterBoth } = await afterProcess.execute("auth", {});
   const { response } = await afterBoth.execute("finalize", request);
   assertEquals(response, { ok: true });
+});
+
+// =============================================================================
+// Error classes
+// =============================================================================
+
+Deno.test("execute raises a distinct error class for each failure mode", async () => {
+  const proto = protocol({
+    name: "Errors",
+    initial: "authorize",
+    steps: {
+      authorize: step({
+        name: "authorize",
+        request: z.object({ user: z.string() }),
+        response: z.discriminatedUnion("type", [
+          z.object({ type: z.literal("ok"), code: z.string() }),
+          z.object({ type: z.literal("denied") }),
+        ]),
+      }),
+      exchange: dependentStep({
+        name: "exchange",
+        dependsOn: "authorize",
+        request: (prev: { type: "ok"; code: string } | { type: "denied" }) =>
+          prev.type === "ok"
+            ? z.object({ code: z.literal(prev.code) })
+            : z.never(),
+        response: z.object({ token: z.string() }),
+      }),
+    },
+  });
+
+  const catching = async (run: () => Promise<unknown>): Promise<unknown> => {
+    try {
+      await run();
+    } catch (error) {
+      return error;
+    }
+    throw new Error("expected the call to throw");
+  };
+
+  // A dependency has not run.
+  const fresh = createSession(
+    proto,
+    createMockExecutor(proto, { authorize: { type: "ok", code: "c" } }),
+  );
+  const notAvailable = await catching(() =>
+    // @ts-expect-error exchange is not available before authorize
+    fresh.execute("exchange", { code: "c" })
+  );
+  assert(notAvailable instanceof StepNotAvailableError);
+  assertEquals(notAvailable.requires, "authorize");
+  assertEquals(notAvailable.step, "exchange");
+  assertEquals(notAvailable.protocol, "Errors");
+
+  // The request does not match the schema: the issues are available as data.
+  const invalidRequest = await catching(() =>
+    // @ts-expect-error `user` must be a string
+    fresh.execute("authorize", { user: 1 })
+  );
+  assert(invalidRequest instanceof InvalidRequestError);
+  assertEquals(invalidRequest.issues.map((i) => i.path), [["user"]]);
+
+  // The dependency ran, but returned the variant that rules the step out.
+  const denied = await createSession(
+    proto,
+    createMockExecutor(proto, { authorize: { type: "denied" } }),
+  ).execute("authorize", { user: "u" });
+  const refused = await catching(() =>
+    denied.session.execute("exchange", { code: "c" })
+  );
+  assert(refused instanceof StepRefusedError);
+  assert(!(refused instanceof InvalidRequestError));
+  assertEquals(refused.because, "authorize");
+
+  // The executor returned something that is not the step's response.
+  const badServer = createSession(
+    proto,
+    // deno-lint-ignore no-explicit-any
+    createMockExecutor(proto, { authorize: { type: "maybe" } as any }),
+  );
+  const invalidResponse = await catching(() =>
+    badServer.execute("authorize", { user: "u" })
+  );
+  assert(invalidResponse instanceof InvalidResponseError);
+  assert(invalidResponse instanceof ProtocolError);
+  assertEquals(invalidResponse.name, "InvalidResponseError");
+
+  // A step name that is not in the protocol.
+  const unknown = await catching(() =>
+    // @ts-expect-error no such step
+    fresh.execute("nope", {})
+  );
+  assert(unknown instanceof UnknownStepError);
 });
