@@ -165,11 +165,10 @@ function startTestServer(): {
   close: () => void;
 } {
   const controller = new AbortController();
-  const port = 8765 + Math.floor(Math.random() * 1000);
-
-  Deno.serve(
+  // Port 0: the OS assigns a free port, so parallel runs cannot collide.
+  const server = Deno.serve(
     {
-      port,
+      port: 0,
       signal: controller.signal,
       onListen: () => {},
     },
@@ -177,7 +176,7 @@ function startTestServer(): {
   );
 
   return {
-    port,
+    port: server.addr.port,
     close: () => controller.abort(),
   };
 }
