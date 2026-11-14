@@ -428,7 +428,7 @@ export default defineConfig({
 typed-endpoints - Generate TypeScript types from API route Zod schemas
 
 Options:
-  -r, --routes <dir>    Routes directory (can be specified multiple times)
+  -r, --routes <dir>    Routes directory, repeatable (default: routes/api)
   -o, --output <file>   Output file path (required)
   -f, --format <type>   Output format: types, client, routes, or protocol (default: types)
   -p, --protocol <file> Protocol module path (required when --format protocol)
