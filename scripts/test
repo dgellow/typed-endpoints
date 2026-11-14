@@ -10,6 +10,10 @@ cmd_update_snapshots() {
   deno test --allow-read --allow-write --allow-run --allow-net -- --update
 }
 
+error() {
+  echo "error: $*" >&2
+}
+
 cmd_help() {
   echo "Usage: scripts/test or scripts/test --update"
   echo ""
