@@ -230,6 +230,34 @@ Deno.test("rust axum: one route per operation; a catch-all is written as axum wr
   ]);
 });
 
+Deno.test("rust axum: the router compiles the contract's patterns, and says that it may panic", () => {
+  const withPattern = render(operation({
+    operationId: "notesCreate",
+    method: "POST",
+    body: {
+      type: "object",
+      properties: { code: { type: "string", pattern: "^\\d+$" } },
+    },
+    response: NOTE,
+  }));
+  const at = withPattern.findIndex((line) => line.startsWith("pub fn router"));
+  assertEquals(
+    withPattern[at + 1],
+    "    runtime::compile(contract::PATTERNS);",
+  );
+  assertEquals(withPattern.slice(at - 6, at)[1], "/// # Panics");
+
+  // No pattern: nothing to compile, and nothing to warn of.
+  const without = render(
+    operation({ operationId: "notesList", response: NOTE }),
+  );
+  assertEquals(
+    without.some((line) => line.includes("runtime::compile")),
+    false,
+  );
+  assertEquals(without.includes("/// # Panics"), false);
+});
+
 Deno.test("rust axum: an event stream is listed and left out", () => {
   const lines = render(
     operation({ operationId: "notesList", response: NOTE }),

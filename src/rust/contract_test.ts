@@ -132,6 +132,39 @@ Deno.test("rust contract: a union says which member decides its alternative, if 
   assertEquals(tagged(z.union([circle, circle.extend({ x: z.string() })])), []);
 });
 
+Deno.test("rust contract: each distinct pattern is a static, and the router's list names them all", () => {
+  const data = new RustContract();
+  assertEquals(data.hasPatterns, false);
+  data.define(
+    "THING",
+    jsonSchema(z.object({
+      first: z.string().regex(/^\d+$/),
+      second: z.string().regex(/^\d+$/),
+      word: z.string().regex(/^(?!admin)\w+$/),
+    })),
+  );
+  assertEquals(data.hasPatterns, true);
+  const lines = data.render().map((line) => line.trim());
+  // The same text twice is one pattern, compiled once.
+  assertEquals(
+    lines.includes("use super::runtime::{Pattern, Schema, Type};"),
+    true,
+  );
+  assertEquals(lines.filter((line) => line.includes("PATTERN")), [
+    '("first", Schema { types: &[Type::String], pattern: Some(&PATTERN_1), ..Schema::ANY }),',
+    '("second", Schema { types: &[Type::String], pattern: Some(&PATTERN_1), ..Schema::ANY }),',
+    '("word", Schema { types: &[Type::String], pattern: Some(&PATTERN_2), ..Schema::ANY }),',
+    "pub(super) static PATTERNS: &[&Pattern] = &[&PATTERN_1, &PATTERN_2];",
+    'static PATTERN_1: Pattern = Pattern::new(r"^\\d+$");',
+    'static PATTERN_2: Pattern = Pattern::new(r"^(?!admin)\\w+$");',
+  ]);
+
+  // Without a pattern there is no list, and the router compiles nothing.
+  const plain = new RustContract();
+  plain.define("THING", jsonSchema(z.object({ name: z.string() })));
+  assertEquals(plain.render().some((line) => line.includes("PATTERN")), false);
+});
+
 Deno.test("rust contract: a reference is the address of a static, also to itself", () => {
   const Tree: z.ZodType = z.object({
     name: z.string(),
