@@ -1,0 +1,4 @@
+# The Deno and Bun the scripts run with. CI installs these versions, mise
+# and asdf read this file, and the scripts stop on any other version.
+deno 2.9.6
+bun 1.4.4

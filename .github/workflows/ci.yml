@@ -8,15 +8,29 @@ on:
   pull_request:
     branches: [main]
 
+# Every tool is installed at the version a file of the repository names,
+# the same file a development machine reads:
+#
+#   Deno, Bun    .tool-versions
+#   uv, Python   e2e_tests/python/pyproject.toml, .python-version
+#   Rust         e2e_tests/rust/rust-toolchain.toml
+#
+# The scripts (and uv) stop on any other version, so a pin that did not
+# take effect here fails the job.
+
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
+      - name: Pinned versions
+        id: versions
+        run: sed -n 's/^\([a-z]*\) \(.*\)$/\1=\2/p' .tool-versions >> "$GITHUB_OUTPUT"
+
       - uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.9.x
+          deno-version: v${{ steps.versions.outputs.deno }}
           cache: true
 
       - name: Bootstrap
@@ -26,13 +40,17 @@ jobs:
         run: ./scripts/lint
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
+      - name: Pinned versions
+        id: versions
+        run: sed -n 's/^\([a-z]*\) \(.*\)$/\1=\2/p' .tool-versions >> "$GITHUB_OUTPUT"
+
       - uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.9.x
+          deno-version: v${{ steps.versions.outputs.deno }}
           cache: true
 
       - name: Bootstrap
@@ -42,28 +60,41 @@ jobs:
         run: ./scripts/test
 
   test-bun:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
+      - name: Pinned versions
+        id: versions
+        run: sed -n 's/^\([a-z]*\) \(.*\)$/\1=\2/p' .tool-versions >> "$GITHUB_OUTPUT"
+
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.x
+          bun-version: ${{ steps.versions.outputs.bun }}
 
       - name: Run tests under Bun
         run: ./scripts/test-bun
 
   test-python:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
+      - name: Pinned versions
+        id: versions
+        run: |
+          sed -n 's/^\([a-z]*\) \(.*\)$/\1=\2/p' .tool-versions >> "$GITHUB_OUTPUT"
+          sed -n 's/^required-version = "==\(.*\)"$/uv=\1/p' e2e_tests/python/pyproject.toml >> "$GITHUB_OUTPUT"
+
       - uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.9.x
+          deno-version: v${{ steps.versions.outputs.deno }}
           cache: true
 
+      # uv installs the interpreter .python-version names.
       - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ steps.versions.outputs.uv }}
 
       - name: Bootstrap
         run: deno install --frozen
@@ -72,20 +103,23 @@ jobs:
         run: ./scripts/test-python
 
   test-rust:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
+      - name: Pinned versions
+        id: versions
+        run: |
+          sed -n 's/^\([a-z]*\) \(.*\)$/\1=\2/p' .tool-versions >> "$GITHUB_OUTPUT"
+          sed -n 's/^channel = "\(.*\)"$/rust=\1/p' e2e_tests/rust/rust-toolchain.toml >> "$GITHUB_OUTPUT"
+
       - uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.9.x
+          deno-version: v${{ steps.versions.outputs.deno }}
           cache: true
 
-      # The version is the one e2e_tests/rust/rust-toolchain.toml names.
       - name: Rust toolchain
-        run: |
-          channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' e2e_tests/rust/rust-toolchain.toml)"
-          rustup toolchain install "$channel" --profile minimal --component clippy --component rustfmt
+        run: rustup toolchain install "${{ steps.versions.outputs.rust }}" --profile minimal --component clippy --component rustfmt
 
       - uses: actions/cache@v4
         with:
@@ -93,7 +127,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             e2e_tests/rust/target
-          key: rust-${{ runner.os }}-${{ hashFiles('e2e_tests/rust/Cargo.lock') }}
+          key: rust-${{ runner.os }}-${{ steps.versions.outputs.rust }}-${{ hashFiles('e2e_tests/rust/Cargo.lock') }}
 
       - name: Bootstrap
         run: deno install --frozen
@@ -102,13 +136,17 @@ jobs:
         run: ./scripts/test-rust
 
   framework-types:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
+      - name: Pinned versions
+        id: versions
+        run: sed -n 's/^\([a-z]*\) \(.*\)$/\1=\2/p' .tool-versions >> "$GITHUB_OUTPUT"
+
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.x
+          bun-version: ${{ steps.versions.outputs.bun }}
 
       - name: Type-check the integrations against the frameworks
         run: ./scripts/check-framework-types

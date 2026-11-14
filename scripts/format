@@ -2,6 +2,9 @@
 
 set -e
 
+source "$(dirname "$0")/pinned"
+require_pinned deno
+
 deno fmt
 # The Bun tests and the framework type check are excluded from Deno's
 # tools in deno.json; format them with the same defaults.

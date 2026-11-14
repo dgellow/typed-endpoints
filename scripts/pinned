@@ -1,0 +1,39 @@
+# Sourced by the scripts, not run.
+#
+# What a check says depends on the tool that ran it. Each script names the
+# tools it runs and stops if one is not the version the repository pins,
+# instead of checking with another one without saying so.
+#
+#   deno, bun    .tool-versions
+#   uv, Python   e2e_tests/python (pyproject.toml, .python-version): uv
+#                enforces them itself
+#   Rust         e2e_tests/rust/rust-toolchain.toml
+
+pinned_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# The version .tool-versions gives a tool.
+pinned_version() {
+  sed -n "s/^$1 \(.*\)$/\1/p" "$pinned_root/.tool-versions"
+}
+
+# Stops unless the tool is installed at the pinned version.
+require_pinned() {
+  local tool="$1" pinned active
+  pinned="$(pinned_version "$tool")"
+  if [ -z "$pinned" ]; then
+    echo "error: .tool-versions does not name a version of $tool" >&2
+    exit 1
+  fi
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "error: $tool is not installed; .tool-versions pins $pinned" >&2
+    exit 1
+  fi
+  case "$tool" in
+    deno) active="$(deno --version | sed -n 's/^deno \([^ ]*\).*/\1/p')" ;;
+    *) active="$("$tool" --version)" ;;
+  esac
+  if [ "$active" != "$pinned" ]; then
+    echo "error: $tool is $active; .tool-versions pins $pinned" >&2
+    exit 1
+  fi
+}

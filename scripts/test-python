@@ -9,10 +9,14 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 project="$root/e2e_tests/python"
 
+# uv enforces its own version and the interpreter's (pyproject.toml,
+# .python-version); Deno runs the conformance tests.
 if ! command -v uv >/dev/null 2>&1; then
   echo "error: uv is not installed (https://docs.astral.sh/uv/)" >&2
   exit 1
 fi
+source "$root/scripts/pinned"
+require_pinned deno
 
 cd "$project"
 uv sync --frozen --quiet

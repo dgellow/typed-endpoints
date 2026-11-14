@@ -13,6 +13,9 @@ if ! command -v cargo >/dev/null 2>&1; then
   echo "error: cargo is not installed (https://rustup.rs)" >&2
   exit 1
 fi
+# Deno runs the conformance tests.
+source "$root/scripts/pinned"
+require_pinned deno
 
 cd "$project"
 

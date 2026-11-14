@@ -8,16 +8,16 @@
 #
 # Next.js, SvelteKit and Astro are not run by any test: this is what shows
 # that the handlers createApiHandlers() returns are handlers of those
-# frameworks. To follow a framework release, change its version below.
+# frameworks. To follow a release of one of those three, change its version
+# below; Hono and h3 are named in scripts/bun-package.ts. Then write the
+# lockfile again: UPDATE_LOCK=1 ./scripts/check-framework-types.
 
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
-if ! command -v bun >/dev/null 2>&1; then
-  echo "error: bun is not installed (https://bun.sh)" >&2
-  exit 1
-fi
+source "$root/scripts/pinned"
+require_pinned bun
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -39,14 +39,14 @@ cat > package.json <<'JSON'
     "next": "16.4.6",
     "@sveltejs/kit": "3.2.0",
     "astro": "7.4.12",
-    "hono": "4.13.18",
-    "h3": "2.0.8",
     "typescript": "6.0.3",
-    "@types/node": "^22"
+    "@types/node": "22.20.5"
   }
 }
 JSON
-# The library's own npm dependencies, at the versions deno.json names.
+# Added to those: the library's own npm dependencies, at the versions
+# deno.lock names, and Hono and h3, at the versions the Bun tests run them
+# with. scripts/bun-package.ts is the one place that names them.
 bun -e '
   const base = JSON.parse(await Bun.file("base.json").text());
   const pkg = JSON.parse(await Bun.file("package.json").text());
@@ -73,6 +73,21 @@ cat > tsconfig.json <<'JSON'
 JSON
 cp "$root/e2e_tests/framework-types/check.ts" check.ts
 
-bun install --silent --ignore-scripts
+# e2e_tests/framework-types/bun.lock fixes every package that is
+# installed, also the ones the frameworks depend on. An install that would
+# not match it fails. UPDATE_LOCK=1 writes the lockfile again.
+lock="$root/e2e_tests/framework-types/bun.lock"
+if [ "${UPDATE_LOCK:-}" = 1 ]; then
+  bun install --silent --ignore-scripts
+  cp bun.lock "$lock"
+else
+  cp "$lock" bun.lock
+  # Quiet when it fits the lockfile; Bun's own words when it does not.
+  if ! output="$(bun install --ignore-scripts --frozen-lockfile 2>&1)"; then
+    printf '%s\n' "$output" >&2
+    echo "to write the lockfile again: UPDATE_LOCK=1 ./scripts/check-framework-types" >&2
+    exit 1
+  fi
+fi
 bunx tsc -p tsconfig.json
 echo "framework types: ok"
