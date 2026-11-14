@@ -16,6 +16,7 @@
   "exclude": [
     "CHANGELOG.md",
     "e2e_tests/bun",
+    "e2e_tests/framework-types",
     "scripts/bun-package.ts",
     "TypeScript",
     "aplas-code"
@@ -24,6 +25,12 @@
     ".": "./src/mod.ts",
     "./fresh": "./src/integrations/fresh.ts",
     "./bun": "./src/integrations/bun.ts",
+    "./fetch": "./src/integrations/fetch.ts",
+    "./hono": "./src/integrations/hono.ts",
+    "./next": "./src/integrations/next.ts",
+    "./sveltekit": "./src/integrations/sveltekit.ts",
+    "./astro": "./src/integrations/astro.ts",
+    "./nitro": "./src/integrations/nitro.ts",
     "./client": "./src/client/index.ts",
     "./protocol": "./src/protocol/index.ts",
     "./cli": "./src/cli.ts"

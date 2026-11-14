@@ -52,3 +52,15 @@ jobs:
 
       - name: Run tests under Bun
         run: ./scripts/test-bun
+
+  framework-types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.x
+
+      - name: Type-check the integrations against the frameworks
+        run: ./scripts/check-framework-types

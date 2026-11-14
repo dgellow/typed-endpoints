@@ -3,8 +3,9 @@
 set -e
 
 deno fmt --check
-# The Bun tests are excluded from Deno's tools in deno.json; they are
-# checked for formatting only. Bun runs them (scripts/test-bun).
-deno fmt --check --no-config e2e_tests/bun scripts/bun-package.ts
+# The Bun tests and the framework type check are excluded from Deno's
+# tools in deno.json; they are checked for formatting only here. Bun runs
+# them (scripts/test-bun, scripts/check-framework-types).
+deno fmt --check --no-config e2e_tests/bun e2e_tests/framework-types scripts/bun-package.ts
 deno lint
 deno check

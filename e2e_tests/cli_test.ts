@@ -226,3 +226,41 @@ Deno.test("CLI reports a routes directory that does not exist", async () => {
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("CLI --convention reads another framework's route layout", async () => {
+  const tmpFile = await Deno.makeTempFile({ suffix: ".ts" });
+  try {
+    const result = await runCli(
+      "-r",
+      "src/integrations/fixtures/next/app",
+      "-o",
+      tmpFile,
+      "-f",
+      "routes",
+      "--convention",
+      "next",
+    );
+    assertEquals(result.code, 0, result.stderr);
+
+    const output = await Deno.readTextFile(tmpFile);
+    assertEquals(
+      output.includes('method: "GET", path: "/api/users/{id}"'),
+      true,
+      output,
+    );
+  } finally {
+    await Deno.remove(tmpFile);
+  }
+});
+
+Deno.test("CLI rejects an unknown convention", async () => {
+  const result = await runCli("-o", "unused.ts", "--convention", "rails");
+  assertEquals(result.code, 1);
+  assertEquals(
+    result.stderr.includes(
+      'Invalid convention "rails". Must be: fresh, next, sveltekit, astro, nitro',
+    ),
+    true,
+    result.stderr,
+  );
+});
