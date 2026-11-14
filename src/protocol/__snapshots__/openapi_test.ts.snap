@@ -8,6 +8,7 @@ snapshot[`protocolToOpenApi converts simple protocol 1`] = `
   steps: [
     {
       description: "Initial step",
+      kind: "step",
       name: "start",
       next: [
         "middle",
@@ -16,6 +17,7 @@ snapshot[`protocolToOpenApi converts simple protocol 1`] = `
     {
       dependsOn: "start",
       description: "Middle step",
+      kind: "dependent",
       name: "middle",
       next: [
         "end",
@@ -24,6 +26,7 @@ snapshot[`protocolToOpenApi converts simple protocol 1`] = `
     {
       dependsOn: "middle",
       description: "Final step",
+      kind: "dependent",
       name: "end",
     },
   ],
@@ -39,6 +42,7 @@ snapshot[`protocolToOpenApi handles branching (multiple next) 1`] = `
   name: "BranchingProtocol",
   steps: [
     {
+      kind: "step",
       name: "init",
       next: [
         "success",
@@ -47,10 +51,12 @@ snapshot[`protocolToOpenApi handles branching (multiple next) 1`] = `
     },
     {
       dependsOn: "init",
+      kind: "dependent",
       name: "success",
     },
     {
       dependsOn: "init",
+      kind: "dependent",
       name: "failure",
     },
   ],
@@ -69,6 +75,7 @@ snapshot[`protocolToOpenApi converts OAuth protocol 1`] = `
   steps: [
     {
       description: "Redirect user to authorization server for authentication",
+      kind: "step",
       name: "authorize",
       next: [
         "exchange",
@@ -77,21 +84,31 @@ snapshot[`protocolToOpenApi converts OAuth protocol 1`] = `
     {
       dependsOn: "authorize",
       description: "Exchange authorization code for access token",
+      kind: "dependent",
       name: "exchange",
       next: [
         "refresh",
         "revoke",
       ],
+      revokes: [
+        "authorize",
+      ],
     },
     {
       dependsOn: "exchange",
       description: "Refresh access token using refresh token",
+      kind: "dependent",
       name: "refresh",
+      renews: "exchange",
     },
     {
       dependsOn: "exchange",
       description: "Revoke access or refresh token",
+      kind: "dependent",
       name: "revoke",
+      revokes: [
+        "exchange",
+      ],
     },
   ],
   terminal: [

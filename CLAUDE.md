@@ -59,7 +59,7 @@ src/
 │   ├── errors.ts   # ProtocolError hierarchy thrown by sessions
 │   ├── introspect.ts # Zod schema path lookup used by validateProtocol()
 │   ├── http.ts     # HTTP executor for real endpoints
-│   ├── openapi.ts  # x-protocol OpenAPI extension
+│   ├── openapi.ts  # x-protocols OpenAPI extension
 │   ├── compose.ts  # Endpoint composition (fromEndpoint, fromEndpointMapped)
 │   ├── typegen.ts  # Branded type generation from protocols (+ subprocess helper)
 │   └── oauth.ts    # OAuth 2.0 reference implementation

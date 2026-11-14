@@ -382,16 +382,16 @@ Deno.test("E2E: OpenAPI spec integration", () => {
 
   const fullSpec = {
     ...baseSpec,
-    "x-protocol": xProtocol,
+    "x-protocols": [xProtocol],
   };
 
   // Verify structure
-  assertEquals(fullSpec["x-protocol"].name, "FileUpload");
-  assertEquals(fullSpec["x-protocol"].initial, "initiate");
-  assertEquals(fullSpec["x-protocol"].terminal, ["complete", "abort"]);
+  assertEquals(fullSpec["x-protocols"][0].name, "FileUpload");
+  assertEquals(fullSpec["x-protocols"][0].initial, "initiate");
+  assertEquals(fullSpec["x-protocols"][0].terminal, ["complete", "abort"]);
 
   // Verify step transitions
-  const initiateStep = fullSpec["x-protocol"].steps.find(
+  const initiateStep = fullSpec["x-protocols"][0].steps.find(
     (s) => s.name === "initiate",
   );
   assertEquals([...(initiateStep?.next ?? [])].sort(), [
@@ -400,7 +400,7 @@ Deno.test("E2E: OpenAPI spec integration", () => {
     "upload",
   ]);
 
-  const uploadStep = fullSpec["x-protocol"].steps.find(
+  const uploadStep = fullSpec["x-protocols"][0].steps.find(
     (s) => s.name === "upload",
   );
   assertEquals(uploadStep?.dependsOn, "initiate");

@@ -424,7 +424,7 @@ Deno.test("E2E: Protocol session tracks state correctly", async () => {
   }
 });
 
-Deno.test("E2E: OpenAPI spec with x-protocol extension", async (t) => {
+Deno.test("E2E: OpenAPI spec with x-protocols extension", async (t) => {
   // Generate base OpenAPI spec from handlers
   const baseSpec = {
     openapi: "3.1.0",
@@ -471,10 +471,22 @@ Deno.test("E2E: OpenAPI spec with x-protocol extension", async (t) => {
   // Add protocol extension
   const specWithProtocol = addProtocolToSpec(baseSpec, authProtocol);
 
-  // Verify x-protocol is present
-  assertEquals(specWithProtocol["x-protocol"].name, "SimpleAuth");
-  assertEquals(specWithProtocol["x-protocol"].initial, "login");
-  assertEquals(specWithProtocol["x-protocol"].terminal, ["logout"]);
+  // The protocol is listed under the one extension key
+  const [listed] = specWithProtocol["x-protocols"];
+  assertEquals(specWithProtocol["x-protocols"].length, 1);
+  assertEquals(listed.name, "SimpleAuth");
+  assertEquals(listed.initial, "login");
+  assertEquals(listed.terminal, ["logout"]);
+
+  // Every operationId a step names is an operation of the document.
+  const operations = Object.values(baseSpec.paths).map((path) =>
+    path.post.operationId
+  );
+  for (const step of listed.steps) {
+    if (step.operationId !== undefined) {
+      assertEquals(operations.includes(step.operationId), true, step.name);
+    }
+  }
 
   // Snapshot the full spec
   await assertSnapshot(t, specWithProtocol);
