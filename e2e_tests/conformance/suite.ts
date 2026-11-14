@@ -602,6 +602,35 @@ export function conformance(
     }
   });
 
+  test("a deeply nested value is checked in time that grows with its size", async () => {
+    // A union that refers to itself, 40 levels deep. A checker that tries
+    // each alternative and then checks the one that fits again doubles
+    // its work at every level.
+    const nest = (depth: number, wrap: (inner: unknown) => unknown) => {
+      let value: unknown = 1;
+      for (let i = 0; i < depth; i++) value = wrap(value);
+      return value;
+    };
+    const bodies = [
+      { ...ODD, json: nest(40, (inner) => [inner]) },
+      { ...ODD, json: nest(40, (inner) => ({ a: inner })) },
+      { ...ODD, expr: nest(40, (inner) => ({ op: "neg", of: inner })) },
+    ];
+    for (const body of bodies) {
+      const started = performance.now();
+      const response = await fetch(`${baseUrl()}/api/odd`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(10_000),
+      });
+      const text = await response.text();
+      const elapsed = performance.now() - started;
+      assertEquals(response.status, 200, text);
+      assert(elapsed < 2_000, `took ${Math.round(elapsed)} ms`);
+    }
+  });
+
   test("a refusal says what the TypeScript handlers say, word for word", async () => {
     const recorded = JSON.parse(
       await Deno.readTextFile(RECORDED_REFUSALS),
@@ -703,6 +732,17 @@ export function conformance(
       assertEquals((await written.json()).count, 2);
     }
     await refused({ count: 2.5 }, "count");
+
+    // Also where the schema names the number: 2.0 is the constant 2.
+    const constant = await send(
+      "POST",
+      "/api/odd",
+      JSON.stringify(ODD).replace('"version":2', '"version":2.0'),
+    );
+    // On every server: the difference a server may declare is about
+    // members that are integers, not about constants.
+    assertEquals(constant.status, 200, "version: 2.0");
+    await constant.body?.cancel();
 
     // A multiple of 0.1, whatever binary floating point makes of it.
     await accepted({ step: 0.3 });
