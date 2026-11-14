@@ -40,6 +40,9 @@ done
 cargo clippy --locked --quiet --all-targets -- -D warnings -W clippy::pedantic
 # What only Rust can ask of the module: its unit tests.
 cargo test --locked --quiet
+# The calls a protocol forbids, as the hand-written session has them: each
+# fails to build, with the error it names.
+deno run --allow-read=. --allow-write=examples --allow-run=cargo forbidden_calls.ts src/oauth_session.rs
 cargo build --locked --quiet
 
 log="$(mktemp)"

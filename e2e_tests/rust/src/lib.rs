@@ -2,3 +2,4 @@
 
 pub mod api_generated;
 pub mod client_generated;
+pub mod oauth_session;
