@@ -72,11 +72,6 @@ const JSON_MODEL = `class _Json(_Model):
 
     model_config = ConfigDict(strict=True)`;
 
-const CLOSED_JSON_MODEL = `class _ClosedJson(_Json):
-    """A model of JSON that refuses members it does not name."""
-
-    model_config = ConfigDict(extra="forbid")`;
-
 Deno.test("python models: plain types and their constraints", () => {
   const type = (schema: z.ZodType) => python(schema).type;
 
@@ -178,17 +173,14 @@ class UserBody(_Json):
     },
   );
 
-  // What a response carries: the default was applied, the field is there,
-  // and the object is closed.
+  // What a response carries: the default was applied and the member is
+  // there. That the object is closed is not said by the class: a member a
+  // handler adds is dropped, as the TypeScript handlers drop it.
   assertEquals(
-    // After `_is_none()` and the two base classes above.
-    python(schema, { name: "User", io: "output" }).source.split("\n\n\n")
-      .slice(3).join("\n\n\n").split("\n").slice(0, 12),
+    classes(python(schema, { name: "User", io: "output" }).source).split("\n")
+      .slice(0, 6),
     [
-      ...CLOSED_JSON_MODEL.split("\n"),
-      "",
-      "",
-      "class User(_ClosedJson):",
+      "class User(_Json):",
       '    """An object of the API."""',
       "",
       "    id: str",
@@ -207,6 +199,53 @@ class UserBody(_Json):
     ).split("\n")[0],
     "class Query(_Model):",
   );
+});
+
+Deno.test("python models: the two sides of a schema are one class, unless a default sets them apart", () => {
+  const sides = (schema: z.ZodType) => {
+    const models = new PythonModels();
+    const body = models.define("Body", jsonSchema(schema, "input"), true);
+    const response = models.define(
+      "Response",
+      jsonSchema(schema, "output"),
+      true,
+    );
+    return { body, response, source: models.render().join("\n") };
+  };
+
+  // A response is closed and a request is not: the same class all the
+  // same, under a name for each place.
+  const tree = z.object({ name: z.string(), tags: z.array(z.string()) });
+  const same = sides(z.object({ tree, count: z.number() }));
+  assertEquals(same.source.includes("\nResponse = Body\n"), true);
+  assertEquals(same.source.match(/^class \w+/gm), [
+    "class _Model",
+    "class _Json",
+    "class BodyTree",
+    "class Body",
+  ]);
+
+  // A schema that refers to itself, which each side writes its own way.
+  const node: z.ZodType = z.object({
+    name: z.string(),
+    get children() {
+      return z.array(node);
+    },
+  });
+  const nested = sides(z.object({ root: node }));
+  assertEquals(nested.source.includes("\nResponse = Body\n"), true);
+  assertEquals(nested.source.match(/^class \w+/gm)?.length, 4);
+
+  // With a default the sides ask for different things: a request may
+  // leave the member out, a response has to have it.
+  const apart = sides(z.object({ tree, limit: z.number().default(2) }));
+  assertEquals(apart.source.includes("\nResponse = Body\n"), false);
+  assertEquals(
+    apart.source.match(/^ {4}limit: .*$/gm),
+    ["    limit: float = 2", "    limit: float"],
+  );
+  // What is inside them and has no default is still one class.
+  assertEquals(apart.source.includes("\nResponseTree = BodyTree\n"), true);
 });
 
 Deno.test("python models: None for a member that may be left out is not written, unless null is a value of it", () => {

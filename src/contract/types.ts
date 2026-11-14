@@ -623,7 +623,9 @@ export class TypeGraph {
  * same values.
  *
  * @param merge Leave out what differs between the sides of one schema:
- * closed objects, and `required` for a member that has a default.
+ * closed objects, and `required` for a member that has a default. With
+ * `"closed"`, only the first: the sides of a schema with a default stay
+ * two, for a language whose type says whether a member has to be given.
  */
 export function canonical(
   schema: unknown,
@@ -631,7 +633,7 @@ export function canonical(
     readonly root: Readonly<Record<string, unknown>>;
     readonly defs: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
   },
-  merge = false,
+  merge: boolean | "closed" = false,
   enclosing: readonly unknown[] = [],
 ): unknown {
   if (Array.isArray(schema)) {
@@ -657,7 +659,7 @@ export function canonical(
   for (const [key, value] of Object.entries(rules)) {
     if (key === "$schema" || key === "$defs") continue;
     if (merge && key === "additionalProperties" && value === false) continue;
-    if (merge && key === "required" && Array.isArray(value)) {
+    if (merge === true && key === "required" && Array.isArray(value)) {
       const always = value.filter((name) => {
         const member = properties[name];
         return !(typeof member === "object" && member !== null &&

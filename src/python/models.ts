@@ -267,8 +267,6 @@ interface ClassInfo {
   readonly name: string;
   /** Whether values keep their JSON type (a body, a response). */
   readonly strict: boolean;
-  /** Whether members the schema does not name are refused. */
-  readonly closed: boolean;
   readonly description?: string;
   readonly fields: readonly FieldInfo[];
   /** Whether the class refers to itself or to a class defined later. */
@@ -290,20 +288,10 @@ const BASES = {
     parent: "BaseModel",
     doc: "What every model of this module has in common.",
   },
-  closed: {
-    name: "_Closed",
-    parent: "_Model",
-    doc: "A model that refuses members it does not name.",
-  },
   json: {
     name: "_Json",
     parent: "_Model",
     doc: "A model of JSON: a value keeps the type it has there.",
-  },
-  closedJson: {
-    name: "_ClosedJson",
-    parent: "_Json",
-    doc: "A model of JSON that refuses members it does not name.",
   },
 } as const;
 
@@ -397,12 +385,9 @@ export class PythonModels {
    *
    * @param strict Whether its values keep their JSON type.
    */
-  base(strict: boolean, closed = false): string {
-    const key: BaseKey = strict
-      ? (closed ? "closedJson" : "json")
-      : (closed ? "closed" : "model");
-    // A base class is defined after the ones it extends.
-    if (key === "closedJson") this.bases.add("json");
+  base(strict: boolean): string {
+    const key: BaseKey = strict ? "json" : "model";
+    // A base class is defined after the one it extends.
     this.bases.add("model").add(key);
     return BASES[key].name;
   }
@@ -419,7 +404,7 @@ export class PythonModels {
     if (this.patterns.size > 0) lines.push("", "");
     if (this.usesIsNone) lines.push(IS_NONE, "", "");
 
-    for (const key of ["model", "closed", "json", "closedJson"] as const) {
+    for (const key of ["model", "json"] as const) {
       if (!this.bases.has(key)) continue;
       const { name, parent, doc } = BASES[key];
       const config = key === "model"
@@ -431,9 +416,7 @@ export class PythonModels {
           'regex_engine="python-re"',
           "use_attribute_docstrings=True",
         ]
-        : key === "json"
-        ? ["strict=True"]
-        : ['extra="forbid"'];
+        : ["strict=True"];
       lines.push(
         `class ${name}(${parent}):`,
         ...docstring(4, doc),
@@ -499,9 +482,9 @@ export class PythonModels {
   }
 
   private classLines(definition: ClassInfo, generated: boolean): string[] {
-    const { name, strict, closed } = definition;
+    const { name, strict } = definition;
     const lines = [
-      `class ${name}(${this.base(strict, closed)}):`,
+      `class ${name}(${this.base(strict)}):`,
       ...this.classDoc(definition),
     ];
     for (const field of definition.fields) {
@@ -822,6 +805,20 @@ export class PythonModels {
     if (existing !== undefined) {
       return this.building.has(existing) ? forward(existing) : existing;
     }
+    // The same object was defined in another document: on the other side
+    // of the schema, or in another operation.
+    const content = JSON.stringify([
+      canonical(schema, document, "closed"),
+      strict,
+    ]);
+    const same = this.rendered.get(content);
+    if (same !== undefined && !this.building.has(same)) {
+      // Under the name it has here too, as an object written in place is.
+      const alias = this.unique(hint);
+      this.definitions.push({ kind: "alias", name: alias, target: same });
+      known.set(key, alias);
+      return alias;
+    }
     const name = this.unique(hint);
     known.set(key, name);
     return this.objectOf(schema, name, document, strict, true);
@@ -837,7 +834,10 @@ export class PythonModels {
     // carries the same definition under the same name.
     if (schema.type === "object" && schema.properties) {
       const name = pascalCase(key);
-      const content = JSON.stringify([schema, strict]);
+      const content = JSON.stringify([
+        canonical(schema, document, "closed"),
+        strict,
+      ]);
       const known = this.shared.get(name);
       if (known === content) {
         // Inside its own definition the class does not exist yet.
@@ -865,7 +865,10 @@ export class PythonModels {
     document: Document,
     strict: boolean,
   ): string {
-    const content = JSON.stringify([canonical(schema, document), strict]);
+    const content = JSON.stringify([
+      canonical(schema, document, "closed"),
+      strict,
+    ]);
     const known = this.recursive.get(content);
     if (known !== undefined) return known;
 
@@ -923,15 +926,16 @@ export class PythonModels {
 
     // The same object under another name (the note a list returns and the
     // note a retrieval returns) is one class with two names, so a value of
-    // one is a value of the other.
-    // What a reference means depends on the document: its definitions,
-    // and for a reference to the root, which schema the root is.
-    const text = JSON.stringify(schema);
+    // one is a value of the other. So are the two sides of a schema, what
+    // a request sends and what a response carries, where they ask for the
+    // same members: that a response is closed has no bearing on the
+    // class, and a handler passes a part of the request on as a part of
+    // the response. With a default they are two classes: a request may
+    // leave the member out, a response has to have it, and the type of
+    // what a handler returns says so.
     const content = JSON.stringify([
-      schema,
+      canonical(schema, document, "closed"),
       strict,
-      text.includes('"$ref":"#/') ? document.defs : null,
-      text.includes('"$ref":"#"') ? document.rootName : null,
     ]);
     if (!named) {
       const same = this.rendered.get(content);
@@ -1000,12 +1004,11 @@ export class PythonModels {
     // this one comes after them. One that refers to itself by name
     // resolves that name once it exists.
     this.building.delete(className);
-    this.base(strict, additional === false);
+    this.base(strict);
     this.definitions.push({
       kind: "class",
       name: className,
       strict,
-      closed: additional === false,
       ...(typeof schema.description === "string" &&
         { description: schema.description }),
       fields,

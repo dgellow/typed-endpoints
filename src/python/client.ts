@@ -400,12 +400,14 @@ export function renderPythonClient(
       return type;
     };
 
+    // What a caller writes comes first: an object that is on both sides of
+    // a schema is one class, named after where it is first.
+    const query = part("Query", "query", operation.query, false);
+    const body = part("Body", "body", operation.body, true);
     const response = part("Response", "response", operation.response, true);
     const itemSchema = operation.pagination && operation.response
       ? itemsSchema(operation.response, operation.pagination.items)
       : undefined;
-    const query = part("Query", "query", operation.query, false);
-    const body = part("Body", "body", operation.body, true);
     const errors = new Map(
       Object.entries(operation.errors ?? {}).map(([status, schema]) => [
         status,

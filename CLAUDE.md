@@ -293,7 +293,9 @@ JavaScript reads them once, before. Every handler returns a `Result`: a declared
 error is a variant of the operation's error type, anything else an
 `InternalError`. serde writes a struct's string constant, except for a variant
 of a union, where it would not be read. Python's models do not use `TypeGraph`
-yet.
+yet; they tell the same object by the same function (`canonical()`, with
+`"closed"`: the two sides of a schema are one class unless a default sets them
+apart, because a Python class says whether a member has to be given).
 
 The Rust client (`src/rust/client.ts`) has the same types and no contract: a
 response is read by serde into its type. Its fixed part
