@@ -38,7 +38,13 @@ tslog="$(mktemp)"
 uv run --frozen uvicorn app:app --host 127.0.0.1 --port "$port" --log-level warning >"$log" 2>&1 &
 server=$!
 tsserver=""
-trap 'kill "$server" $tsserver 2>/dev/null || true; rm -f "$log" "$tslog"' EXIT
+# Stops the servers and waits for them: none is left when the script returns.
+stop() {
+  kill "$server" $tsserver 2>/dev/null || true
+  wait "$server" $tsserver 2>/dev/null || true
+  rm -f "$log" "$tslog"
+}
+trap stop EXIT
 
 url="http://127.0.0.1:$port"
 for _ in $(seq 1 100); do
