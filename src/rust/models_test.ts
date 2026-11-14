@@ -331,7 +331,6 @@ pub struct Thing {
 Deno.test("rust models: string literals are an enum; a rule names its values", () => {
   const { source } = rust(
     z.object({
-      kind: z.literal("alarm"),
       unit: z.enum(["mm", "cm"]).default("cm"),
       level: z.enum(["low", "very-high", "Low"]),
       state: z.enum(["ON", "OFF"]),
@@ -346,7 +345,6 @@ Deno.test("rust models: string literals are an enum; a rule names its values", (
     source,
     `${DERIVE_EQ}
 pub struct Alarm {
-    pub kind: AlarmKind,
     #[serde(default = "default_alarm_unit")]
     pub unit: AlarmUnit,
     pub level: AlarmLevel,
@@ -358,14 +356,6 @@ pub struct Alarm {
 
 fn default_alarm_unit() -> AlarmUnit {
     AlarmUnit::Cm
-}
-
-/// The value \`"alarm"\`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-pub enum AlarmKind {
-    #[default]
-    #[serde(rename = "alarm")]
-    Alarm,
 }
 
 /// One of \`"mm"\`, \`"cm"\`.
@@ -400,6 +390,60 @@ pub enum AlarmPhase {
     Start,
     End,
 }`,
+  );
+});
+
+Deno.test("rust models: serde writes a struct's constant, unless the struct is a variant", () => {
+  // Alone: the constant is an attribute, and there is no field to fill in.
+  assertEquals(
+    rust(
+      z.object({
+        error: z.literal("not_found"),
+        id: z.string(),
+        // Only the first; a second constant is a field of one value.
+        scope: z.literal("notes"),
+      }),
+      { name: "NotFound" },
+    ).source,
+    `${DERIVE_EQ}
+#[serde(tag = "error", rename = "not_found")]
+pub struct NotFound {
+    pub id: String,
+    pub scope: NotFoundScope,
+}
+
+/// The value \`"notes"\`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum NotFoundScope {
+    #[default]
+    #[serde(rename = "notes")]
+    Notes,
+}`,
+  );
+
+  // A constant that may be absent, or is not a string, stays a field.
+  assertEquals(
+    rust(z.object({ kind: z.literal("x").optional(), version: z.literal(2) }))
+      .source.includes("tag ="),
+    false,
+  );
+
+  // In a union without a deciding member, serde tells the variants apart
+  // by reading them, and it does not read a struct's tag: measured, two
+  // structs that differ in the constant only both read as the first. So
+  // a variant keeps the constant as a field of a type with one value.
+  const lines = rust(
+    z.union([
+      z.number(),
+      z.object({ op: z.literal("neg"), of: z.number() }),
+      z.object({ op: z.literal("abs"), of: z.number() }),
+    ]),
+    { name: "Expr" },
+  ).source.split("\n");
+  assertEquals(lines.some((line) => line.includes("tag =")), false);
+  assertEquals(
+    lines.filter((line) => line.includes("pub op:")),
+    ["    pub op: ExprNegOp,", "    pub op: ExprAbsOp,"],
   );
 });
 
