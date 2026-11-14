@@ -52,16 +52,23 @@ export type {
 } from "../core/dependent_types.ts";
 
 export type {
+  AllParams,
   ApiSchema,
   CapturedOptionsArg,
   CreateMethod,
   DeleteMethod,
   Empty,
+  IdArg,
   ListMethod,
   Method,
   MethodDef,
   MethodOptions,
+  NeedsOptions,
   OptionsArg,
+  ParamsOption,
+  ParentParams,
+  PathOf,
+  PathParamNames,
   RequestOptions,
   ResourceClient,
   ResourceDef,
@@ -71,6 +78,8 @@ export type {
   SseMethodDef,
   SubscribeMethod,
   SubscribeOptions,
+  SubscribeOptionsFor,
+  TrailingParam,
   TypedClient,
   TypedSseEvent,
   UpdateMethod,
@@ -86,6 +95,81 @@ export interface ClientConfig {
   readonly headers?: Record<string, string>;
   /** Custom fetch implementation */
   readonly fetch?: typeof fetch;
+  /**
+   * The route table the type generator writes next to `Api`
+   * (`export const routes` in the `client` format).
+   *
+   * With it, each call takes its HTTP method and its URL from the table:
+   * routes with several path parameters, routes outside `basePath`, PUT
+   * next to PATCH and catch-all paths all work. Without it, the client
+   * derives the URL from the property names, which covers
+   * `basePath/resource[/id]` only.
+   */
+  readonly routes?: ClientRoutes;
+}
+
+/** A generated route table: method and path template by client method. */
+export type ClientRoutes = Readonly<
+  Record<string, { readonly method: string; readonly path: string }>
+>;
+
+/** Methods that address one resource: their first argument can be its id. */
+const ID_METHODS: ReadonlySet<string> = new Set([
+  "retrieve",
+  "update",
+  "replace",
+  "delete",
+  "subscribe",
+]);
+
+/** Methods whose argument after the id, if any, is the request body. */
+const BODY_METHODS: ReadonlySet<string> = new Set([
+  "create",
+  "update",
+  "replace",
+]);
+
+/** Client methods; any other property is a nested resource. */
+const CLIENT_METHODS: ReadonlySet<string> = new Set([
+  "list",
+  ...ID_METHODS,
+  ...BODY_METHODS,
+]);
+
+/** Whether a path template ends with a parameter, e.g. `/users/{id}`. */
+function endsWithParameter(template: string): boolean {
+  return /\/\{\+?\w+\}$/.test(template);
+}
+
+/**
+ * Fill a path template (`{name}`, and `{+name}` for a catch-all whose
+ * value keeps its slashes, as in RFC 6570).
+ *
+ * The id fills the trailing parameter; `params` fill the others. A
+ * parameter without a value is an error that names it.
+ */
+function fillTemplate(
+  call: string,
+  template: string,
+  id: string | undefined,
+  params: Readonly<Record<string, string>> = {},
+): string {
+  const trailing = id === undefined
+    ? undefined
+    : /\{\+?(\w+)\}$/.exec(template)?.[1];
+
+  return template.replace(/\{(\+?)(\w+)\}/g, (_match, plus, name) => {
+    const value = name === trailing ? id : params[name];
+    if (value === undefined) {
+      throw new TypeError(
+        `${call}: no value for the path parameter "${name}" of ${template}; pass it in \`params\``,
+      );
+    }
+    // A catch-all spans segments: encode each one, keep the slashes.
+    return plus === "+"
+      ? String(value).split("/").map(encodeURIComponent).join("/")
+      : encodeURIComponent(String(value));
+  });
 }
 
 /**
@@ -239,10 +323,11 @@ async function* createSseSubscription<TEvents extends SseEventsDef>(
               throw new SseDataError(raw.event, raw.data, { cause });
             }
 
+            // `id` is a key only when the event has one.
             yield {
               event: raw.event,
               data,
-              id: raw.id,
+              ...(raw.id !== undefined && { id: raw.id }),
             } as TypedSseEvent<TEvents>;
           }
         }
@@ -371,6 +456,73 @@ export function createClient<Api extends ApiSchema>(
   }
 
   /**
+   * Where a call goes: the HTTP method and the path, from the route table
+   * when there is one, otherwise from the property names.
+   */
+  function resolveCall(
+    pathSegments: string[],
+    methodName: string,
+    args: unknown[],
+  ): {
+    method: string;
+    path: string;
+    body: unknown;
+    options: RequestOptions & SubscribeOptions;
+  } {
+    const call = [...pathSegments, methodName].join(".");
+    const route = cfg.routes?.[call];
+    if (cfg.routes && !route) {
+      throw new TypeError(
+        `${call}() is not in the route table passed to createClient()`,
+      );
+    }
+
+    // With a route, the id is there exactly when the path ends with a
+    // parameter. Without one, a resource method takes an id; a
+    // subscription takes one if its first argument is a string.
+    const rest = [...args];
+    const takesId = !ID_METHODS.has(methodName)
+      ? false
+      : route
+      ? endsWithParameter(route.path)
+      : methodName !== "subscribe" || typeof rest[0] === "string";
+    const id = takesId ? rest.shift() as string : undefined;
+    const body = BODY_METHODS.has(methodName) ? rest.shift() : undefined;
+    const options = (rest.shift() ?? {}) as RequestOptions & SubscribeOptions;
+
+    if (route) {
+      return {
+        method: route.method,
+        path: fillTemplate(call, route.path, id, options.params),
+        body,
+        options,
+      };
+    }
+
+    if (options.params && Object.keys(options.params).length > 0) {
+      throw new TypeError(
+        `${call}(): \`params\` needs the generated route table; pass \`routes\` to createClient()`,
+      );
+    }
+    const legacyMethods: Record<string, string> = {
+      list: "GET",
+      retrieve: "GET",
+      create: "POST",
+      update: "PUT",
+      replace: "PUT",
+      delete: "DELETE",
+      subscribe: "GET",
+    };
+    return {
+      method: legacyMethods[methodName],
+      path: basePath + "/" + pathSegments.join("/") +
+        (id === undefined ? "" : "/" + encodeURIComponent(id)),
+      body,
+      options,
+    };
+  }
+
+  /**
    * Create a resource proxy that handles method calls and nested resources.
    */
   function createResourceProxy(pathSegments: string[]): unknown {
@@ -387,62 +539,9 @@ export function createClient<Api extends ApiSchema>(
       get(_target, prop: string | symbol) {
         if (isReservedProperty(prop)) return undefined;
 
-        // Handle method calls
-        if (prop === "list") {
-          return (options?: RequestOptions) => {
-            const path = basePath + "/" + pathSegments.join("/");
-            return request("GET", path, undefined, options);
-          };
-        }
-
-        if (prop === "retrieve") {
-          return (id: string, options?: RequestOptions) => {
-            const path = basePath + "/" + pathSegments.join("/") + "/" +
-              encodeURIComponent(id);
-            return request("GET", path, undefined, options);
-          };
-        }
-
-        if (prop === "create") {
-          return (body: unknown, options?: RequestOptions) => {
-            const path = basePath + "/" + pathSegments.join("/");
-            return request("POST", path, body, options);
-          };
-        }
-
-        if (prop === "update") {
-          return (id: string, body: unknown, options?: RequestOptions) => {
-            const path = basePath + "/" + pathSegments.join("/") + "/" +
-              encodeURIComponent(id);
-            return request("PUT", path, body, options);
-          };
-        }
-
-        if (prop === "delete") {
-          return (id: string, options?: RequestOptions) => {
-            const path = basePath + "/" + pathSegments.join("/") + "/" +
-              encodeURIComponent(id);
-            return request("DELETE", path, undefined, options);
-          };
-        }
-
         if (prop === "subscribe") {
-          return (
-            idOrOptions?: string | SubscribeOptions,
-            maybeOptions?: SubscribeOptions,
-          ) => {
-            let path: string;
-            let options: SubscribeOptions;
-
-            if (typeof idOrOptions === "string") {
-              path = basePath + "/" + pathSegments.join("/") + "/" +
-                encodeURIComponent(idOrOptions);
-              options = maybeOptions ?? {};
-            } else {
-              path = basePath + "/" + pathSegments.join("/");
-              options = idOrOptions ?? {};
-            }
-
+          return (...args: unknown[]) => {
+            const { path, options } = resolveCall(pathSegments, prop, args);
             const url = cfg.baseUrl + path + buildQuery(options.query);
             return createSseSubscription(
               fetchFn,
@@ -450,6 +549,17 @@ export function createClient<Api extends ApiSchema>(
               cfg.headers ?? {},
               options,
             );
+          };
+        }
+
+        if (CLIENT_METHODS.has(prop)) {
+          return (...args: unknown[]) => {
+            const { method, path, body, options } = resolveCall(
+              pathSegments,
+              prop,
+              args,
+            );
+            return request(method, path, body, options);
           };
         }
 

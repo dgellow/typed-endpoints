@@ -718,7 +718,8 @@ Deno.test("createClient.subscribe joins multi-line data and accepts CRLF", async
   const events = [];
   for await (const e of client.log.subscribe()) events.push(e);
 
-  assertEquals(events, [{ event: "line", data: ["a", "b"], id: undefined }]);
+  // No `id` key: the event has no id field.
+  assertEquals(events, [{ event: "line", data: ["a", "b"] }]);
 });
 
 // =============================================================================
