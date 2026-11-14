@@ -22,7 +22,6 @@ permissions):
 - `./scripts/lint` — check formatting (`deno fmt --check`), lint (`deno lint`),
   and type-check (`deno check`)
 - `./scripts/format` — auto-format
-- `./scripts/build` — build
 
 ## Project Structure
 

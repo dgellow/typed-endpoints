@@ -9,15 +9,15 @@ allowed-tools: Read, Grep, Glob, Bash
 
 ## Quick Reference
 
-| Task | Command |
-|------|---------|
-| Run tests | `./scripts/test` |
-| Update snapshots | `./scripts/test --update` |
-| Lint (fmt + lint + typecheck) | `./scripts/lint` |
-| Auto-format | `./scripts/format` |
-| Build | `./scripts/build` |
+| Task                          | Command                   |
+| ----------------------------- | ------------------------- |
+| Run tests                     | `./scripts/test`          |
+| Update snapshots              | `./scripts/test --update` |
+| Lint (fmt + lint + typecheck) | `./scripts/lint`          |
+| Auto-format                   | `./scripts/format`        |
 
-Always use the scripts, never bare `deno` commands — they set required permissions.
+Always use the scripts, never bare `deno` commands — they set required
+permissions.
 
 ## Project Structure
 
@@ -54,7 +54,9 @@ e2e_tests/          # End-to-end tests (protocol flows, Fresh server, CLI, Vite)
 
 ## Protocol Module Key Concepts
 
-Based on Andre Videla's container morphisms research. The sequential product (`>>`) means the request type of step N+1 is a function of the response of step N.
+Based on Andre Videla's container morphisms research. The sequential product
+(`>>`) means the request type of step N+1 is a function of the response of step
+N.
 
 - **Compile-time**: tracks which step _names_ are done (union type `TDone`)
 - **Runtime**: enforces actual value constraints via Zod (`z.literal()`)
