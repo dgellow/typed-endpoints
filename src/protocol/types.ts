@@ -17,6 +17,22 @@ import type { FieldMapping } from "./mapping.ts";
 // Core Step Types
 // =============================================================================
 
+/** Where a request field is sent over HTTP. */
+export type RequestLocation = "path" | "query" | "body";
+
+/**
+ * Where each field of a step's request is sent over HTTP.
+ *
+ * A step's request is one flat object. Steps created from an endpoint
+ * (`fromEndpoint()` and friends) record which of the endpoint's `params`,
+ * `query` and `body` schemas each field came from; a field declared in more
+ * than one of them is sent to each place. Fields that are not listed follow
+ * the HTTP executor's default rule.
+ */
+export type RequestLocations = Readonly<
+  Record<string, readonly RequestLocation[]>
+>;
+
 /**
  * A protocol step - the basic unit of a protocol.
  *
@@ -36,6 +52,8 @@ export interface Step<
   readonly description?: string;
   /** Operation ID for mapping to HTTP routes */
   readonly operationId?: string;
+  /** Where each request field is sent over HTTP */
+  readonly requestLocations?: RequestLocations;
 }
 
 /**
@@ -62,6 +80,8 @@ export interface DependentStep<
   readonly description?: string;
   /** Operation ID for mapping to HTTP routes */
   readonly operationId?: string;
+  /** Where each request field is sent over HTTP */
+  readonly requestLocations?: RequestLocations;
 }
 
 /**
@@ -93,6 +113,8 @@ export interface MappedStep<
   readonly description?: string;
   /** Operation ID for mapping to HTTP routes */
   readonly operationId?: string;
+  /** Where each request field is sent over HTTP */
+  readonly requestLocations?: RequestLocations;
 }
 
 // =============================================================================

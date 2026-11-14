@@ -23,7 +23,13 @@
 import { z } from "zod";
 import type { ApiDef, HttpMethod } from "../core/types.ts";
 import type { FieldMapping } from "./mapping.ts";
-import type { DependentStep, MappedStep, Step } from "./types.ts";
+import type {
+  DependentStep,
+  MappedStep,
+  RequestLocation,
+  RequestLocations,
+  Step,
+} from "./types.ts";
 
 // =============================================================================
 // Types
@@ -94,28 +100,48 @@ interface MethodDefLike {
   description?: string;
 }
 
-/**
- * Merge body, query, and params schemas into a single request schema.
- *
- * Combines all fields from the three schemas into one flat object schema.
- * Handles cases where schemas might be undefined or non-object types.
- */
-function mergeRequestSchemas(def: MethodDefLike): z.ZodType {
-  // deno-lint-ignore no-explicit-any
-  const shapes: Record<string, any> = {};
+/** The endpoint schemas that make up a step request, with where each goes. */
+const REQUEST_PARTS = [
+  ["body", "body"],
+  ["query", "query"],
+  ["params", "path"],
+] as const;
 
-  for (const schema of [def.body, def.query, def.params]) {
+/**
+ * Merge body, query, and params schemas into a single request schema, and
+ * record which of them each field came from.
+ *
+ * A field declared in several of the schemas appears once in the request and
+ * is sent to each place; its schema is the last one in body, query, params
+ * order.
+ */
+function mergeRequestSchemas(
+  def: MethodDefLike,
+  method: HttpMethod,
+): { schema: z.ZodType; locations: RequestLocations } {
+  // deno-lint-ignore no-explicit-any
+  const shape: Record<string, any> = {};
+  const locations: Record<string, RequestLocation[]> = {};
+
+  for (const [part, location] of REQUEST_PARTS) {
+    const schema = def[part];
     if (!schema) continue;
 
-    // Access Zod v4 internal _def to get shape
     // deno-lint-ignore no-explicit-any
-    const schemaDef = (schema as any)._def;
-    if (schemaDef?.type === "object" && schemaDef?.shape) {
-      Object.assign(shapes, schemaDef.shape);
+    const schemaDef = (schema as any)._zod?.def;
+    if (schemaDef?.type !== "object" || !schemaDef.shape) {
+      throw new Error(
+        `Cannot create a step from ${method}: its ${part} schema is not a plain object schema, so its fields cannot be merged into the step request`,
+      );
+    }
+
+    for (const [key, field] of Object.entries(schemaDef.shape)) {
+      shape[key] = field;
+      (locations[key] ??= []).push(location);
     }
   }
 
-  return Object.keys(shapes).length > 0 ? z.object(shapes) : z.object({});
+  return { schema: z.object(shape), locations };
 }
 
 // =============================================================================
@@ -154,10 +180,12 @@ export function fromEndpoint<TName extends string>(
     throw new Error(`No ${method} definition found in handler`);
   }
 
+  const request = mergeRequestSchemas(def, method);
   return {
     __kind: "step",
     name: options.name,
-    request: mergeRequestSchemas(def),
+    request: request.schema,
+    requestLocations: request.locations,
     response: def.response ?? z.unknown(),
     operationId: options.operationId ?? def.operationId ?? options.name,
     description: options.description ?? def.description,
@@ -204,6 +232,7 @@ export function fromEndpointDependent<
     name: options.name,
     dependsOn: options.dependsOn,
     request: options.request,
+    requestLocations: mergeRequestSchemas(def, method).locations,
     response: def.response ?? z.unknown(),
     operationId: options.operationId ?? def.operationId ?? options.name,
     description: options.description ?? def.description,
@@ -242,12 +271,14 @@ export function fromEndpointMapped<
     throw new Error(`No ${method} definition found in handler`);
   }
 
+  const request = mergeRequestSchemas(def, method);
   return {
     __kind: "mapped_step",
     name: options.name,
     dependsOn: options.dependsOn,
     requestMapping: options.requestMapping,
-    requestSchema: mergeRequestSchemas(def),
+    requestSchema: request.schema,
+    requestLocations: request.locations,
     response: def.response ?? z.unknown(),
     operationId: options.operationId ?? def.operationId ?? options.name,
     description: options.description ?? def.description,
