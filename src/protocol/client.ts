@@ -93,15 +93,188 @@ export type StepInput<T> = T extends
   } ? z.input<R>
   : never;
 
-/** Steps available when state has certain completed steps */
+// -----------------------------------------------------------------------------
+// What a session knows about the responses it holds
+// -----------------------------------------------------------------------------
+
+/**
+ * Response types a session has established by `narrow()`, by step name.
+ *
+ * A step that is not listed is known by the output type of its response
+ * schema, which for a union is every variant.
+ */
+export type Seen = Readonly<Record<string, unknown>>;
+
+/** No narrowing yet. */
+export type NothingSeen = Readonly<Record<never, never>>;
+
+/** What the session knows about the response of step `K`. */
+export type SeenOf<
+  TSteps extends Record<string, AnyStep>,
+  TSeen extends Seen,
+  K extends keyof TSteps,
+> = K extends keyof TSeen ? TSeen[K] : StepResponse<TSteps[K]>;
+
+/** `TSeen` with the response of `K` known as `TNarrow`. */
+export type SetSeen<TSeen extends Seen, K extends string, TNarrow> = {
+  readonly [P in keyof TSeen | K]: P extends K ? TNarrow
+    : P extends keyof TSeen ? TSeen[P]
+    : never;
+};
+
+/** `TSeen` without what was known about `K`: its response is a new one. */
+export type DropSeen<TSeen extends Seen, K extends string> = {
+  readonly [P in keyof TSeen as P extends K ? never : P]: TSeen[P];
+};
+
+/** The type a dependent step's `request` function accepts as `prev`. */
+export type PrevOf<T> = T extends {
+  __kind: "dependent_step";
+  // deno-lint-ignore no-explicit-any
+  request: (prev: infer P) => any;
+} ? P
+  : unknown;
+
+/** Whether `T` is `any`. */
+export type IsAny<T> = 0 extends 1 & T ? true : false;
+
+/** The value under key `H`; `undefined` when `T` does not have that key. */
+export type Child<T, H extends string> = T extends readonly unknown[]
+  // An array may be shorter than the index: left to the runtime check.
+  ? H extends `${number}` ? T[number]
+  : H extends keyof T ? T[H]
+  : undefined
+  : H extends keyof T ? T[H]
+  : undefined;
+
+/** `HasPath` for each member of the union `T`. */
+export type HasPathIn<T, P extends string> = T extends unknown
+  ? P extends `${infer H}.${infer R}` ? HasPath<Child<T, H>, R>
+  : undefined extends Child<T, P> ? false
+  : true
+  : never;
+
+/**
+ * Whether every value of type `T` has a defined value at the dot-notation
+ * path `P`.
+ *
+ * `false` for a path through an optional property or through a union member
+ * that lacks it: the value may be missing, so the type has to be narrowed
+ * first. `true` where the type cannot say (`any`, `unknown`, a path typed
+ * as `string`); the runtime check still applies there.
+ */
+export type HasPath<T, P extends string> = IsAny<T> extends true ? true
+  : unknown extends T ? true
+  : string extends P ? true
+  : [T] extends [never] ? false
+  : [HasPathIn<T, P>] extends [true] ? true
+  : false;
+
+/**
+ * Whether every field a mapped step forwards has a value in what the
+ * session knows about its source step.
+ */
+export type MappingsHold<
+  TSteps extends Record<string, AnyStep>,
+  TSeen extends Seen,
+  T,
+> = T extends { requestMapping: infer M } ? [
+    {
+      [F in keyof M]: M[F] extends {
+        __kind: "field_mapping";
+        step: infer S extends string;
+        path: infer P extends string;
+      } ? S extends keyof TSteps ? HasPath<SeenOf<TSteps, TSeen, S>, P>
+        : true
+        : true;
+    }[keyof M],
+  ] extends [true] ? true
+  : false
+  : true;
+
+/**
+ * Steps a session can execute.
+ *
+ * A step is available when the steps it depends on have run (`TDone`) and
+ * what the session knows about their responses (`TSeen`) allows it:
+ *
+ * - dependent step: the response of `dependsOn` is known to be of the type
+ *   its `request` function accepts
+ * - mapped step: every forwarded field is known to have a value
+ */
 export type AvailableSteps<
   TSteps extends Record<string, AnyStep>,
   TDone extends string,
+  TSeen extends Seen = NothingSeen,
 > = {
   [K in keyof TSteps & string]: IsIndependent<TSteps[K]> extends true ? K
-    : DependencyOf<TSteps[K]> extends TDone ? K
+    : DependencyOf<TSteps[K]> extends TDone
+      ? TSteps[K] extends
+        { __kind: "dependent_step"; dependsOn: infer D extends keyof TSteps }
+        ? [SeenOf<TSteps, TSeen, D>] extends [PrevOf<TSteps[K]>] ? K : never
+      : MappingsHold<TSteps, TSeen, TSteps[K]> extends true ? K
+      : never
     : never;
 }[keyof TSteps & string];
+
+/** The intersection of the members of the union `U`. */
+export type UnionToIntersection<U> = (
+  U extends unknown ? (value: U) => void : never
+) extends (value: infer I) => void ? I
+  : never;
+
+/** What a step needs to be known about earlier responses, by step name. */
+export type NeedsOf<T> = T extends
+  { __kind: "dependent_step"; dependsOn: infer D extends string }
+  ? string extends D ? NothingSeen : { readonly [K in D]: PrevOf<T> }
+  : T extends { __kind: "mapped_step"; requestMapping: infer M }
+    ? UnionToIntersection<
+      {
+        [F in keyof M]: M[F] extends {
+          __kind: "field_mapping";
+          step: infer S extends string;
+          path: infer P extends string;
+        } ? string extends S ? never
+          : string extends P ? never
+          : { readonly [K in S]: WithPath<P> }
+          : never;
+      }[keyof M]
+    > extends infer N ? unknown extends N ? NothingSeen : N : never
+  : NothingSeen;
+
+/** `TSeen` with everything step `K` needs established. */
+export type ReadyFor<
+  TSteps extends Record<string, AnyStep>,
+  TSeen extends Seen,
+  K extends keyof TSteps,
+> = NeedsOf<TSteps[K]> extends infer N ? {
+    readonly [S in (keyof TSeen | keyof N) & string]: S extends keyof N
+      ? S extends keyof TSteps ? SeenOf<TSteps, TSeen, S> & N[S] : N[S]
+      : S extends keyof TSeen ? TSeen[S]
+      : never;
+  }
+  : never;
+
+/** Object type with a defined value at the dot-notation path `P`. */
+export type WithPath<P extends string> = P extends `${infer H}.${infer R}`
+  ? { readonly [K in H]: WithPath<R> }
+  : { readonly [K in P]: NonNullable<unknown> };
+
+/**
+ * A guard for `ProtocolSession.narrow()`: the response has a defined value
+ * at the dot-notation path.
+ *
+ * @example
+ * ```typescript
+ * const withRefresh = session.narrow("exchange", present("refresh_token"));
+ * ```
+ */
+export function present<const P extends string>(
+  path: P,
+): <T>(value: T) => value is T & WithPath<P> {
+  return <T>(value: T): value is T & WithPath<P> =>
+    getNestedValue(value, path) !== undefined;
+}
 
 function isNeverSchema(schema: z.ZodType): boolean {
   return zodType(schema) === "never";
@@ -147,8 +320,9 @@ export interface ExecutionContext {
 export type SessionState<
   TSteps extends Record<string, AnyStep>,
   TDone extends keyof TSteps,
+  TSeen extends Seen = NothingSeen,
 > = {
-  [K in TDone]: StepResponse<TSteps[K]>;
+  [K in TDone]: SeenOf<TSteps, TSeen, K>;
 };
 
 /**
@@ -158,6 +332,7 @@ export interface ExecuteResult<
   TResponse,
   TSteps extends Record<string, AnyStep>,
   TNewDone extends keyof TSteps,
+  TSeen extends Seen = NothingSeen,
 > {
   /** The parsed response of the step. */
   readonly response: TResponse;
@@ -165,7 +340,7 @@ export interface ExecuteResult<
    * The session to continue with: it records the step as done. The session
    * `execute()` was called on is unchanged.
    */
-  readonly session: ProtocolSession<TSteps, TNewDone>;
+  readonly session: ProtocolSession<TSteps, TNewDone, TSeen>;
 }
 
 // =============================================================================
@@ -173,16 +348,23 @@ export interface ExecuteResult<
 // =============================================================================
 
 /**
- * Protocol session - generic over steps and completed step names.
+ * Protocol session - generic over steps, completed step names and what is
+ * known about their responses.
  *
  * TDone is a union of step names that have been executed.
  * This grows as steps complete, enabling type-safe dependency tracking.
  *
- * Each method that executes a step returns a NEW session with updated TDone type.
+ * TSeen records response types established by `narrow()`. A step that
+ * needs a particular variant of an earlier response (a dependent step with
+ * `when`, a mapped step forwarding a field only one variant has) is
+ * available only once TSeen says the response is of that variant.
+ *
+ * Each method that executes a step returns a NEW session with updated types.
  */
 export class ProtocolSession<
   TSteps extends Record<string, AnyStep>,
   TDone extends keyof TSteps = never,
+  TSeen extends Seen = NothingSeen,
 > {
   /** Runtime tag of session objects. */
   readonly __tag = "ProtocolSession" as const;
@@ -203,9 +385,73 @@ export class ProtocolSession<
       readonly terminal?: readonly (string | keyof TSteps)[];
     },
     readonly executor: StepExecutor,
-    readonly responses: SessionState<TSteps, TDone>,
+    readonly responses: SessionState<TSteps, TDone, TSeen>,
     readonly history: readonly string[],
   ) {}
+
+  /**
+   * Establish that a step can run, using the step's own conditions.
+   *
+   * Runs the same checks as `canExecute()`: the `when` guard of a dependent
+   * step, the presence of every value a mapped step forwards. When they
+   * hold, the result is this session typed with what those checks prove,
+   * so `execute(stepName, ...)` compiles. Otherwise the result is
+   * `undefined`.
+   *
+   * @example
+   * ```typescript
+   * const { session } = await start.execute("authorize", request);
+   * const granted = session.ready("exchange");
+   * if (!granted) return; // authorize did not return the success variant
+   * await granted.execute("exchange", { ... });
+   * ```
+   */
+  ready<K extends keyof TSteps & string>(
+    stepName: K,
+  ): ProtocolSession<TSteps, TDone, ReadyFor<TSteps, TSeen, K>> | undefined {
+    if (!this.canExecute(stepName)) return undefined;
+    return this as unknown as ProtocolSession<
+      TSteps,
+      TDone,
+      ReadyFor<TSteps, TSeen, K>
+    >;
+  }
+
+  /**
+   * Establish which variant the response of an executed step is.
+   *
+   * The guard runs against the stored response. When it holds, the result
+   * is this session typed with the narrowed response, which makes the steps
+   * that need that variant available. When it does not, the result is
+   * `undefined`.
+   *
+   * A plain predicate is enough; TypeScript infers the type guard:
+   *
+   * @example
+   * ```typescript
+   * const { session } = await start.execute("authorize", request);
+   * const granted = session.narrow("authorize", (r) => r.type === "success");
+   * if (granted) {
+   *   await granted.execute("exchange", { code: ..., ... });
+   * }
+   * ```
+   */
+  narrow<
+    K extends TDone & string,
+    TNarrow extends SeenOf<TSteps, TSeen, K>,
+  >(
+    stepName: K,
+    guard: (response: SeenOf<TSteps, TSeen, K>) => response is TNarrow,
+  ): ProtocolSession<TSteps, TDone, SetSeen<TSeen, K, TNarrow>> | undefined {
+    const response = (this.responses as Record<string, unknown>)[stepName];
+    if (!guard(response as SeenOf<TSteps, TSeen, K>)) return undefined;
+    // Sessions are immutable: the same object, known more precisely.
+    return this as unknown as ProtocolSession<
+      TSteps,
+      TDone,
+      SetSeen<TSeen, K, TNarrow>
+    >;
+  }
 
   /**
    * Execute a step.
@@ -214,10 +460,19 @@ export class ProtocolSession<
    * - Independent steps (no dependencies) are always available
    * - Dependent steps are available after their dependency is completed
    */
-  async execute<K extends string & AvailableSteps<TSteps, TDone & string>>(
+  async execute<
+    K extends string & AvailableSteps<TSteps, TDone & string, TSeen>,
+  >(
     stepName: K,
     request: StepInput<TSteps[K]>,
-  ): Promise<ExecuteResult<StepResponse<TSteps[K]>, TSteps, TDone | K>> {
+  ): Promise<
+    ExecuteResult<
+      StepResponse<TSteps[K]>,
+      TSteps,
+      TDone | K,
+      DropSeen<TSeen, K>
+    >
+  > {
     const step = this.protocol.steps[stepName];
 
     const protocolName = this.protocol.name;
@@ -289,6 +544,15 @@ export class ProtocolSession<
           depStep.dependsOn,
         );
       }
+      // The step states which responses it can follow.
+      if (depStep.when && !depStep.when(prevResponse)) {
+        throw new StepRefusedError(
+          `Cannot execute "${stepName}": the response of "${depStep.dependsOn}" does not allow this step (its \`when\` guard is false)`,
+          protocolName,
+          stepName,
+          depStep.dependsOn,
+        );
+      }
       requestSchema = depStep.request(prevResponse);
 
       // A dependent step answers a response it cannot follow with z.never().
@@ -343,9 +607,13 @@ export class ProtocolSession<
     const newResponses = {
       ...this.responses,
       [stepName]: resResult.data,
-    } as SessionState<TSteps, TDone | K>;
+    } as unknown as SessionState<TSteps, TDone | K, DropSeen<TSeen, K>>;
 
-    const newSession = new ProtocolSession<TSteps, TDone | K>(
+    const newSession = new ProtocolSession<
+      TSteps,
+      TDone | K,
+      DropSeen<TSeen, K>
+    >(
       this.protocol,
       this.executor,
       newResponses,
@@ -358,25 +626,38 @@ export class ProtocolSession<
     };
   }
 
-  /** Check if a step can be executed (runtime check) */
+  /**
+   * Check if a step can be executed (runtime check).
+   *
+   * Looks at the responses the session holds, not at their types: a
+   * dependent step whose `when` guard rejects the previous response, and a
+   * mapped step whose source response lacks a forwarded value, are not
+   * executable.
+   */
   canExecute(stepName: string): boolean {
     const step = this.protocol.steps[stepName];
     if (!step) return false;
     if (step.__kind === "step") return true;
+    const responses = this.responses as Record<string, unknown>;
     if (step.__kind === "mapped_step") {
       const mappedStep = step as MappedStep;
       // Check primary dependency
-      if (!(mappedStep.dependsOn in this.responses)) return false;
-      // Check all mapping source steps have responses
+      if (!(mappedStep.dependsOn in responses)) return false;
+      // Every forwarded field needs a value in its source response.
       for (const mapping of Object.values(mappedStep.requestMapping)) {
-        if (isFieldMapping(mapping) && !(mapping.step in this.responses)) {
+        if (!isFieldMapping(mapping)) continue;
+        if (!(mapping.step in responses)) return false;
+        if (
+          getNestedValue(responses[mapping.step], mapping.path) === undefined
+        ) {
           return false;
         }
       }
       return true;
     }
     const depStep = step as DependentStep;
-    return depStep.dependsOn in this.responses;
+    if (!(depStep.dependsOn in responses)) return false;
+    return depStep.when ? depStep.when(responses[depStep.dependsOn]) : true;
   }
 
   /** Get list of available steps (runtime) */

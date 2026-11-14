@@ -318,6 +318,8 @@ Deno.test("a mapped step cannot run when the source response lacks the mapped va
   // to be undefined and a request without it passed.
   let message = "";
   try {
+    // @ts-expect-error refresh_token is optional in the response of
+    // "exchange", so "refresh" is not available until that is narrowed.
     await session.execute("refresh", {});
   } catch (error) {
     message = (error as Error).message;

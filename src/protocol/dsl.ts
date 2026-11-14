@@ -106,6 +106,52 @@ export interface DependentStepConfig<
   readonly operationId?: string;
 }
 
+/** A step that another step can name as its dependency by reference. */
+export interface StepRef {
+  /** Name of the step. */
+  readonly name: string;
+  /** Response schema of the step. */
+  readonly response: z.ZodType;
+}
+
+/** The parsed response of a referenced step. */
+export type StepRefResponse<T extends StepRef> = z.output<T["response"]>;
+
+/**
+ * Configuration for a dependent step that names its dependency by
+ * reference, so the type of `prev` is inferred from that step's response.
+ */
+export interface DependentStepAfterConfig<
+  TName extends string,
+  TDep extends StepRef,
+  TNarrow extends StepRefResponse<TDep>,
+  TRequest extends z.ZodType,
+  TResponse extends z.ZodType,
+> {
+  /** Step name. Must equal the step's key in `protocol({ steps })`. */
+  readonly name: TName;
+  /** The step this one follows, as the step object. */
+  readonly dependsOn: TDep;
+  /**
+   * Which responses of `dependsOn` this step can follow.
+   *
+   * Written as a plain predicate, e.g. `(prev) => prev.type === "success"`:
+   * TypeScript infers the type guard, and `request` receives the narrowed
+   * type. A session then offers this step only once the response is known
+   * to be of that type (see `ProtocolSession.narrow()`), and refuses it at
+   * runtime when the guard returns false.
+   */
+  readonly when?: (prev: StepRefResponse<TDep>) => prev is TNarrow;
+  /** Request schema derived from the (narrowed) previous response. */
+  readonly request: (prev: TNarrow) => TRequest;
+  /** Response schema. */
+  readonly response: TResponse;
+  /** Human-readable description. */
+  readonly description?: string;
+  /** Operation ID for mapping to HTTP routes */
+  readonly operationId?: string;
+}
+
 /**
  * Create a dependent step where request depends on previous response.
  *
@@ -115,15 +161,37 @@ export interface DependentStepConfig<
  * ```typescript
  * const exchange = dependentStep({
  *   name: "exchange",
- *   dependsOn: "authorize",
- *   // Annotate `prev`: the previous step is known by name only.
- *   request: (prev: { code: string }) => z.object({
+ *   // The step object: `prev` is typed from its response.
+ *   dependsOn: authorize,
+ *   // Optional: the responses this step can follow. `prev` in `request`
+ *   // is narrowed to them.
+ *   when: (prev) => prev.type === "success",
+ *   request: (prev) => z.object({
  *     code: z.literal(prev.code), // Use value from authorize response
  *     grant_type: z.literal("authorization_code"),
  *   }),
  *   response: z.object({ access_token: z.string() }),
  * });
  * ```
+ *
+ * `dependsOn` also accepts the step's name. `prev` then has to be annotated:
+ * `request: (prev: { code: string }) => ...`; `protocol()` checks the
+ * annotation against the response of the named step.
+ */
+export function dependentStep<
+  TName extends string,
+  const TDep extends StepRef,
+  TRequest extends z.ZodType,
+  TResponse extends z.ZodType,
+  TNarrow extends StepRefResponse<TDep> = StepRefResponse<TDep>,
+>(
+  config: DependentStepAfterConfig<TName, TDep, TNarrow, TRequest, TResponse>,
+): DependentStep<TName, TNarrow, TRequest, TResponse, TDep["name"]>;
+/**
+ * Create a dependent step that names its dependency as a string.
+ *
+ * The type of `prev` is the annotation on `request`. `protocol()` rejects
+ * an annotation that no response of the named step satisfies.
  */
 export function dependentStep<
   TName extends string,
@@ -139,12 +207,21 @@ export function dependentStep<
     TResponse,
     TDependsOn
   >,
-): DependentStep<TName, TPrevResponse, TRequest, TResponse, TDependsOn> {
+): DependentStep<TName, TPrevResponse, TRequest, TResponse, TDependsOn>;
+export function dependentStep(
+  // deno-lint-ignore no-explicit-any
+  config: any,
+  // deno-lint-ignore no-explicit-any
+): DependentStep<string, any, z.ZodType, z.ZodType, string> {
+  const dependsOn: string = typeof config.dependsOn === "string"
+    ? config.dependsOn
+    : config.dependsOn.name;
   return {
     __kind: "dependent_step",
     name: config.name,
-    dependsOn: config.dependsOn,
+    dependsOn,
     request: config.request,
+    ...(config.when && { when: config.when }),
     response: config.response,
     description: config.description,
     operationId: config.operationId,
@@ -391,6 +468,40 @@ export type NamedByKey<TSteps> = {
     : TSteps[K];
 };
 
+/** Members of the union `R` that a function taking `P` accepts. */
+export type AcceptedBy<R, P> = R extends P ? R : never;
+
+/**
+ * Dependent steps whose `request` function can receive a response of the
+ * step they depend on.
+ *
+ * `dependentStep({ dependsOn: "name", request: (prev: T) => ... })` names
+ * its dependency as a string, so `T` is whatever the author wrote. Here,
+ * where both steps are known, `T` is compared with the response type of
+ * that step. It is accepted when it is a narrowing of the response (one
+ * variant of a union, a refinement) or when some variant of the response
+ * is assignable to it. Otherwise the step is a compile error: its
+ * `request` is required to accept the actual response.
+ */
+export type PrevAccepted<TSteps> = {
+  readonly [K in keyof TSteps]: TSteps[K] extends {
+    readonly __kind: "dependent_step";
+    readonly dependsOn: infer D extends keyof TSteps;
+    // deno-lint-ignore no-explicit-any
+    readonly request: (prev: infer P) => any;
+  }
+    ? TSteps[D] extends { readonly response: infer R extends z.ZodType }
+      ? [P] extends [z.output<R>] ? TSteps[K]
+      : [AcceptedBy<z.output<R>, P>] extends [never] ? TSteps[K] & {
+          readonly request: (
+            prev: z.output<R>,
+          ) => z.ZodType;
+        }
+      : TSteps[K]
+    : TSteps[K]
+    : TSteps[K];
+};
+
 /**
  * Configuration for a protocol.
  */
@@ -440,7 +551,7 @@ export function protocol<
   const TSteps extends Record<string, { readonly __kind: string }>,
 >(
   config: ProtocolConfig<TName, TSteps> & {
-    readonly steps: NoInfer<NamedByKey<TSteps>>;
+    readonly steps: NoInfer<NamedByKey<TSteps> & PrevAccepted<TSteps>>;
   },
 ): Protocol<TName, TSteps> {
   return {

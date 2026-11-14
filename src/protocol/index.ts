@@ -42,9 +42,9 @@
  *
  * const exchangeStep = dependentStep({
  *   name: "exchange",
- *   dependsOn: "authorize",
- *   // Annotate `prev`: the previous step is known by name only.
- *   request: (prev: { code: string }) => z.object({
+ *   // The step object: `prev` is typed from its response.
+ *   dependsOn: authorizeStep,
+ *   request: (prev) => z.object({
  *     code: z.literal(prev.code), // Enforced at runtime by the literal
  *   }),
  *   response: z.object({ access_token: z.string() }),
@@ -107,14 +107,19 @@ export {
 
 // DSL config types
 export type {
+  AcceptedBy,
+  DependentStepAfterConfig,
   DependentStepConfig,
   KeysOfUnion,
   MappedStepConfig,
   MappingForRequest,
   NamedByKey,
+  PrevAccepted,
   ProtocolConfig,
   ProtocolLike,
   StepConfig,
+  StepRef,
+  StepRefResponse,
 } from "./dsl.ts";
 
 // Field mapping
@@ -155,21 +160,37 @@ export type {
 export {
   createMockExecutor,
   createSession,
+  present,
   ProtocolSession,
 } from "./client.ts";
 
 // Client types
 export type {
   AvailableSteps,
+  Child,
   DependencyOf,
+  DropSeen,
   ExecuteResult,
   ExecutionContext,
+  HasPath,
+  HasPathIn,
+  IsAny,
   IsIndependent,
+  MappingsHold,
   MappingSources,
   MockResponses,
+  NeedsOf,
+  NothingSeen,
+  PrevOf,
+  ReadyFor,
+  Seen,
+  SeenOf,
   SessionState,
+  SetSeen,
   StepExecutor,
   StepInput,
+  UnionToIntersection,
+  WithPath,
 } from "./client.ts";
 
 // Session errors
