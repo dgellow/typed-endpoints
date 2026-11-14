@@ -10,7 +10,8 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 project="$root/e2e_tests/python"
 
 # uv enforces its own version and the interpreter's (pyproject.toml,
-# .python-version); Deno runs the conformance tests.
+# .python-version) and runs the build of Python it installs itself, not one
+# of the machine; Deno runs the conformance tests.
 if ! command -v uv >/dev/null 2>&1; then
   echo "error: uv is not installed (https://docs.astral.sh/uv/)" >&2
   exit 1
