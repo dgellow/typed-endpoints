@@ -1354,6 +1354,23 @@ const order = topologicalSort(oauth2Protocol);
 // ["authorize", "exchange", "refresh"]
 ```
 
+What a malformed protocol is caught by:
+
+| Condition                                                    | `protocol()` (compile time) | `validateProtocol()` |
+| ------------------------------------------------------------ | --------------------------- | -------------------- |
+| A step's `name` equals its key                               | yes                         | yes                  |
+| A dependency, revoked step or renewed step exists            | yes                         | yes                  |
+| `initial` has no dependencies; no dependency cycle           | no                          | yes                  |
+| A mapping key is a field of the request schema               | yes, in `mappedStep()`      | yes                  |
+| A mapping's source step exists and its path is in a response | yes                         | yes                  |
+| A mapped value is assignable to the field it is forwarded to | yes                         | primitive kinds      |
+| The annotated `prev` of a dependent step fits the dependency | yes                         | no                   |
+| Only steps: no `sequence()`, `repeat()`, ... in the step map | yes                         | yes                  |
+
+`createSession()` refuses a protocol that fails `validateProtocol()`. Where a
+type does not say (a response typed `unknown`, a record, a path typed `string`)
+a mapping is accepted.
+
 ### What's Implemented
 
 - Core type definitions (`Step`, `DependentStep`, `MappedStep`, `Sequence`,

@@ -430,6 +430,7 @@ Deno.test("validateProtocol() detects missing dependency", () => {
     name: "BadProtocol",
     initial: "step1",
     steps: {
+      // @ts-expect-error "nonexistent" is not a step of the protocol
       step1: dependentStep({
         name: "step1",
         dependsOn: "nonexistent",
