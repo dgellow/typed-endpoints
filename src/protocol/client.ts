@@ -23,6 +23,13 @@ import type {
 } from "./types.ts";
 import { validateProtocol } from "./dsl.ts";
 import {
+  InvalidRequestError,
+  InvalidResponseError,
+  StepNotAvailableError,
+  StepRefusedError,
+  UnknownStepError,
+} from "./errors.ts";
+import {
   deriveSchemaWithLiterals,
   getNestedValue,
   isFieldMapping,
@@ -94,6 +101,11 @@ export type AvailableSteps<
     : DependencyOf<TSteps[K]> extends TDone ? K
     : never;
 }[keyof TSteps & string];
+
+function isNeverSchema(schema: z.ZodType): boolean {
+  const zod = (schema as { _zod?: { def?: { type?: string } } })._zod;
+  return zod?.def?.type === "never";
+}
 
 // =============================================================================
 // Executor Interface
@@ -182,8 +194,10 @@ export class ProtocolSession<
   ): Promise<ExecuteResult<StepResponse<TSteps[K]>, TSteps, TDone | K>> {
     const step = this.protocol.steps[stepName];
 
+    const protocolName = this.protocol.name;
+
     if (!step) {
-      throw new Error(`Unknown step: ${stepName}`);
+      throw new UnknownStepError(protocolName, stepName);
     }
 
     // Get request schema
@@ -193,6 +207,14 @@ export class ProtocolSession<
     } else if (step.__kind === "mapped_step") {
       // Mapped step - derive schema with literal replacements
       const mappedStep = step as MappedStep;
+      if (!(mappedStep.dependsOn in this.responses)) {
+        throw new StepNotAvailableError(
+          `Cannot execute "${stepName}": dependency "${mappedStep.dependsOn}" not satisfied`,
+          protocolName,
+          stepName,
+          mappedStep.dependsOn,
+        );
+      }
       // Collect the values the mapped fields must carry.
       const overrides: Record<string, unknown> = {};
       for (
@@ -203,16 +225,22 @@ export class ProtocolSession<
           mapping.step as keyof typeof this.responses
         ];
         if (sourceResponse === undefined) {
-          throw new Error(
+          throw new StepNotAvailableError(
             `Cannot execute "${stepName}": mapping source "${mapping.step}" for field "${field}" not satisfied`,
+            protocolName,
+            stepName,
+            mapping.step,
           );
         }
         const value = getNestedValue(sourceResponse, mapping.path);
         if (value === undefined) {
           // Without this check the field would be required to be undefined,
           // and a request that leaves it out would pass.
-          throw new Error(
+          throw new StepRefusedError(
             `Cannot execute "${stepName}": field "${field}" is mapped from "${mapping.step}.${mapping.path}", which the response of "${mapping.step}" does not contain`,
+            protocolName,
+            stepName,
+            mapping.step,
           );
         }
         overrides[field] = value;
@@ -228,18 +256,35 @@ export class ProtocolSession<
         depStep.dependsOn as keyof typeof this.responses
       ];
       if (prevResponse === undefined) {
-        throw new Error(
+        throw new StepNotAvailableError(
           `Cannot execute "${stepName}": dependency "${depStep.dependsOn}" not satisfied`,
+          protocolName,
+          stepName,
+          depStep.dependsOn,
         );
       }
       requestSchema = depStep.request(prevResponse);
+
+      // A dependent step answers a response it cannot follow with z.never().
+      // No request can satisfy that, so the request is not what is wrong.
+      if (isNeverSchema(requestSchema)) {
+        throw new StepRefusedError(
+          `Invalid request for "${stepName}": the response of "${depStep.dependsOn}" does not allow this step (its request schema is z.never())`,
+          protocolName,
+          stepName,
+          depStep.dependsOn,
+        );
+      }
     }
 
     // Validate request
     const reqResult = requestSchema.safeParse(request);
     if (!reqResult.success) {
-      throw new Error(
+      throw new InvalidRequestError(
         `Invalid request for "${stepName}": ${reqResult.error.message}`,
+        protocolName,
+        stepName,
+        reqResult.error.issues,
       );
     }
 
@@ -260,8 +305,11 @@ export class ProtocolSession<
     const resSchema = step.response;
     const resResult = resSchema.safeParse(response);
     if (!resResult.success) {
-      throw new Error(
+      throw new InvalidResponseError(
         `Invalid response from "${stepName}": ${resResult.error.message}`,
+        protocolName,
+        stepName,
+        resResult.error.issues,
       );
     }
 

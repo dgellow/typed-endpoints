@@ -755,6 +755,17 @@ Key features:
   literal `"authorize"`, not widened to `string`
 - **Accumulating state**: Session responses are typed as they accumulate
 - **Runtime validation**: Request/response schemas are validated at runtime
+- **Typed errors**: `execute()` rejects with a subclass of `ProtocolError` that
+  says what went wrong, with the step name and, for validation failures, the Zod
+  issues:
+
+  | Error                   | Meaning                                                               |
+  | ----------------------- | --------------------------------------------------------------------- |
+  | `StepNotAvailableError` | A step it depends on has not run (`requires`)                         |
+  | `StepRefusedError`      | Its dependencies ran, but their responses do not allow it (`because`) |
+  | `InvalidRequestError`   | The request does not match the step's schema (`issues`)               |
+  | `InvalidResponseError`  | The response does not match the step's schema (`issues`)              |
+  | `UnknownStepError`      | The protocol has no such step                                         |
 
 ### HTTP Executor
 
