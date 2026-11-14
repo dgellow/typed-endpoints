@@ -1029,8 +1029,9 @@ class Note(_ClosedJson):
   `to_camel` and only the exceptions say theirs
 - A long pattern (a UUID, a date-time) is a constant with a name
 - Every class has a docstring: the description of its schema, or the operations
-  that use it and as what The handler of a server-sent event stream is an async
-  generator of typed events:
+  that use it and as what
+
+The handler of a server-sent event stream is an async generator of typed events:
 
 ```python
 async def ticks_list(
@@ -1146,8 +1147,9 @@ typed-endpoints -r routes/api -o server/src/api_generated.rs --format axum
 ```
 
 The module needs `axum` 0.8, `serde` (with `derive`), `serde_json`, `tracing`
-and `fancy-regex` (patterns with lookarounds). It is written as Rust is written:
-it passes `cargo fmt --check` under the 2021 and 2024 style editions and
+and `fancy-regex` (patterns with lookarounds), and `futures-core` when the API
+has an event stream. It is written as Rust is written: it passes
+`cargo fmt --check` under the 2021 and 2024 style editions and
 `cargo clippy -- -D warnings -W clippy::pedantic`, with the toolchain
 `e2e_tests/rust/rust-toolchain.toml` names (Rust 1.100.0; the module was also
 checked with 1.97.0). Clippy's pedantic group grows with every release, so the
@@ -1183,6 +1185,37 @@ impl api::Handlers for Notes {
 
 let app = api::router(Notes::new());
 ```
+
+The handler of a server-sent event stream returns a stream of typed events:
+
+```rust
+async fn ticks_list(
+    &self,
+    query: api::TicksListQuery,
+    last_event_id: Option<String>,
+) -> Result<api::EventStream<api::TicksListEvent>, api::InternalError> {
+    use api::TicksListEvent::{Done, Tick};
+
+    let start = match last_event_id {
+        Some(id) => id.parse::<i64>()? + 1, // a client that reconnects
+        None => 0,
+    };
+    Ok(Box::pin(async_stream::try_stream! {
+        for n in start..query.count {
+            yield api::Event::new(Tick(api::TicksListTickData { n })).with_id(n.to_string());
+        }
+        yield Done(api::TicksListDoneData { total: query.count }).into();
+    }))
+}
+```
+
+`EventStream<T>` is a boxed stream of `Result<Event<T>, InternalError>`, so any
+stream fits: the example uses the `async-stream` crate, which the module does
+not need. The frames are the ones the TypeScript handlers write, byte for byte.
+An event is written once its data fits the contract; when the handler fails, or
+yields an event that does not fit, the stream ends with the comment `: error`,
+after which the TypeScript client reconnects. The endpoint's `keepAlive`
+interval is kept.
 
 Every method returns a `Result`. A declared error is a variant of the
 operation's error type, and its body converts into it. Anything else is an
@@ -1249,8 +1282,7 @@ What does not cross, or not yet:
 - An integer whose author wrote the bound of a safe integer again
   (`z.int().max(Number.MAX_SAFE_INTEGER)`) is refused with one issue where Zod
   reports two: the contract has one bound
-- Not generated yet: event streams (listed in the module's documentation), a
-  client, request-dependent responses, protocols
+- Not generated yet: a client, request-dependent responses, protocols
 
 How it is checked (`./scripts/test-rust`, with the pinned toolchain): the
 generated module and a hand-written implementation of `Handlers` are formatted
@@ -1259,15 +1291,14 @@ its pedantic lints included. The hand-written handlers carry one stated
 exception: they keep their notes in memory and so await nothing, which a
 pedantic lint points out; `cargo test` passes, which also compiles the samples
 in the module's documentation; the server runs; and the conformance tests of the
-Python section, minus the event streams, hold for it with no declared
-difference. A request axum itself refuses (a path that is not UTF-8 once
-decoded, a body it does not read) is answered as JSON, in the words of the
-TypeScript handlers where they refuse it too. Among them: three bodies nested 40
-levels deep are checked in milliseconds, a handler that fails outside the
-contract is a 500 that does not say why, and `2.0` is accepted where the
-contract says `2`. One behaviour has no permanent test, because the fixture
-cannot hold it: a pattern that does not compile stops the server when the router
-is built.
+Python section, event streams included, hold for it with no declared difference.
+A request axum itself refuses (a path that is not UTF-8 once decoded, a body it
+does not read) is answered as JSON, in the words of the TypeScript handlers
+where they refuse it too. Among them: three bodies nested 40 levels deep are
+checked in milliseconds, a handler that fails outside the contract is a 500 that
+does not say why, and `2.0` is accepted where the contract says `2`. One
+behaviour has no permanent test, because the fixture cannot hold it: a pattern
+that does not compile stops the server when the router is built.
 
 ## API
 

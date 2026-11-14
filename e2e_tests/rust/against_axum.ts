@@ -14,9 +14,7 @@ if (!url) {
   throw new Error("AXUM_URL is not set; run ./scripts/test-rust");
 }
 
-conformance("axum", () => url, {
-  withoutEventStreams: "the Rust generator does not generate them yet",
-});
+conformance("axum", () => url);
 
 // Not in the suite: the TypeScript handlers read a body of any size.
 Deno.test("axum: a body larger than axum reads is refused as JSON", async () => {
