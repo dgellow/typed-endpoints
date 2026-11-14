@@ -384,33 +384,74 @@ Generate a resource-based API interface and use the typed client:
 deno run -A jsr:@dgellow/typed-endpoints/cli -r routes/api -o src/api-types.ts --format client
 ```
 
-This generates:
+This generates the types of the API and its routes as a value:
 
 ```typescript
 export interface Api {
   users: {
-    list: { response: { id: string; name: string }[] };
-    retrieve: { response: { id: string; name: string } };
-    create: { body: { name: string }; response: { id: string; name: string } };
-    delete: {};
+    list: { path: "/api/users"; response: User[] };
+    retrieve: {
+      path: "/api/users/{id}";
+      params: { id: string };
+      response: User;
+    };
+    create: { path: "/api/users"; body: { name: string }; response: User };
+    posts: {
+      list: {
+        path: "/api/users/{id}/posts";
+        params: { id: string };
+        response: Post[];
+      };
+    };
   };
 }
+
+export const routes = {
+  "users.list": { method: "GET", path: "/api/users" },
+  "users.retrieve": { method: "GET", path: "/api/users/{id}" },
+  "users.create": { method: "POST", path: "/api/users" },
+  "users.posts.list": { method: "GET", path: "/api/users/{id}/posts" },
+} as const;
 ```
 
-Use it with the typed client:
+Use both with the typed client:
 
 ```typescript
 import { createClient } from "@dgellow/typed-endpoints/client";
-import type { Api } from "./api-types.ts";
+import { type Api, routes } from "./api-types.ts";
 
-const client = createClient<Api>("http://localhost:3000");
+const client = createClient<Api>({ baseUrl: "http://localhost:3000", routes });
 
 // All methods are typed
 const users = await client.users.list();
 const user = await client.users.retrieve("123");
 const created = await client.users.create({ name: "Sam" });
-await client.users.delete("123");
+
+// A parameter that is not the last segment goes in `params`; it is required
+// and typed. The last one is the id argument.
+const posts = await client.users.posts.list({ params: { id: "123" } });
+const post = await client.users.posts.retrieve("42", { params: { id: "123" } });
 ```
+
+How a route becomes a method:
+
+| Route                            | Client call                                                               |
+| -------------------------------- | ------------------------------------------------------------------------- |
+| `GET /api/users`                 | `users.list(options?)`                                                    |
+| `GET /api/users/[id]`            | `users.retrieve(id, options?)`                                            |
+| `POST /api/users`                | `users.create(body, options?)`                                            |
+| `PATCH /api/users/[id]`          | `users.update(id, body, options?)`                                        |
+| `PUT /api/users/[id]`            | `users.update(...)`, or `users.replace(...)` when the path also has PATCH |
+| `DELETE /api/users/[id]`         | `users.delete(id, options?)`                                              |
+| `DELETE /api/session`            | `session.delete(options?)`: no id, the path does not end with a parameter |
+| `GET /api/users/[id]/posts`      | `users.posts.list({ params: { id } })`                                    |
+| `GET /api/files/[...path]`       | `files.retrieve("docs/a.md")`: a catch-all id keeps its slashes           |
+| `GET /health`                    | `health.list()`: routes need not be under `/api`                          |
+| SSE `GET /api/tasks/[id]/events` | `tasks.events.subscribe({ params: { id } })`                              |
+
+Without `routes`, the client derives the URL from the property names
+(`basePath/resource[/id]`, always PUT for `update`). That covers the first six
+rows only; a call that passes `params` then throws.
 
 ### Pagination
 
@@ -648,7 +689,9 @@ Creates a typed HTTP client from a generated Api interface.
 Config can be a URL string or an object:
 
 - `baseUrl` - Base URL for requests
-- `basePath` - API path prefix (default: "/api")
+- `routes` - The route table generated next to `Api`. Each call takes its HTTP
+  method and URL from it
+- `basePath` - API path prefix when no `routes` are given (default: "/api")
 - `headers` - Default headers for all requests
 - `fetch` - Custom fetch implementation
 
@@ -657,9 +700,14 @@ Methods:
 - `list(options?)` - GET collection
 - `retrieve(id, options?)` - GET single resource
 - `create(body, options?)` - POST new resource
-- `update(id, body, options?)` - PUT resource
+- `update(id, body, options?)` - PATCH resource, or PUT when the route has no
+  PATCH
+- `replace(id, body, options?)` - PUT resource, when the route has both
 - `delete(id, options?)` - DELETE resource
 - `subscribe(id?, options?)` - SSE subscription (returns AsyncIterable)
+
+The `id` argument exists when the route's path ends with a parameter. Options:
+`query`, `params` (path parameters other than the id), `signal`.
 
 ### Pagination Helpers
 

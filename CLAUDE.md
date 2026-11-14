@@ -114,6 +114,18 @@ e2e_tests/framework-types/ # Compile-only check against the frameworks' types
 - Type-level guarantees are tested with `@ts-expect-error`; an unused directive
   fails the type-check
 
+## Key Concepts (Typed Client)
+
+The `client` format generates the `Api` type and a `routes` value. Types are
+erased, so the client needs the value to know a call's HTTP method and path
+template; each `Api` method also carries its `path` as a literal type, from
+which the client types compute the arguments: the trailing path parameter is the
+`id` argument, the others are required in `options.params` (`PathParamNames`,
+`TrailingParam`). A catch-all is `{+name}` (RFC 6570 reserved expansion). PUT is
+`update`, or `replace` when the path also defines PATCH. Without `routes`, the
+client falls back to deriving URLs from property names. End-to-end coverage:
+`e2e_tests/client_routes_test.ts`.
+
 ## Key Concepts (Request-Dependent Responses)
 
 A response type can be a function of the request (`?fields=`, `?expand=`).
