@@ -449,6 +449,7 @@ src/
 ├── core/
 │   ├── types.ts       # Shared types (including SSE)
 │   ├── validation.ts  # Request validation
+│   ├── routes.ts      # Route discovery, path conversion, operationId derivation
 │   └── openapi.ts     # OpenAPI spec generation (x-pagination)
 ├── pagination/
 │   ├── types.ts       # Pagination type definitions
@@ -458,19 +459,27 @@ src/
 │   ├── dsl.ts         # Builder functions: step(), dependentStep(), mappedStep(), etc.
 │   ├── mapping.ts     # Declarative field mappings: fromStep(), deriveSchemaWithLiterals()
 │   ├── client.ts      # Type-safe protocol session client
+│   ├── errors.ts      # Errors thrown by protocol sessions
+│   ├── introspect.ts  # Schema path lookup used by validateProtocol()
 │   ├── http.ts        # HTTP executor for real endpoint connections
+│   ├── openapi.ts     # x-protocol OpenAPI extension
 │   ├── compose.ts     # Endpoint composition (fromEndpoint, fromEndpointMapped)
 │   ├── typegen.ts     # Branded type generation from protocols
 │   ├── oauth.ts       # OAuth 2.0 reference implementation
 │   └── index.ts       # Module exports
 ├── client/
 │   ├── index.ts       # Typed HTTP client
+│   ├── sse.ts         # text/event-stream parser
 │   └── types.ts       # Client type definitions
-├── tsgen/             # TypeScript type generation (pagination metadata)
+├── tsgen/             # TypeScript type generation
+│   ├── zod.ts         # Zod schema to TypeScript type text
+│   ├── extract.ts     # Route import and schema rendering
+│   └── generate.ts    # types, client and routes output formats
 ├── integrations/
 │   ├── fresh.ts       # Fresh v2 runtime adapter (endpoint, sseEndpoint)
-│   └── vite.ts        # Vite build-time plugin (OpenAPI generation)
-└── cli.ts             # CLI for type generation
+│   └── vite.ts        # Vite build-time plugins (OpenAPI, protocol types)
+├── cli.ts             # CLI for type generation
+└── mod.ts             # Root exports
 ```
 
 ## Protocol Schemas (Experimental)
