@@ -4,11 +4,23 @@ import { stat, writeFile } from "node:fs/promises";
 import process from "node:process";
 import { parseArgs } from "node:util";
 import { ROUTE_CONVENTIONS, type RouteConvention } from "./core/routes.ts";
+import { generateContract } from "./contract/index.ts";
+import { generateFastApi } from "./python/index.ts";
 import { generateTypes } from "./tsgen/mod.ts";
 import { generateProtocolTypesFromModule } from "./protocol/typegen.ts";
 
+/** The values of `--format`. */
+const FORMATS = [
+  "types",
+  "client",
+  "routes",
+  "protocol",
+  "contract",
+  "fastapi",
+] as const;
+
 const help = `
-typed-endpoints - Generate TypeScript types from API route Zod schemas
+typed-endpoints - Generate types and code from API route Zod schemas
 
 Usage:
   typed-endpoints [options]
@@ -17,7 +29,8 @@ Options:
   -r, --routes <dir>    Routes directory, repeatable (default: routes/api)
   -o, --output <file>   Output file path (required)
   -c, --config <file>   Path to deno.json (auto-detected if not provided)
-  -f, --format <fmt>    Output format: types, client, routes, or protocol (default: types)
+  -f, --format <fmt>    Output format: types, client, routes, protocol, contract
+                        or fastapi (default: types)
   --convention <name>   Route file layout: fresh, next, sveltekit, astro, or nitro
                         (default: fresh; also the layout for Bun, Hono and fetch)
   -p, --protocol <file> Protocol module path (required when --format protocol)
@@ -30,6 +43,9 @@ Formats:
   client   - Resource-based Api interface for createClient()
   routes   - Runtime route metadata for createHttpExecutor()
   protocol - Branded types from a protocol module
+  contract - The routes as JSON: each operation with a JSON Schema per part
+  fastapi  - A Python module: Pydantic models, a Handlers protocol and a
+             FastAPI router
 
 Examples:
   typed-endpoints -r routes/api -o src/api-types.ts
@@ -37,6 +53,7 @@ Examples:
   typed-endpoints -r routes/api -o src/api-routes.ts --format routes
   typed-endpoints -r app/api -o src/api-client.ts --format client --convention next
   typed-endpoints --format protocol --protocol ./my-protocol.ts -o src/protocol-types.ts
+  typed-endpoints -r routes/api -o server/api_generated.py --format fastapi
 `;
 
 /**
@@ -103,11 +120,11 @@ async function main() {
     | "client"
     | "routes"
     | "protocol"
+    | "contract"
+    | "fastapi"
     | undefined;
-  if (format && !["types", "client", "routes", "protocol"].includes(format)) {
-    fail(
-      `Invalid format "${format}". Must be: types, client, routes, or protocol`,
-    );
+  if (format && !FORMATS.includes(format)) {
+    fail(`Invalid format "${format}". Must be: ${FORMATS.join(", ")}`);
   }
 
   const convention = args.convention as RouteConvention | undefined;
@@ -146,14 +163,32 @@ async function main() {
   const routesDirs = routes.length > 0 ? routes : ["routes/api"];
 
   try {
-    await generateTypes({
-      routesDirs,
-      output: args.output,
-      config,
-      format,
-      clientImport: args["client-import"],
-      convention,
-    });
+    if (format === "contract") {
+      // The routes as data, for generators in other languages.
+      await generateContract({
+        routesDirs,
+        output: args.output,
+        config,
+        convention,
+      });
+    } else if (format === "fastapi") {
+      // A Python module: Pydantic models and a FastAPI router.
+      await generateFastApi({
+        routesDirs,
+        output: args.output,
+        config,
+        convention,
+      });
+    } else {
+      await generateTypes({
+        routesDirs,
+        output: args.output,
+        config,
+        format,
+        clientImport: args["client-import"],
+        convention,
+      });
+    }
     console.log(`Generated ${format ?? "types"} written to ${args.output}`);
   } catch (error) {
     console.error(

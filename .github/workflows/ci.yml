@@ -53,6 +53,24 @@ jobs:
       - name: Run tests under Bun
         run: ./scripts/test-bun
 
+  test-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.9.x
+          cache: true
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Bootstrap
+        run: deno install --frozen
+
+      - name: Run the generated FastAPI application against the conformance tests
+        run: ./scripts/test-python
+
   framework-types:
     runs-on: ubuntu-latest
     steps:

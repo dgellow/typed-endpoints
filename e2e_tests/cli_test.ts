@@ -1,4 +1,5 @@
 import { assertEquals } from "@std/assert";
+import { generateContract } from "@/contract/index.ts";
 
 const FIXTURE = "e2e_tests/fixtures/test-protocol.ts";
 
@@ -161,6 +162,55 @@ for (const format of ["types", "client", "routes"]) {
     }
   });
 }
+
+// The CLI finds this repository's deno.json, so the route files are
+// imported in the subprocess that uses its import map: these two tests are
+// also what shows that JSON Schema extraction works there.
+
+Deno.test("CLI --format contract writes what generateContract() returns", async () => {
+  const output = await Deno.makeTempFile({ suffix: ".json" });
+  try {
+    const result = await runCli(
+      "-r",
+      "e2e_tests/fixtures/python/routes",
+      "-o",
+      output,
+      "--format",
+      "contract",
+    );
+    assertEquals(result.code, 0, result.stderr);
+    assertEquals(
+      JSON.parse(await Deno.readTextFile(output)),
+      await generateContract({
+        routesDirs: ["e2e_tests/fixtures/python/routes"],
+      }),
+    );
+  } finally {
+    await Deno.remove(output);
+  }
+});
+
+Deno.test("CLI --format fastapi writes the checked-in Python module", async () => {
+  const output = await Deno.makeTempFile({ suffix: ".py" });
+  try {
+    const result = await runCli(
+      "-r",
+      "e2e_tests/fixtures/python/routes",
+      "-o",
+      output,
+      "--format",
+      "fastapi",
+    );
+    assertEquals(result.code, 0, result.stderr);
+    // The module `./scripts/test-python` type-checks and runs.
+    assertEquals(
+      await Deno.readTextFile(output),
+      await Deno.readTextFile("e2e_tests/python/api_generated.py"),
+    );
+  } finally {
+    await Deno.remove(output);
+  }
+});
 
 Deno.test("CLI defaults to the types format", async () => {
   const explicit = await Deno.makeTempFile({ suffix: ".ts" });

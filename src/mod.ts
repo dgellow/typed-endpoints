@@ -130,6 +130,20 @@ export {
 // TypeScript generation
 export { generateTypes, type TypeGenOptions } from "./tsgen/mod.ts";
 
+// The routes as language-neutral data, and code for other languages
+export {
+  type Contract,
+  type ContractOperation,
+  type ContractOptions,
+  type ContractPathParam,
+  generateContract,
+  type JsonSchema,
+} from "./contract/index.ts";
+export {
+  generateFastApi,
+  type GenerateFastApiOptions,
+} from "./python/index.ts";
+
 // Vite plugin
 export {
   openApiPlugin,

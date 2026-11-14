@@ -28,6 +28,10 @@ permissions):
   h3 integrations inside the real frameworks
 - `./scripts/check-framework-types` — type-check the integrations against the
   real Next.js, SvelteKit, Astro, Hono and h3 packages at pinned versions
+- `./scripts/test-python` — run `e2e_tests/python` through `uv` (needs `uv`):
+  pyright in strict mode over the generated module and the hand-written
+  handlers, then the conformance tests against the generated FastAPI
+  application. Python is always run through `uv`
 
 ## Project Structure
 
@@ -68,11 +72,14 @@ src/
 │   ├── zod.ts      # Zod schema -> TypeScript type text
 │   ├── extract.ts  # Route import + schema rendering (in-process and subprocess)
 │   └── generate.ts # types / client / routes output formats
+├── contract/       # generateContract(): the routes as data, JSON Schema per part
+├── python/         # Pydantic models (models.ts) and a FastAPI module (fastapi.ts)
 ├── cli.ts          # CLI entry point
 └── mod.ts          # Main module exports
 e2e_tests/          # End-to-end tests (protocol flows, Fresh server, CLI, Vite)
 e2e_tests/bun/      # Tests run by Bun (`bun:test`); excluded from Deno's tools
 e2e_tests/framework-types/ # Compile-only check against the frameworks' types
+e2e_tests/python/   # uv project: generated FastAPI module, handlers, conformance tests
 ```
 
 ## Testing
@@ -168,6 +175,22 @@ that merges). PATCH is checked without `put-put`. A non-2xx answer is a refusal
 and a view the body schema rejects is a skip; neither is a violation, and
 neither counts as held. Each broken handler in `src/core/laws_test.ts` fails the
 law named for it and no other; end to end in `e2e_tests/resource_laws_test.ts`.
+
+## Key Concepts (Other Languages)
+
+Generators for other languages read a contract (`src/contract`), not TypeScript
+type text: every operation with a JSON Schema per part, taken from the schema's
+own Standard Schema interface (`schema["~standard"].jsonSchema`), which needs no
+import of `zod` and so works in the extraction subprocess. Request parts are the
+input side, responses the output side; what JSON Schema cannot state is `{}`.
+
+The Python generator writes one module: Pydantic models, a `Handlers` protocol,
+`create_router()`. User code implements `Handlers` elsewhere. A claim about the
+generated Python is established by running it: `e2e_tests/python/conformance.ts`
+is one test suite run against the fixture's TypeScript handlers
+(`e2e_tests/python_conformance_test.ts`) and against the generated FastAPI
+application (`./scripts/test-python`). A difference between the two servers is
+either fixed or listed in the README table.
 
 ## Key Concepts (Request-Dependent Responses)
 

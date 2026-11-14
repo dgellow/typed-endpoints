@@ -51,6 +51,44 @@ export interface ExtractedMethod {
   /** Pagination metadata set by the pagination helpers. */
   readonly pagination?: unknown;
   readonly operationId?: string;
+  /**
+   * The same parts as JSON Schema, for generators that do not write
+   * TypeScript. Present when the extraction was asked for it.
+   */
+  readonly schemas?: MethodSchemas;
+  /** One-line summary of the operation. */
+  readonly summary?: string;
+  /** Description of the operation. */
+  readonly description?: string;
+  /** Tags of the operation. */
+  readonly tags?: readonly string[];
+}
+
+/** A JSON Schema document (draft 2020-12). */
+export type JsonSchema = Readonly<Record<string, unknown>>;
+
+/**
+ * The schemas of a method as JSON Schema. Request parts describe what a
+ * client sends (the input side of the Zod schema); responses, error bodies
+ * and events describe what JSON carries (the output side). A part JSON
+ * Schema cannot state (the result of a `transform()`, a `Date`) is `{}`,
+ * which accepts anything.
+ */
+export interface MethodSchemas {
+  readonly body?: JsonSchema;
+  readonly query?: JsonSchema;
+  readonly params?: JsonSchema;
+  readonly response?: JsonSchema;
+  /** Declared error bodies, by status. */
+  readonly errors?: Readonly<Record<string, JsonSchema>>;
+  /** SSE events, by name. */
+  readonly events?: Readonly<Record<string, JsonSchema>>;
+}
+
+/** Options of `extractRoutes()`. */
+export interface ExtractOptions {
+  /** Also describe every schema as JSON Schema (`ExtractedMethod.schemas`). */
+  readonly jsonSchema?: boolean;
 }
 
 export interface ExtractedRoute {
@@ -86,6 +124,35 @@ interface MethodDefLike {
   >;
   readonly __pagination?: unknown;
   readonly operationId?: string;
+  readonly summary?: string;
+  readonly description?: string;
+  readonly tags?: readonly string[];
+}
+
+/**
+ * The JSON Schema of a Zod schema, through the interface every Zod 4.2+
+ * schema carries (Standard Schema). No import of `zod` is needed, which
+ * this module, loaded by URL into the user's context, could not rely on.
+ */
+function jsonSchemaOf(schema: ZodType, io: "input" | "output"): JsonSchema {
+  const standard = (schema as unknown as {
+    "~standard"?: {
+      jsonSchema?: Record<
+        "input" | "output",
+        (options: Record<string, unknown>) => JsonSchema
+      >;
+    };
+  })["~standard"]?.jsonSchema;
+  if (!standard) {
+    throw new Error(
+      "the schema has no JSON Schema interface; it needs Zod 4.2 or later",
+    );
+  }
+  return standard[io]({
+    target: "draft-2020-12",
+    // What JSON Schema cannot state becomes `{}` instead of an error.
+    libraryOptions: { unrepresentable: "any" },
+  });
 }
 
 function message(error: unknown): string {
@@ -100,6 +167,7 @@ function message(error: unknown): string {
  */
 export async function extractRoutes(
   sources: readonly RouteSource[],
+  options: ExtractOptions = {},
 ): Promise<Extraction> {
   const declarations = new TypeDeclarations();
   const dependentOnly: string[] = [];
@@ -200,6 +268,54 @@ export async function extractRoutes(
           ]),
       );
 
+      const describe = (
+        part: string,
+        schema: ZodType,
+        io: "input" | "output",
+      ): JsonSchema => {
+        try {
+          return jsonSchemaOf(schema, io);
+        } catch (cause) {
+          throw new Error(
+            `${method} ${source.filePath}, ${part}: ${message(cause)}`,
+            { cause },
+          );
+        }
+      };
+      const declared = Object.entries(def.responses ?? {})
+        .filter(([status]) => Number(status) >= 400)
+        .sort(([a], [b]) => Number(a) - Number(b));
+      const schemas: MethodSchemas | undefined = options.jsonSchema
+        ? {
+          ...(def.body && { body: describe("body", def.body, "input") }),
+          ...(def.query && { query: describe("query", def.query, "input") }),
+          ...(def.params &&
+            { params: describe("params", def.params, "input") }),
+          ...(def.response &&
+            { response: describe("response", def.response, "output") }),
+          ...(declared.length > 0 && {
+            errors: Object.fromEntries(
+              declared.map(([status, value]) => [
+                status,
+                describe(
+                  `response ${status}`,
+                  "schema" in value ? value.schema : value,
+                  "output",
+                ),
+              ]),
+            ),
+          }),
+          ...(def.events && {
+            events: Object.fromEntries(
+              Object.entries(def.events).map(([name, schema]) => [
+                name,
+                describe(`event "${name}"`, schema, "output"),
+              ]),
+            ),
+          }),
+        }
+        : undefined;
+
       methods[method] = {
         ...(def.body && { body: render("body", def.body, "input", "json") }),
         ...withFields(def.query && render("query", def.query, "input")),
@@ -221,6 +337,10 @@ export async function extractRoutes(
           pagination: def.__pagination,
         }),
         ...(def.operationId && { operationId: def.operationId }),
+        ...(schemas && { schemas }),
+        ...(def.summary && { summary: def.summary }),
+        ...(def.description && { description: def.description }),
+        ...(def.tags && { tags: def.tags }),
       };
     }
 
