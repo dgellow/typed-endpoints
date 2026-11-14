@@ -10,15 +10,11 @@ export const handler = createApiHandlers({
     params: z.object({ id: z.string() }),
     query: z.object({ expand: relationsOf(userRelations) }),
     response: expansion(User, "expand", userRelations),
-    handler: (_ctx, { params, query }) => {
+    handler: (_ctx, { params }) => {
       const user = USERS.find((u) => u.id === params.id);
       if (!user) return Response.json({ error: "not found" }, { status: 404 });
-      const expand = query.expand ?? [];
-      return Response.json({
-        ...user,
-        ...(expand.includes("team") && { team: TEAM }),
-        ...(expand.includes("manager") && { manager: USERS[0] }),
-      });
+      // Everything loaded: the response schema drops what was not asked for.
+      return { ...user, team: TEAM, manager: USERS[0] };
     },
   }),
 });

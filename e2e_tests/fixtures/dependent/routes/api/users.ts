@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { createApiHandlers, endpoint } from "@/integrations/fresh.ts";
-import { fieldsOf, projection, select } from "@/core/dependent.ts";
+import { fieldsOf, projection } from "@/core/dependent.ts";
 import { User, USERS } from "../../schemas.ts";
 
 export const handler = createApiHandlers({
@@ -15,12 +15,10 @@ export const handler = createApiHandlers({
       data: z.array(projection(User, "fields")),
       total: z.number(),
     }),
-    handler: (_ctx, { query }) =>
-      Response.json({
-        data: USERS.slice(0, query.limit).map((user) =>
-          select(user, query.fields)
-        ),
-        total: USERS.length,
-      }),
+    // Complete objects: the response schema cuts them down to `fields`.
+    handler: (_ctx, { query }) => ({
+      data: USERS.slice(0, query.limit),
+      total: USERS.length,
+    }),
   }),
 });

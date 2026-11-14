@@ -32,9 +32,11 @@ import {
   DEPENDENT,
   type Dependent,
   type DependentDescriptor,
+  dependentDescriptor,
   type Expansion,
   type Projection,
 } from "./dependent_types.ts";
+import { unwrapSchema, zodDef } from "./zod_internals.ts";
 
 function carry<T extends z.ZodType>(
   schema: T,
@@ -177,4 +179,76 @@ export function select<T extends object, K extends keyof T = keyof T>(
     if (field in value) picked[field] = value[field];
   }
   return picked;
+}
+
+/** The list a query parameter carries, if it is a list of names. */
+function namesIn(query: unknown, param: string): readonly string[] | undefined {
+  if (typeof query !== "object" || query === null) return undefined;
+  const value = (query as Record<string, unknown>)[param];
+  return Array.isArray(value) ? value.map(String) : undefined;
+}
+
+/**
+ * Apply the request-dependent rules in a response schema to a value.
+ *
+ * Wherever `schema` has a `projection()` or `expansion()` place, the
+ * corresponding part of `value` is cut down to what the request asked for:
+ * the listed properties, or the base object with the listed relations.
+ * The result is what the client's computed response type describes, so a
+ * handler that returns the complete object cannot contradict it.
+ *
+ * Looks inside objects, arrays and optional or nullable wrappers. Members
+ * of a union are left as they are: the schema does not say which one the
+ * value is.
+ *
+ * @param schema The response schema.
+ * @param value The value, already parsed by `schema`.
+ * @param query The validated query of the request.
+ */
+export function applyDependentResponse(
+  schema: unknown,
+  value: unknown,
+  query: unknown,
+): unknown {
+  if (value === null || typeof value !== "object") return value;
+
+  const dependent = dependentDescriptor(schema);
+  if (dependent) {
+    const names = namesIn(query, dependent.param);
+    const object = value as Record<string, unknown>;
+    if (dependent.kind === "projection") {
+      return select(object, names);
+    }
+    // Expansion: the base, plus the relations that were asked for.
+    const relations = Object.keys(dependent.relations ?? {});
+    const wanted = new Set(names ?? []);
+    return Object.fromEntries(
+      Object.entries(object).filter(([key]) =>
+        !relations.includes(key) || wanted.has(key)
+      ),
+    );
+  }
+
+  const inner = unwrapSchema(schema, "output");
+  if (inner !== schema && dependentDescriptor(inner)) {
+    return applyDependentResponse(inner, value, query);
+  }
+  const def = zodDef(inner);
+
+  if (def.type === "array" && Array.isArray(value)) {
+    return value.map((item) =>
+      applyDependentResponse(def.element, item, query)
+    );
+  }
+  if (def.type === "object" && !Array.isArray(value)) {
+    const shape = def.shape as Record<string, unknown>;
+    const object = value as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(object).map(([key, item]) => [
+        key,
+        key in shape ? applyDependentResponse(shape[key], item, query) : item,
+      ]),
+    );
+  }
+  return value;
 }
