@@ -56,8 +56,9 @@ const IMPORTS: readonly ImportTable[] = [
     ["re", []],
     ["collections.abc", ["AsyncIterator", "Iterator", "Mapping"]],
     ["dataclasses", ["dataclass"]],
-    ["typing", ["Annotated", "Any", "Literal", "cast"]],
-    ["urllib.parse", ["quote", "urljoin", "urlsplit"]],
+    ["types", ["TracebackType"]],
+    ["typing", ["Annotated", "Any", "Literal", "Self", "cast"]],
+    ["urllib.parse", ["quote"]],
   ],
   [
     ["httpx", []],
@@ -305,14 +306,15 @@ def _next_page(
     raise TypeError(message)
 
 
-def _same_origin(call: str, base_url: str, url: str) -> str:
-    """Resolve the URL of a next page, which has to be on the server asked first.
+def _same_origin(call: str, page: httpx.URL, url: str) -> httpx.URL:
+    """Resolve the URL of a next page against the page that names it.
 
-    The client's headers are sent with it.
+    It has to be on the same origin: the client's headers are sent with it.
     """
-    resolved = urljoin(base_url + "/", url)
-    base, target = urlsplit(base_url), urlsplit(resolved)
-    if (base.scheme, base.netloc) != (target.scheme, target.netloc):
+    resolved = page.join(url)
+    # A port that is the scheme's own is no port: \`http://h:80\` is \`http://h\`.
+    origins = [(at.scheme, at.host, at.port) for at in (page, resolved)]
+    if origins[0] != origins[1]:
         message = (
             f"{call}: the next page is on another origin ({resolved}); "
             "it is not followed"
@@ -571,14 +573,33 @@ function clientClass(
     `        http: ${http} | None = None,`,
     "        headers: Mapping[str, str] | None = None,",
     "    ) -> None:",
-    '        """Send requests to `base_url`, with `http` if it is given."""',
+    '        """Send requests to `base_url`, with `http` if it is given.',
+    "",
+    "        A client that is given its `http` leaves it open when it is closed:",
+    "        it belongs to whoever made it.",
+    '        """',
     '        self._base_url = base_url.rstrip("/")',
+    "        self._owns_http = http is None",
     `        self._http = http if http is not None else ${http}()`,
     "        self._headers = dict(headers or {})",
     "",
     `    ${def} ${isAsync ? "aclose" : "close"}(self) -> None:`,
-    '        """Close the HTTP client."""',
-    `        ${wait}self._http.${isAsync ? "aclose" : "close"}()`,
+    '        """Close the HTTP client, if this client made it."""',
+    "        if self._owns_http:",
+    `            ${wait}self._http.${isAsync ? "aclose" : "close"}()`,
+    "",
+    `    ${def} ${isAsync ? "__aenter__" : "__enter__"}(self) -> Self:`,
+    '        """Use the client in a `with` statement, which closes it."""',
+    "        return self",
+    "",
+    `    ${def} ${isAsync ? "__aexit__" : "__exit__"}(`,
+    "        self,",
+    "        kind: type[BaseException] | None,",
+    "        error: BaseException | None,",
+    "        traceback: TracebackType | None,",
+    "    ) -> None:",
+    '        """Close the client."""',
+    `        ${wait}self.${isAsync ? "aclose" : "close"}()`,
     "",
     `    ${def} _send(`,
     "        self,",
@@ -604,7 +625,7 @@ function clientClass(
     "        meta: Mapping[str, Any],",
     `    ) -> ${iterator}[object]:`,
     '        """Yield every page of a list, as parsed JSON."""',
-    "        url: str | None = None",
+    "        url: httpx.URL | None = None",
     "        size: int | None = None",
     "        while True:",
     "            if url is None:",
@@ -627,7 +648,7 @@ function clientClass(
     '            if step[0] == "query":',
     "                query = step[1]",
     "            else:",
-    "                url = _same_origin(call, self._base_url, step[1])",
+    "                url = _same_origin(call, response.url, step[1])",
   ];
 
   for (const item of rendered) {

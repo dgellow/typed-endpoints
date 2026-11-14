@@ -52,7 +52,10 @@ const MODEL = `class _Model(BaseModel):
     """What every model of this module has in common."""
 
     model_config = ConfigDict(
-        populate_by_name=True, regex_engine="python-re", use_attribute_docstrings=True
+        allow_inf_nan=False,
+        populate_by_name=True,
+        regex_engine="python-re",
+        use_attribute_docstrings=True,
     )`;
 
 const JSON_MODEL = `class _Json(_Model):
@@ -250,6 +253,7 @@ Deno.test("python models: when most names are camel case the models share an ali
 
     model_config = ConfigDict(
         alias_generator=to_camel,
+        allow_inf_nan=False,
         populate_by_name=True,
         regex_engine="python-re",
         use_attribute_docstrings=True,

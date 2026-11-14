@@ -1126,8 +1126,11 @@ field that was not set is not sent, and responses are parsed by strict models. A
 response that is not what the operation declares is an `ApiError` too: a
 declared status with another body (a proxy's 404), and a success that does not
 parse (`ResponseError`). A path parameter that is empty, `.` or `..` is refused
-before a request is sent (`PathError`). The client's tests run against the
-fixture's TypeScript handlers and against the generated FastAPI application.
+before a request is sent (`PathError`). A client is a context manager, and
+closes the `httpx` client only if it made it. The URL of a next page is resolved
+against the page that names it, and followed only on the same origin. The
+client's tests run against the fixture's TypeScript handlers and against the
+generated FastAPI application.
 
 The module is built from a contract, which is also available on its own:
 `generateContract()` (`--format contract`) describes every operation with its

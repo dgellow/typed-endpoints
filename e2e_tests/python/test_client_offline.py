@@ -82,5 +82,20 @@ class Paths(unittest.TestCase):
         self.assertEqual(self.requested, [])
 
 
+class Lifecycle(unittest.TestCase):
+    def test_a_client_closes_what_it_made_and_leaves_what_it_was_given(self) -> None:
+        given = httpx.Client(
+            transport=httpx.MockTransport(lambda _: httpx.Response(204))
+        )
+        with api.Client("http://api", http=given):
+            pass
+        self.assertFalse(given.is_closed)
+        given.close()
+
+        with api.Client("http://api") as made:
+            http = made._http  # pyright: ignore[reportPrivateUsage]
+        self.assertTrue(http.is_closed)
+
+
 if __name__ == "__main__":
     unittest.main()

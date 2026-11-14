@@ -420,6 +420,8 @@ export class PythonModels {
       const config = key === "model"
         ? [
           ...(generated ? ["alias_generator=to_camel"] : []),
+          // JSON has no number that is not finite.
+          "allow_inf_nan=False",
           "populate_by_name=True",
           'regex_engine="python-re"',
           "use_attribute_docstrings=True",

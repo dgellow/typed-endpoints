@@ -9,6 +9,8 @@ carries, which is the rule of the TypeScript client (`nextPage()` in
 import unittest
 from typing import Any, ClassVar
 
+import httpx
+
 import client_generated as api
 
 
@@ -156,18 +158,22 @@ class Url(unittest.TestCase):
         self.assertIsNone(step(self.META, {"items": [1], "links": {}}))
 
     def test_a_next_page_on_another_origin_is_not_followed(self) -> None:
-        same = api._same_origin  # pyright: ignore[reportPrivateUsage]
-        base = "http://api.example.test/v1"
-        self.assertEqual(
-            same("list", base, "/v1/items?page=2"),
-            "http://api.example.test/v1/items?page=2",
-        )
-        self.assertEqual(
-            same("list", base, "http://api.example.test/v1/items?page=2"),
-            "http://api.example.test/v1/items?page=2",
-        )
+        def same(url: str) -> str:
+            page = httpx.URL("http://api.example.test/v1/items?page=1")
+            return str(api._same_origin("list", page, url))  # pyright: ignore[reportPrivateUsage]
+
+        following = "http://api.example.test/v1/items?page=2"
+        self.assertEqual(same("/v1/items?page=2"), following)
+        self.assertEqual(same(following), following)
+        # Relative to the page that names it, not to where the API is.
+        self.assertEqual(same("?page=2"), following)
+        # The port a scheme has anyway, and the case of a host, are the same
+        # origin.
+        self.assertEqual(same("http://API.example.test:80/v1/items?page=2"), following)
         with self.assertRaisesRegex(RuntimeError, "another origin"):
-            same("list", base, "http://other.example.test/v1/items?page=2")
+            same("http://other.example.test/v1/items?page=2")
+        with self.assertRaisesRegex(RuntimeError, "another origin"):
+            same("https://api.example.test/v1/items?page=2")
 
 
 class Unknown(unittest.TestCase):

@@ -10,8 +10,9 @@ Not in this module: server-sent event streams (`GET /api/ticks`).
 import re
 from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal, cast
-from urllib.parse import quote, urljoin, urlsplit
+from types import TracebackType
+from typing import Annotated, Any, Literal, Self, cast
+from urllib.parse import quote
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
@@ -90,6 +91,7 @@ class _Model(BaseModel):
 
     model_config = ConfigDict(
         alias_generator=to_camel,
+        allow_inf_nan=False,
         populate_by_name=True,
         regex_engine="python-re",
         use_attribute_docstrings=True,
@@ -646,14 +648,15 @@ def _next_page(
     raise TypeError(message)
 
 
-def _same_origin(call: str, base_url: str, url: str) -> str:
-    """Resolve the URL of a next page, which has to be on the server asked first.
+def _same_origin(call: str, page: httpx.URL, url: str) -> httpx.URL:
+    """Resolve the URL of a next page against the page that names it.
 
-    The client's headers are sent with it.
+    It has to be on the same origin: the client's headers are sent with it.
     """
-    resolved = urljoin(base_url + "/", url)
-    base, target = urlsplit(base_url), urlsplit(resolved)
-    if (base.scheme, base.netloc) != (target.scheme, target.netloc):
+    resolved = page.join(url)
+    # A port that is the scheme's own is no port: `http://h:80` is `http://h`.
+    origins = [(at.scheme, at.host, at.port) for at in (page, resolved)]
+    if origins[0] != origins[1]:
         message = (
             f"{call}: the next page is on another origin ({resolved}); "
             "it is not followed"
@@ -677,14 +680,33 @@ class Client:
         http: httpx.Client | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> None:
-        """Send requests to `base_url`, with `http` if it is given."""
+        """Send requests to `base_url`, with `http` if it is given.
+
+        A client that is given its `http` leaves it open when it is closed:
+        it belongs to whoever made it.
+        """
         self._base_url = base_url.rstrip("/")
+        self._owns_http = http is None
         self._http = http if http is not None else httpx.Client()
         self._headers = dict(headers or {})
 
     def close(self) -> None:
-        """Close the HTTP client."""
-        self._http.close()
+        """Close the HTTP client, if this client made it."""
+        if self._owns_http:
+            self._http.close()
+
+    def __enter__(self) -> Self:
+        """Use the client in a `with` statement, which closes it."""
+        return self
+
+    def __exit__(
+        self,
+        kind: type[BaseException] | None,
+        error: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Close the client."""
+        self.close()
 
     def _send(
         self,
@@ -710,7 +732,7 @@ class Client:
         meta: Mapping[str, Any],
     ) -> Iterator[object]:
         """Yield every page of a list, as parsed JSON."""
-        url: str | None = None
+        url: httpx.URL | None = None
         size: int | None = None
         while True:
             if url is None:
@@ -729,7 +751,7 @@ class Client:
             if step[0] == "query":
                 query = step[1]
             else:
-                url = _same_origin(call, self._base_url, step[1])
+                url = _same_origin(call, response.url, step[1])
 
     def echo_retrieve(self, path: str) -> EchoRetrieveResponse:
         """Call `GET /api/echo/{+path}`."""
@@ -852,14 +874,33 @@ class AsyncClient:
         http: httpx.AsyncClient | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> None:
-        """Send requests to `base_url`, with `http` if it is given."""
+        """Send requests to `base_url`, with `http` if it is given.
+
+        A client that is given its `http` leaves it open when it is closed:
+        it belongs to whoever made it.
+        """
         self._base_url = base_url.rstrip("/")
+        self._owns_http = http is None
         self._http = http if http is not None else httpx.AsyncClient()
         self._headers = dict(headers or {})
 
     async def aclose(self) -> None:
-        """Close the HTTP client."""
-        await self._http.aclose()
+        """Close the HTTP client, if this client made it."""
+        if self._owns_http:
+            await self._http.aclose()
+
+    async def __aenter__(self) -> Self:
+        """Use the client in a `with` statement, which closes it."""
+        return self
+
+    async def __aexit__(
+        self,
+        kind: type[BaseException] | None,
+        error: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Close the client."""
+        await self.aclose()
 
     async def _send(
         self,
@@ -885,7 +926,7 @@ class AsyncClient:
         meta: Mapping[str, Any],
     ) -> AsyncIterator[object]:
         """Yield every page of a list, as parsed JSON."""
-        url: str | None = None
+        url: httpx.URL | None = None
         size: int | None = None
         while True:
             if url is None:
@@ -904,7 +945,7 @@ class AsyncClient:
             if step[0] == "query":
                 query = step[1]
             else:
-                url = _same_origin(call, self._base_url, step[1])
+                url = _same_origin(call, response.url, step[1])
 
     async def echo_retrieve(self, path: str) -> EchoRetrieveResponse:
         """Call `GET /api/echo/{+path}`."""
