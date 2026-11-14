@@ -25,6 +25,7 @@ import {
   createSession,
   oauth2AuthCodeProtocol,
 } from "@dgellow/typed-endpoints/protocol";
+import { fileProtocol } from "./files.ts";
 
 const ROUTES = join(import.meta.dir, "routes/api");
 
@@ -287,5 +288,22 @@ describe("protocol sessions under Bun", () => {
     });
     // The code is spent; no refresh token was issued.
     expect(s2.availableSteps()).toEqual(["authorize", "revoke"]);
+  });
+
+  test("await using ends a session with the protocol's onAbandon step", async () => {
+    const calls: string[] = [];
+    const executor = {
+      execute: <T>(step: string, request: unknown): Promise<T> => {
+        calls.push(`${step} ${JSON.stringify(request)}`);
+        return Promise.resolve(
+          (step === "open" ? { handle: "h1" } : { closed: true }) as T,
+        );
+      },
+    };
+    {
+      await using session = createSession(fileProtocol, executor);
+      await session.execute("open", { path: "/tmp/a" });
+    }
+    expect(calls).toEqual(['open {"path":"/tmp/a"}', 'close {"handle":"h1"}']);
   });
 });

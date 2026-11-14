@@ -27,6 +27,8 @@ import { validateProtocol } from "./dsl.ts";
 import {
   InvalidRequestError,
   InvalidResponseError,
+  SessionAbandonedError,
+  SessionEndedError,
   SessionSpentError,
   StepNotAvailableError,
   StepRefusedError,
@@ -458,6 +460,10 @@ export interface ExecuteResult<
  * available only once TSeen says the response is of that variant.
  *
  * Each method that executes a step returns a NEW session with updated types.
+ *
+ * A session can be ended before the protocol is: `await using` ends it
+ * when the block is left, `abandon()` ends it explicitly. The protocol's
+ * `onAbandon` step then runs once, on the state the session reached.
  */
 export class ProtocolSession<
   TSteps extends Record<string, AnyStep>,
@@ -481,6 +487,7 @@ export class ProtocolSession<
       readonly name: string;
       readonly steps: TSteps;
       readonly terminal?: readonly (string | keyof TSteps)[];
+      readonly onAbandon?: string | keyof TSteps;
     },
     readonly executor: StepExecutor,
     readonly responses: SessionState<TSteps, TDone, TSeen>,
@@ -490,6 +497,9 @@ export class ProtocolSession<
 
   /** The step this session value was used for, in a single-use session. */
   #spentBy: string | undefined;
+
+  /** What this session value shares with the ones before and after it. */
+  #line: Lineage = { latest: this, ended: false };
 
   /**
    * Establish that a step can run, using the step's own conditions.
@@ -575,6 +585,26 @@ export class ProtocolSession<
       SeenAfter<TSteps, TDone & string, TSeen, K>
     >
   > {
+    if (this.#line.ended) {
+      throw new SessionEndedError(this.protocol.name, stepName);
+    }
+    return await this.#perform(stepName, request);
+  }
+
+  /** Execute a step, whether or not the session was ended. */
+  async #perform<
+    K extends string & AvailableSteps<TSteps, TDone & string, TSeen>,
+  >(
+    stepName: K,
+    request: unknown,
+  ): Promise<
+    ExecuteResult<
+      StepResponse<TSteps[K]>,
+      TSteps,
+      DoneAfter<TSteps, TDone & string, K>,
+      SeenAfter<TSteps, TDone & string, TSeen, K>
+    >
+  > {
     const step = this.protocol.steps[stepName];
 
     const protocolName = this.protocol.name;
@@ -650,6 +680,9 @@ export class ProtocolSession<
       [...this.history, stepName],
       this.options,
     );
+    // The new value continues this one: ending either ends both.
+    newSession.#line = this.#line;
+    this.#line.latest = newSession;
 
     // The step succeeded: in a single-use session this value is spent.
     if (this.options.singleUse) this.#spentBy = stepName;
@@ -707,6 +740,98 @@ export class ProtocolSession<
     const last = this.history.at(-1);
     return last !== undefined && this.protocol.terminal.includes(last);
   }
+
+  /**
+   * End the session.
+   *
+   * What happens depends on where the session is, counting the steps
+   * executed on every value that descends from the same `createSession()`:
+   *
+   * - no step ran, or the last one is a terminal step: nothing
+   * - otherwise the protocol's `onAbandon` step runs, with the request the
+   *   session fills in from earlier responses, if the step can run in that
+   *   state. In a `linear` session, `SessionAbandonedError` is thrown
+   *   afterwards
+   *
+   * A session ends once: a second call does nothing. After it, `execute()`
+   * on any value of the session throws `SessionEndedError`.
+   *
+   * @returns The step that ran with its request and response, or
+   * `undefined` when none did.
+   */
+  async abandon(): Promise<Abandonment | undefined> {
+    const line = this.#line;
+    if (line.ended) return undefined;
+    line.ended = true;
+
+    const last = line.latest;
+    if (last.history.length === 0 || last.isTerminal()) return undefined;
+
+    const name = this.protocol.onAbandon as string | undefined;
+    let released: Abandonment | undefined;
+    if (name !== undefined && last.canExecute(name)) {
+      const request = filledRequest(
+        this.protocol.steps[name],
+        last.responses as Record<string, unknown>,
+      );
+      const { response } = await last.#perform(name as never, request);
+      released = { step: name, request, response };
+    }
+
+    if (this.options.linear) {
+      throw new SessionAbandonedError(
+        this.protocol.name,
+        last.history,
+        released?.step,
+      );
+    }
+    return released;
+  }
+
+  /** `await using session = createSession(...)` ends the session. */
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.abandon();
+  }
+}
+
+/** What the session values that descend from one `createSession()` share. */
+interface Lineage {
+  /** The value the most recent step returned. */
+  // deno-lint-ignore no-explicit-any
+  latest: ProtocolSession<any, any, any>;
+  /** Whether the session was ended. */
+  ended: boolean;
+}
+
+/** The step a session ran when it was ended early. */
+export interface Abandonment {
+  /** Name of the step: the protocol's `onAbandon`. */
+  readonly step: string;
+  /** The request the session filled in. */
+  readonly request: unknown;
+  /** The response, parsed by the step's schema. */
+  readonly response: unknown;
+}
+
+/**
+ * The request of a step the session runs by itself: the forwarded fields
+ * of a mapped step, from the responses they are mapped to.
+ */
+function filledRequest(
+  step: AnyStep,
+  responses: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  const request: Record<string, unknown> = {};
+  if (step.__kind !== "mapped_step") return request;
+  for (
+    const [field, mapping] of Object.entries(
+      (step as MappedStep).requestMapping,
+    )
+  ) {
+    if (!isFieldMapping(mapping)) continue;
+    request[field] = getNestedValue(responses[mapping.step], mapping.path);
+  }
+  return request;
 }
 
 /**
@@ -829,6 +954,17 @@ export interface SessionOptions {
    * does not spend the session.
    */
   readonly singleUse?: boolean;
+  /**
+   * The session has to reach a terminal step. Default: false.
+   *
+   * Ending a session earlier (`await using`, `abandon()`) runs the
+   * protocol's `onAbandon` step either way. Without this option that is
+   * all (the session is affine: it may be dropped). With it, the end then
+   * throws `SessionAbandonedError` (the session is linear: dropping it is
+   * an error). A session on which no step ran holds nothing and is not
+   * abandoned.
+   */
+  readonly linear?: boolean;
 }
 
 /**
@@ -858,6 +994,7 @@ export function createSession<TSteps extends Record<string, AnyStep>>(
       readonly name: string;
       readonly steps: TSteps;
       readonly terminal?: readonly (string | keyof TSteps)[];
+      readonly onAbandon?: string | keyof TSteps;
     },
     executor,
     {} as SessionState<TSteps, never>,

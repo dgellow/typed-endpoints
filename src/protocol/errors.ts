@@ -173,3 +173,55 @@ export class SessionSpentError extends ProtocolError {
     );
   }
 }
+
+/**
+ * The session was ended (`await using`, `session.abandon()`), and a step
+ * was executed on it afterwards.
+ */
+export class SessionEndedError extends ProtocolError {
+  /**
+   * Create the error.
+   *
+   * @param protocol Name of the protocol.
+   * @param step Name of the step that was being executed.
+   */
+  constructor(protocol: string, step: string) {
+    super(
+      `Cannot execute "${step}": the session was ended`,
+      protocol,
+      step,
+    );
+  }
+}
+
+/**
+ * A session created with `linear` was ended before a terminal step.
+ *
+ * Raised after the protocol's `onAbandon` step has run, if it could.
+ */
+export class SessionAbandonedError extends ProtocolError {
+  /**
+   * Create the error.
+   *
+   * @param protocol Name of the protocol.
+   * @param history Names of the steps the session executed, in order.
+   * @param released Name of the `onAbandon` step, if it ran.
+   */
+  constructor(
+    protocol: string,
+    /** Names of the steps the session executed, in order. */
+    readonly history: readonly string[],
+    /** Name of the `onAbandon` step, if it ran. */
+    readonly released: string | undefined,
+  ) {
+    super(
+      `Session ended after "${
+        history.at(-1)
+      }", which is not a terminal step of "${protocol}"${
+        released === undefined ? "" : ` ("${released}" was run)`
+      }`,
+      protocol,
+      history.at(-1) ?? "",
+    );
+  }
+}

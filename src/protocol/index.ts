@@ -62,6 +62,7 @@
 
 // Core types
 export type {
+  AbandonStep,
   AnyComposition,
   AnyProtocolElement,
   AnyStep,
@@ -175,6 +176,7 @@ export {
 
 // Client types
 export type {
+  Abandonment,
   AlwaysRenewedBy,
   AvailableSteps,
   Child,
@@ -213,6 +215,8 @@ export {
   InvalidRequestError,
   InvalidResponseError,
   ProtocolError,
+  SessionAbandonedError,
+  SessionEndedError,
   SessionSpentError,
   StepNotAvailableError,
   StepRefusedError,
