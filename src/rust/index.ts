@@ -22,7 +22,8 @@ import { renderAxum } from "./axum.ts";
 
 export { renderAxum } from "./axum.ts";
 export type { AxumOptions } from "./axum.ts";
-export { constantCase, rawString, RustModels, snakeCase } from "./models.ts";
+export { constantCase, identifier, RustModels, snakeCase } from "./models.ts";
+export { RustContract, rustString } from "./contract.ts";
 
 /** Options of `generateAxum()`. */
 export interface GenerateAxumOptions extends RouteOptions {

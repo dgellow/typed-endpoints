@@ -1,9 +1,10 @@
 /**
  * The types of a contract as Rust source, case by case.
  *
- * These tests compare text. That the text is Rust that compiles, passes
- * clippy and reads and writes the same JSON as the TypeScript server is
- * established by `./scripts/test-rust`.
+ * These tests compare text. That the text is Rust that compiles, is
+ * formatted as rustfmt formats, has nothing for clippy to say and reads
+ * and writes the same JSON as the TypeScript server is established by
+ * `./scripts/test-rust`.
  */
 
 import { assertEquals } from "@std/assert";
@@ -11,7 +12,13 @@ import { z } from "zod";
 
 import type { JsonSchema } from "../contract/index.ts";
 import { TypeGraph } from "../contract/types.ts";
-import { constantCase, rawString, RustModels, snakeCase } from "./models.ts";
+import {
+  constantCase,
+  identifier,
+  RustModels,
+  snakeCase,
+  wrapped,
+} from "./models.ts";
 
 /** The JSON Schema a contract carries for a Zod schema. */
 function jsonSchema(schema: z.ZodType, io: "input" | "output"): JsonSchema {
@@ -22,24 +29,33 @@ function jsonSchema(schema: z.ZodType, io: "input" | "output"): JsonSchema {
   });
 }
 
+/** A graph and its models, as the axum module builds them. */
+function models(): { graph: TypeGraph; models: RustModels } {
+  const graph = new TypeGraph({ mergeSides: true });
+  return { graph, models: new RustModels(graph) };
+}
+
 /** The Rust type of a schema and the definitions it needs. */
 function rust(
   schema: z.ZodType,
   options: { io?: "input" | "output"; name?: string } = {},
 ): { type: string; source: string } {
-  const graph = new TypeGraph();
-  const models = new RustModels(graph);
-  const type = models.type(
+  const { graph, models: rendered } = models();
+  const type = rendered.type(
     graph.define(
       options.name ?? "Thing",
       jsonSchema(schema, options.io ?? "input"),
       false,
     ),
   );
-  return { type, source: models.render().join("\n").trimEnd() };
+  return { type, source: rendered.render().join("\n").trimEnd() };
 }
 
 const DERIVE = "#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]";
+const DERIVE_EQ =
+  "#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]";
+const DERIVE_ENUM =
+  "#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]";
 
 Deno.test("rust models: plain types; what a type cannot say is left to the runtime", () => {
   const type = (schema: z.ZodType) => rust(schema).type;
@@ -50,7 +66,12 @@ Deno.test("rust models: plain types; what a type cannot say is left to the runti
   assertEquals(type(z.boolean()), "bool");
   assertEquals(type(z.null()), "()");
   assertEquals(type(z.number().gt(0)), "f64");
-  assertEquals(type(z.number().int().min(1)), "i64");
+  assertEquals(type(z.number().int()), "i64");
+  // Except that an integer is not negative.
+  assertEquals(type(z.number().int().min(0)), "u64");
+  assertEquals(type(z.number().int().min(1).max(100)), "u64");
+  assertEquals(type(z.number().int().gt(-1)), "u64");
+  assertEquals(type(z.number().int().min(-5)), "i64");
   assertEquals(type(z.unknown()), "Value");
   assertEquals(type(z.string().nullable()), "Option<String>");
 });
@@ -67,7 +88,7 @@ Deno.test("rust models: lists, tuples and maps", () => {
   );
 });
 
-Deno.test("rust models: a struct; required, nullable, optional and default fields", () => {
+Deno.test("rust models: a struct; required, nullable, optional and default members", () => {
   const { type, source } = rust(
     z.object({
       id: z.string(),
@@ -76,10 +97,14 @@ Deno.test("rust models: a struct; required, nullable, optional and default field
       note: z.string().nullable().optional(),
       role: z.string().default("member"),
       limit: z.number().int().nullable().default(null),
+      tags: z.array(z.string()).default(["a"]),
+      ratio: z.number().default(0.5),
+      seats: z.number().int().min(0).default(100000),
     }).describe("A person"),
     { name: "Person" },
   );
   assertEquals(type, "Person");
+  // A default is an expression of the member's type.
   assertEquals(
     source,
     `/// A person
@@ -89,55 +114,185 @@ pub struct Person {
     pub deleted: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nickname: Option<String>,
-    #[serde(default, deserialize_with = "nullable_member", skip_serializing_if = "Option::is_none")]
-    pub note: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "MaybeAbsent::is_absent")]
+    pub note: MaybeAbsent<String>,
     #[serde(default = "default_person_role")]
     pub role: String,
     #[serde(default = "default_person_limit")]
     pub limit: Option<i64>,
+    #[serde(default = "default_person_tags")]
+    pub tags: Vec<String>,
+    #[serde(default = "default_person_ratio")]
+    pub ratio: f64,
+    #[serde(default = "default_person_seats")]
+    pub seats: u64,
 }
 
 fn default_person_role() -> String {
-    default_value(r#""member""#)
+    String::from("member")
 }
+
 fn default_person_limit() -> Option<i64> {
-    default_value(r#"null"#)
+    None
+}
+
+fn default_person_tags() -> Vec<String> {
+    vec![String::from("a")]
+}
+
+fn default_person_ratio() -> f64 {
+    0.5
+}
+
+fn default_person_seats() -> u64 {
+    100_000
 }`,
   );
 });
 
-Deno.test("rust models: once parsed, a default is a required field", () => {
-  const { source } = rust(z.object({ role: z.string().default("member") }), {
-    io: "output",
-  });
-  // What was parsed has no other members either.
+Deno.test("rust models: the type says which types it uses", () => {
+  const { graph, models: rendered } = models();
+  rendered.type(
+    graph.define(
+      "Thing",
+      jsonSchema(z.object({ id: z.string() }), "input"),
+      false,
+    ),
+  );
+  rendered.render();
   assertEquals(
-    source,
-    `${DERIVE}
-#[serde(deny_unknown_fields)]
-pub struct Thing {
-    pub role: String,
+    [rendered.usesMaybeAbsent, rendered.usesMap, rendered.usesValue],
+    [false, false, false],
+  );
+
+  const other = models();
+  other.models.type(
+    other.graph.define(
+      "Thing",
+      jsonSchema(
+        z.object({
+          note: z.string().nullable().optional(),
+          scores: z.record(z.string(), z.number()),
+          anything: z.unknown(),
+        }),
+        "input",
+      ),
+      false,
+    ),
+  );
+  other.models.render();
+  assertEquals(
+    [
+      other.models.usesMaybeAbsent,
+      other.models.usesMap,
+      other.models.usesValue,
+    ],
+    [true, true, true],
+  );
+});
+
+Deno.test("rust models: a type with nothing that has to be given has a default", () => {
+  // Every member absent.
+  assertEquals(
+    rust(
+      z.object({ a: z.string().optional(), b: z.number().int().optional() }),
+      { name: "Filter" },
+    ).source,
+    `#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub struct Filter {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub a: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub b: Option<i64>,
+}`,
+  );
+
+  // Or at the default the contract gives it, which `derive` would not
+  // know.
+  assertEquals(
+    rust(
+      z.object({
+        cursor: z.string().optional(),
+        limit: z.number().int().min(1).default(20),
+      }),
+      { name: "Page" },
+    ).source,
+    `${DERIVE_EQ}
+pub struct Page {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default = "default_page_limit")]
+    pub limit: u64,
+}
+
+impl Default for Page {
+    fn default() -> Self {
+        Self {
+            cursor: None,
+            limit: default_page_limit(),
+        }
+    }
+}
+
+fn default_page_limit() -> u64 {
+    20
 }`,
   );
 });
 
-Deno.test("rust models: names Rust cannot use keep their wire name", () => {
-  const { source } = rust(
-    z.strictObject({
-      type: z.string(),
-      "data-id": z.string(),
-      createdAt: z.string(),
-      created_at: z.string(),
-      "2fa": z.boolean(),
-    }),
+Deno.test("rust models: both sides of a schema are one type", () => {
+  const Settings = z.strictObject({ theme: z.string().default("light") });
+  const { graph, models: rendered } = models();
+  const body = rendered.type(
+    graph.define("Body", jsonSchema(Settings, "input"), false),
   );
+  const response = rendered.type(
+    graph.define("Response", jsonSchema(Settings, "output"), false),
+  );
+  assertEquals([body, response], ["Body", "Response"]);
+  // Closed objects are not `deny_unknown_fields`: the runtime refuses the
+  // members, and reports them with every other issue.
   assertEquals(
-    source,
-    `${DERIVE}
-#[serde(deny_unknown_fields)]
+    rendered.render().join("\n").trimEnd(),
+    `#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Body {
+    #[serde(default = "default_body_theme")]
+    pub theme: String,
+}
+
+impl Default for Body {
+    fn default() -> Self {
+        Self {
+            theme: default_body_theme(),
+        }
+    }
+}
+
+fn default_body_theme() -> String {
+    String::from("light")
+}
+
+/// The same type as [\`Body\`].
+pub type Response = Body;`,
+  );
+});
+
+Deno.test("rust models: names Rust cannot use, and names a rule covers", () => {
+  // A reserved word is a raw identifier, which serde reads as the word.
+  assertEquals(
+    rust(
+      z.object({
+        type: z.string(),
+        "data-id": z.string(),
+        createdAt: z.string(),
+        created_at: z.string(),
+        "2fa": z.boolean(),
+        self: z.string(),
+      }),
+    ).source,
+    `${DERIVE_EQ}
 pub struct Thing {
-    #[serde(rename = "type")]
-    pub type_: String,
+    pub r#type: String,
     #[serde(rename = "data-id")]
     pub data_id: String,
     #[serde(rename = "createdAt")]
@@ -145,16 +300,42 @@ pub struct Thing {
     #[serde(rename = "created_at")]
     pub created_at_2: String,
     #[serde(rename = "2fa")]
-    pub _2fa: bool,
+    pub field_2fa: bool,
+    #[serde(rename = "self")]
+    pub self_: String,
+}`,
+  );
+
+  // When one rule gives the wire names, the struct says the rule.
+  assertEquals(
+    rust(
+      z.object({
+        createdAt: z.string(),
+        updatedAt: z.string(),
+        id: z.string(),
+        created_at: z.string(),
+      }),
+    ).source,
+    `${DERIVE_EQ}
+#[serde(rename_all = "camelCase")]
+pub struct Thing {
+    pub created_at: String,
+    pub updated_at: String,
+    pub id: String,
+    #[serde(rename = "created_at")]
+    pub created_at_2: String,
 }`,
   );
 });
 
-Deno.test("rust models: string literals are an enum; one value is its own default", () => {
+Deno.test("rust models: string literals are an enum; a rule names its values", () => {
   const { source } = rust(
     z.object({
       kind: z.literal("alarm"),
-      level: z.enum(["low", "high", "very-high", "Low"]),
+      unit: z.enum(["mm", "cm"]).default("cm"),
+      level: z.enum(["low", "very-high", "Low"]),
+      state: z.enum(["ON", "OFF"]),
+      phase: z.enum(["Start", "End"]),
       // Not strings: the type they have.
       version: z.literal(2),
       on: z.literal(true),
@@ -163,49 +344,76 @@ Deno.test("rust models: string literals are an enum; one value is its own defaul
   );
   assertEquals(
     source,
-    `${DERIVE}
+    `${DERIVE_EQ}
 pub struct Alarm {
     pub kind: AlarmKind,
+    #[serde(default = "default_alarm_unit")]
+    pub unit: AlarmUnit,
     pub level: AlarmLevel,
+    pub state: AlarmState,
+    pub phase: AlarmPhase,
     pub version: i64,
     pub on: bool,
 }
 
-/// The value "alarm".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+fn default_alarm_unit() -> AlarmUnit {
+    AlarmUnit::Cm
+}
+
+/// The value \`"alarm"\`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum AlarmKind {
     #[default]
     #[serde(rename = "alarm")]
     Alarm,
 }
 
-/// One of "low", "high", "very-high", "Low".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// One of \`"mm"\`, \`"cm"\`.
+${DERIVE_ENUM}
+#[serde(rename_all = "lowercase")]
+pub enum AlarmUnit {
+    Mm,
+    Cm,
+}
+
+/// One of \`"low"\`, \`"very-high"\`, \`"Low"\`.
+${DERIVE_ENUM}
+#[serde(rename_all = "kebab-case")]
 pub enum AlarmLevel {
-    #[serde(rename = "low")]
     Low,
-    #[serde(rename = "high")]
-    High,
-    #[serde(rename = "very-high")]
     VeryHigh,
     #[serde(rename = "Low")]
     Low2,
+}
+
+/// One of \`"ON"\`, \`"OFF"\`.
+${DERIVE_ENUM}
+#[serde(rename_all = "UPPERCASE")]
+pub enum AlarmState {
+    On,
+    Off,
+}
+
+/// One of \`"Start"\`, \`"End"\`.
+${DERIVE_ENUM}
+pub enum AlarmPhase {
+    Start,
+    End,
 }`,
   );
 });
 
 Deno.test("rust models: the same literals in two places are one enum with two names", () => {
   const Level = z.enum(["low", "high"]);
-  const graph = new TypeGraph();
-  const models = new RustModels(graph);
-  const first = models.type(
+  const { graph, models: rendered } = models();
+  const first = rendered.type(
     graph.define(
       "Alarm",
       jsonSchema(z.object({ level: Level }), "input"),
       false,
     ),
   );
-  const second = models.type(
+  const second = rendered.type(
     graph.define(
       "Filter",
       jsonSchema(z.object({ level: Level, text: z.string() }), "input"),
@@ -213,59 +421,65 @@ Deno.test("rust models: the same literals in two places are one enum with two na
     ),
   );
   assertEquals([first, second], ["Alarm", "Filter"]);
-  const source = models.render().join("\n");
+  const source = rendered.render().join("\n");
   assertEquals(source.includes("pub level: AlarmLevel,"), true);
   assertEquals(source.includes("pub level: FilterLevel,"), true);
   assertEquals(source.includes("pub type FilterLevel = AlarmLevel;"), true);
   assertEquals(source.match(/pub enum /g)?.length, 1);
 });
 
-Deno.test("rust models: a union is an untagged enum, its variants named by what tells them apart", () => {
+Deno.test("rust models: a union told apart by a member is an enum tagged by it", () => {
   const { type, source } = rust(
     z.discriminatedUnion("kind", [
       z.object({ kind: z.literal("circle"), radius: z.number() }),
-      z.object({ kind: z.literal("square"), side: z.number() }),
+      z.object({ kind: z.literal("square"), side: z.number().int() }),
     ]),
     { name: "Shape" },
   );
   assertEquals(type, "Shape");
+  // The enum reads the member, so the structs do not have it.
   assertEquals(
     source,
     `${DERIVE}
 pub struct ShapeCircle {
-    pub kind: ShapeCircleKind,
     pub radius: f64,
 }
 
-${DERIVE}
+${DERIVE_EQ}
 pub struct ShapeSquare {
-    pub kind: ShapeSquareKind,
-    pub side: f64,
+    pub side: i64,
 }
 
 /// One of 2 alternatives, told apart by \`kind\`.
 ${DERIVE}
-#[serde(untagged)]
+#[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Shape {
     Circle(ShapeCircle),
     Square(ShapeSquare),
-}
-
-/// The value "circle".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum ShapeCircleKind {
-    #[default]
-    #[serde(rename = "circle")]
-    Circle,
-}
-
-/// The value "square".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum ShapeSquareKind {
-    #[default]
-    #[serde(rename = "square")]
-    Square,
 }`,
+  );
+});
+
+Deno.test("rust models: a variant that is also used by itself keeps the member", () => {
+  const Circle = z.object({ kind: z.literal("circle"), radius: z.number() });
+  const Square = z.object({ kind: z.literal("square"), side: z.number() });
+  const { source } = rust(
+    z.object({
+      shape: z.discriminatedUnion("kind", [Circle, Square]),
+      // Without the enum around it, a circle has to say that it is one.
+      last: Circle,
+    }),
+    { name: "Drawing" },
+  );
+  const lines = source.split("\n");
+  assertEquals(
+    lines.filter((line) => /kind|untagged|tag =|pub type/.test(line)),
+    [
+      "    pub kind: DrawingShapeCircleKind,",
+      "    pub kind: DrawingShapeSquareKind,",
+      "pub type DrawingLast = DrawingShapeCircle;",
+      "#[serde(untagged)]",
+    ],
   );
 });
 
@@ -310,10 +524,13 @@ Deno.test("rust models: a type that contains itself is boxed, except behind a Ve
     get origin() {
       return Tree.nullable();
     },
+    get either() {
+      return z.union([Tree, z.string()]);
+    },
   });
   assertEquals(
     rust(Tree, { name: "Tree" }).source,
-    `${DERIVE}
+    `${DERIVE_EQ}
 pub struct Tree {
     pub label: String,
     pub children: Vec<Tree>,
@@ -321,30 +538,14 @@ pub struct Tree {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<Box<Tree>>,
     pub origin: Option<Box<Tree>>,
-}`,
-  );
-});
-
-Deno.test("rust models: a struct inside a union inside itself is boxed", () => {
-  const Self: z.ZodType = z.object({
-    name: z.string(),
-    get either() {
-      return z.union([Self, z.string()]);
-    },
-  });
-  assertEquals(
-    rust(Self, { name: "Node" }).source,
-    `${DERIVE}
-pub struct Node {
-    pub name: String,
-    pub either: NodeEither,
+    pub either: TreeEither,
 }
 
 /// One of 2 alternatives.
-${DERIVE}
+${DERIVE_EQ}
 #[serde(untagged)]
-pub enum NodeEither {
-    Variant1(Box<Node>),
+pub enum TreeEither {
+    Variant1(Box<Tree>),
     Text(String),
 }`,
   );
@@ -363,12 +564,12 @@ Deno.test("rust models: a union that refers to itself is an enum of its own name
     { name: "Doc" },
   );
   assertEquals(type, "Doc");
-  // Null is a variant, so an optional field of the type has to tell a
-  // null that is there from a field that is not.
+  // Null is a variant, so an optional member of the type has to tell a
+  // null that is there from a member that is not.
   assertEquals(
     source,
     `/// One of 4 alternatives.
-${DERIVE}
+${DERIVE_EQ}
 #[serde(untagged)]
 pub enum DocData {
     Text(String),
@@ -377,10 +578,14 @@ pub enum DocData {
     Map(BTreeMap<String, DocData>),
 }
 
-${DERIVE}
+${DERIVE_EQ}
 pub struct Doc {
     pub data: DocData,
-    #[serde(default, deserialize_with = "present_member", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "runtime::present_member",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub more: Option<DocData>,
 }`,
   );
@@ -404,67 +609,89 @@ Deno.test("rust models: a union that refers to itself through a struct", () => {
     }),
   ]);
   const lines = rust(Expr, { name: "Expr" }).source.split("\n");
+  // The structs are named by the constant that tells them apart, and so
+  // are their variants; a number beside them keeps the enum untagged.
   assertEquals(
-    lines.filter((line) => /Expr\b.*[,{]$|^pub (enum|struct)/.test(line)),
+    lines.filter((line) =>
+      /Expr\b.*[,{]$|^pub (enum|struct)|^ {4}\w+\(|untagged/.test(line)
+    ),
     [
-      "pub struct Expr2 {",
+      "pub struct ExprNeg {",
       "    pub of: Box<Expr>,",
-      "pub struct Expr3 {",
+      "pub struct ExprAdd {",
       "    pub args: Vec<Expr>,",
+      "#[serde(untagged)]",
       "pub enum Expr {",
-      "pub enum Expr2Op {",
-      "pub enum Expr3Op {",
+      "    Number(f64),",
+      "    Neg(ExprNeg),",
+      "    Add(ExprAdd),",
+      "pub enum ExprNegOp {",
+      "pub enum ExprAddOp {",
     ],
   );
 });
 
-Deno.test("rust models: the same object twice is one struct with two names", () => {
-  const Money = z.object({ amount: z.number() });
-  const graph = new TypeGraph();
-  const models = new RustModels(graph);
-  models.type(graph.define("Price", jsonSchema(Money, "input"), false));
-  models.type(graph.define("Refund", jsonSchema(Money, "input"), false));
-  assertEquals(
-    models.render().join("\n").trimEnd(),
-    `${DERIVE}
-pub struct Price {
-    pub amount: f64,
-}
-
-/// The same type as [\`Price\`].
-pub type Refund = Price;`,
-  );
-});
-
 Deno.test("rust models: descriptions become documentation", () => {
-  const { source } = rust(
-    z.object({
-      id: z.string().describe("Where it is kept.\nNever reused."),
-    }).describe("A note"),
+  const { graph, models: rendered } = models();
+  const type = rendered.type(
+    graph.define(
+      "Note",
+      jsonSchema(
+        z.object({
+          id: z.string().describe("Where it is kept.\nNever reused."),
+        }),
+        "input",
+      ),
+      false,
+    ),
   );
+  // A type without a description takes the one it is given.
+  rendered.describe(type, "The body of `POST /notes`.");
+  rendered.describe(type, "Not this one.");
   assertEquals(
-    source,
-    `/// A note
-${DERIVE}
-pub struct Thing {
+    rendered.render().join("\n").trimEnd(),
+    `/// The body of \`POST /notes\`.
+${DERIVE_EQ}
+pub struct Note {
     /// Where it is kept.
     /// Never reused.
     pub id: String,
 }`,
   );
+
+  assertEquals(
+    rust(z.object({ id: z.string() }).describe("A note")).source.split("\n")[0],
+    "/// A note",
+  );
 });
 
-Deno.test("rust models: names and literals", () => {
+Deno.test("rust models: names, and lists that break when they are too long", () => {
   assertEquals(snakeCase("usersRetrieve"), "users_retrieve");
   assertEquals(snakeCase("data-id"), "data_id");
-  assertEquals(snakeCase("type"), "type_");
   assertEquals(snakeCase("2fa"), "_2fa");
   assertEquals(snakeCase("--"), "_");
   assertEquals(constantCase("usersRetrieve"), "USERS_RETRIEVE");
-  assertEquals(constantCase("type"), "TYPE");
+  assertEquals(identifier("type"), "r#type");
+  assertEquals(identifier("name"), "name");
+  // Words that cannot be raw identifiers.
+  assertEquals(identifier("self"), "self_");
+  assertEquals(identifier("crate"), "crate_");
 
-  assertEquals(rawString("plain"), 'r#"plain"#');
-  // The text may hold what would end the literal.
-  assertEquals(rawString('a "# b'), 'r##"a "# b"##');
-  assertEquals(rawString('a "## b "# c'), 'r###"a "## b "# c"###');
+  assertEquals(wrapped(4, "fn f(", ["&self", "a: A"], ") -> B;"), [
+    "    fn f(&self, a: A) -> B;",
+  ]);
+  const long = "VeryLongTypeName".repeat(4);
+  assertEquals(wrapped(4, "fn f(", ["&self", `a: ${long}`], `) -> ${long};`), [
+    "    fn f(",
+    "        &self,",
+    `        a: ${long},`,
+    `    ) -> ${long};`,
+  ]);
+  // An attribute has no comma after its last item.
+  assertEquals(wrapped(0, "#[serde(", [long, long], ")]", false), [
+    "#[serde(",
+    `    ${long},`,
+    `    ${long}`,
+    ")]",
+  ]);
 });

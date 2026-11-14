@@ -61,13 +61,15 @@ export type TypeNode =
   | { readonly kind: "map"; readonly values: TypeNode }
   /**
    * One of several types. `null` as a variant is how a nullable type is
-   * written. `discriminator` is the field that tells object variants
-   * apart, when there is one.
+   * written. `tag` is the field whose constant tells the object variants
+   * apart, when there is one; it is the `discriminator` when every
+   * variant is an object, so that the field decides the variant.
    */
   | {
     readonly kind: "union";
     readonly name: string;
     readonly variants: readonly TypeNode[];
+    readonly tag?: string;
     readonly discriminator?: string;
   }
   /**
@@ -175,6 +177,20 @@ interface Open {
 }
 
 /** The types of a set of schemas, named and shared. */
+/** How a `TypeGraph` reads schemas. */
+export interface TypeGraphOptions {
+  /**
+   * Whether the two sides of a schema are one type. What a client sends
+   * (the input side) and what JSON carries back (the output side) differ
+   * in two ways that a type need not show: on the output side a member
+   * with a default is always there, and members the schema does not name
+   * are gone. With this set, an object that differs only in those is the
+   * same definition on both sides: a member with a default is not
+   * required, and no object is closed.
+   */
+  readonly mergeSides?: boolean;
+}
+
 export class TypeGraph {
   /** Every definition, each after the definitions it uses. */
   readonly definitions: Definition[] = [];
@@ -192,6 +208,19 @@ export class TypeGraph {
   private readonly open = new Map<Schema, Open>();
   /** Types that refer to themselves, by content: their name. */
   private readonly recursive = new Map<string, string>();
+  private readonly mergeSides: boolean;
+
+  constructor(options: TypeGraphOptions = {}) {
+    this.mergeSides = options.mergeSides ?? false;
+  }
+
+  /** What a schema is, apart from where it is written. */
+  private content(schema: Schema, document: Document, text: boolean): string {
+    return JSON.stringify([
+      canonical(schema, document, this.mergeSides),
+      text,
+    ]);
+  }
 
   /**
    * The type of a schema.
@@ -336,7 +365,12 @@ export class TypeGraph {
         return {
           kind: "array",
           items: schema.items && typeof schema.items === "object"
-            ? this.typeOf(schema.items as Schema, `${name}Item`, document, text)
+            ? this.typeOf(
+              schema.items as Schema,
+              itemName(name),
+              document,
+              text,
+            )
             : { kind: "any" },
           ...number("minItems"),
           ...number("maxItems"),
@@ -355,7 +389,7 @@ export class TypeGraph {
     document: Document,
     text: boolean,
   ): TypeNode {
-    const tag = discriminator(alternatives, document);
+    const { tag, decides } = tagOf(alternatives, document);
     const variants = alternatives.map((member, i) => {
       const value = tag && (resolve(member, document).properties as
         | Record<string, Schema>
@@ -368,7 +402,8 @@ export class TypeGraph {
       kind: "union",
       name,
       variants,
-      ...(tag && { discriminator: tag }),
+      ...(tag && { tag }),
+      ...(tag && decides && { discriminator: tag }),
     };
   }
 
@@ -390,6 +425,14 @@ export class TypeGraph {
         cyclic: this.building.has(existing),
       };
     }
+    // The same object under another name is that object again.
+    const same = this.known.get(this.content(schema, document, text));
+    if (same !== undefined && !this.building.has(same)) {
+      const alias = this.unique(hint);
+      known.set(key, alias);
+      this.definitions.push({ kind: "alias", name: alias, target: same });
+      return { kind: "ref", name: alias, cyclic: false };
+    }
     const name = this.unique(hint);
     known.set(key, name);
     return this.objectOf(schema, name, document, text, true);
@@ -403,7 +446,7 @@ export class TypeGraph {
   ): TypeNode {
     if (isObject(schema)) {
       const name = pascalCase(key);
-      const content = JSON.stringify([schema, text]);
+      const content = this.content(schema, document, text);
       const known = this.shared.get(name);
       if (known === content) {
         return { kind: "ref", name, cyclic: this.building.has(name) };
@@ -431,7 +474,7 @@ export class TypeGraph {
     document: Document,
     text: boolean,
   ): TypeNode {
-    const content = JSON.stringify([schema, text, context(schema, document)]);
+    const content = this.content(schema, document, text);
     const known = this.recursive.get(content);
     if (known !== undefined) return { kind: "ref", name: known, cyclic: false };
 
@@ -485,12 +528,7 @@ export class TypeGraph {
     }
 
     // The same object under another name is that object again.
-    const content = JSON.stringify([
-      schema,
-      text,
-      JSON.stringify(schema).includes('"$ref":"#/') ? document.defs : null,
-      JSON.stringify(schema).includes('"$ref":"#"') ? document.rootName : null,
-    ]);
+    const content = this.content(schema, document, text);
     const isRoot = schema === document.root;
     if (!named) {
       const same = this.known.get(content);
@@ -517,9 +555,11 @@ export class TypeGraph {
           document,
           text,
         ),
-        required: required.has(wireName),
-        ...(!required.has(wireName) && "default" in member &&
-          { default: { value: member.default } }),
+        // Merged, the sides agree: a default makes a member optional.
+        required: required.has(wireName) &&
+          !(this.mergeSides && "default" in member),
+        ...((this.mergeSides || !required.has(wireName)) &&
+          "default" in member && { default: { value: member.default } }),
         ...(typeof member.description === "string" &&
           { description: member.description }),
       }),
@@ -531,7 +571,7 @@ export class TypeGraph {
       name: typeName,
       ...(typeof schema.description === "string" &&
         { description: schema.description }),
-      closed: additional === false,
+      closed: additional === false && !this.mergeSides,
       text,
       fields,
     });
@@ -540,33 +580,58 @@ export class TypeGraph {
 }
 
 /**
- * What a schema means besides its own text: the definitions and the root
- * it refers to.
+ * A schema as what it says, whatever document it is in: a reference is
+ * replaced by what it refers to, and one that closes a cycle by how far
+ * up the cycle begins. Two schemas with the same result describe the
+ * same values.
+ *
+ * @param merge Leave out what differs between the sides of one schema:
+ * closed objects, and `required` for a member that has a default.
  */
-export function context(
-  schema: Readonly<Record<string, unknown>>,
+export function canonical(
+  schema: unknown,
   document: {
     readonly root: Readonly<Record<string, unknown>>;
     readonly defs: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
   },
+  merge = false,
+  enclosing: readonly unknown[] = [],
 ): unknown {
-  // The definitions it reaches, in the order it reaches them.
-  const reached: Record<string, unknown> = {};
-  let refersToRoot = false;
-  const visit = (text: string) => {
-    if (text.includes('"$ref":"#"')) refersToRoot = true;
-    for (const [, key] of text.matchAll(/"\$ref":"#\/\$defs\/([^"]+)"/g)) {
-      const target = document.defs[key];
-      if (target === undefined || key in reached) continue;
-      reached[key] = target;
-      visit(JSON.stringify(target));
+  if (Array.isArray(schema)) {
+    return schema.map((item) => canonical(item, document, merge, enclosing));
+  }
+  if (typeof schema !== "object" || schema === null) return schema;
+  const rules = schema as Readonly<Record<string, unknown>>;
+
+  if (typeof rules.$ref === "string") {
+    const target = rules.$ref === "#"
+      ? document.root
+      : document.defs[rules.$ref.replace(/^#\/\$defs\//, "")];
+    if (target === undefined) return rules;
+    const at = enclosing.lastIndexOf(target);
+    return at >= 0
+      ? { $cycle: enclosing.length - at }
+      : canonical(target, document, merge, enclosing);
+  }
+
+  const inner = [...enclosing, schema];
+  const properties = (rules.properties ?? {}) as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(rules)) {
+    if (key === "$schema" || key === "$defs") continue;
+    if (merge && key === "additionalProperties" && value === false) continue;
+    if (merge && key === "required" && Array.isArray(value)) {
+      const always = value.filter((name) => {
+        const member = properties[name];
+        return !(typeof member === "object" && member !== null &&
+          "default" in member);
+      });
+      if (always.length > 0) result.required = always;
+      continue;
     }
-  };
-  visit(JSON.stringify(schema));
-  return [
-    reached,
-    refersToRoot && schema !== document.root ? document.root : null,
-  ];
+    result[key] = canonical(value, document, merge, inner);
+  }
+  return result;
 }
 
 function resolve(schema: Schema, document: Document): Schema {
@@ -575,22 +640,28 @@ function resolve(schema: Schema, document: Document): Schema {
   return document.defs[schema.$ref.replace(/^#\/\$defs\//, "")] ?? schema;
 }
 
+/** The name of an item of a list: `Items` holds an `Item`. */
+function itemName(list: string): string {
+  return list.endsWith("Items") ? list.slice(0, -1) : `${list}Item`;
+}
+
 /**
- * The property that tells the members of a union apart: every member is an
- * object that requires it with a string constant, and no two constants
- * are equal.
+ * The property that tells the object members of a union apart: each of
+ * them requires it with a string constant, and no two constants are
+ * equal. It `decides` the member when every member is an object.
  */
-function discriminator(
+function tagOf(
   alternatives: readonly Schema[],
   document: Document,
-): string | undefined {
-  if (alternatives.length < 2) return undefined;
+): { tag?: string; decides: boolean } {
   const members = alternatives.map((member) => resolve(member, document));
-  if (!members.every((member) => member.type === "object")) return undefined;
+  const objects = members.filter((member) => member.type === "object");
+  const decides = objects.length === members.length && members.length > 1;
+  if (objects.length === 0) return { decides: false };
 
-  const first = (members[0].properties ?? {}) as Record<string, Schema>;
+  const first = (objects[0].properties ?? {}) as Record<string, Schema>;
   for (const key of Object.keys(first)) {
-    const values = members.map((member) => {
+    const values = objects.map((member) => {
       const property = (member.properties as Record<string, Schema> | undefined)
         ?.[key];
       const required = (member.required as string[] | undefined) ?? [];
@@ -603,10 +674,10 @@ function discriminator(
       values.every((value) => value !== undefined) &&
       new Set(values).size === values.length
     ) {
-      return key;
+      return { tag: key, decides };
     }
   }
-  return undefined;
+  return { decides: false };
 }
 
 /** An intersection of object schemas as one object schema. */

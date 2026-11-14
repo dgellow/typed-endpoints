@@ -188,6 +188,7 @@ class ClientTest(unittest.TestCase):
             loose=["a", "b"],
             looseOrNull=None,
             version=2,
+            level="very-high",
             anything={"nested": [1, "two", None]},
             chain=link(name="a", origin=None, next=link(name="b", origin=None)),
             json_={"list": [1, "two", None, {"deep": [True]}]},

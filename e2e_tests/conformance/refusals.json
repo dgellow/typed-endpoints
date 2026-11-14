@@ -483,7 +483,7 @@
     }
   },
   {
-    "request": "POST /api/odd {\"type\":\"memo\",\"createdAt\":\"a\",\"created_at\":\"b\",\"2fa\":true,\"pair\":[\"a\",1,2],\"scores\":{\"first\":1},\"loose\":true,\"looseOrNull\":true,\"version\":3,\"anything\":1,\"chain\":{\"name\":\"a\",\"origin\":null},\"json\":null,\"expr\":1}",
+    "request": "POST /api/odd {\"type\":\"memo\",\"createdAt\":\"a\",\"created_at\":\"b\",\"2fa\":true,\"pair\":[\"a\",1,2],\"scores\":{\"first\":1},\"loose\":true,\"looseOrNull\":true,\"version\":3,\"level\":\"low\",\"anything\":1,\"chain\":{\"name\":\"a\",\"origin\":null},\"json\":null,\"expr\":1}",
     "status": 400,
     "body": {
       "error": "Validation error: pair: Too big: expected array to have <=2 items, loose: Invalid input, looseOrNull: Invalid input, version: Invalid input: expected 2",
@@ -521,7 +521,7 @@
     }
   },
   {
-    "request": "POST /api/odd {\"type\":\"memo\",\"createdAt\":\"a\",\"created_at\":\"b\",\"2fa\":true,\"pair\":[\"a\"],\"scores\":{\"a\":1.5,\"b\":\"x\"},\"loose\":\"x\",\"looseOrNull\":null,\"version\":2,\"anything\":1,\"chain\":{\"name\":\"a\",\"origin\":null},\"json\":null,\"expr\":{\"op\":\"neg\",\"of\":\"two\"}}",
+    "request": "POST /api/odd {\"type\":\"memo\",\"createdAt\":\"a\",\"created_at\":\"b\",\"2fa\":true,\"pair\":[\"a\"],\"scores\":{\"a\":1.5,\"b\":\"x\"},\"loose\":\"x\",\"looseOrNull\":null,\"version\":2,\"level\":\"low\",\"anything\":1,\"chain\":{\"name\":\"a\",\"origin\":null},\"json\":null,\"expr\":{\"op\":\"neg\",\"of\":\"two\"}}",
     "status": 400,
     "body": {
       "error": "Validation error: pair: Too small: expected array to have >=2 items, scores.a: Invalid input: expected int, received number, scores.b: Invalid input: expected number, received string, expr: Invalid input",
@@ -561,7 +561,7 @@
     }
   },
   {
-    "request": "POST /api/odd {\"type\":\"memo\",\"createdAt\":\"a\",\"created_at\":\"b\",\"2fa\":true,\"pair\":[\"width\",2.5],\"scores\":{\"first\":1},\"loose\":\"x\",\"looseOrNull\":null,\"version\":2,\"anything\":1,\"chain\":{\"name\":\"a\",\"origin\":null,\"next\":{\"name\":1}},\"json\":null,\"expr\":1}",
+    "request": "POST /api/odd {\"type\":\"memo\",\"createdAt\":\"a\",\"created_at\":\"b\",\"2fa\":true,\"pair\":[\"width\",2.5],\"scores\":{\"first\":1},\"loose\":\"x\",\"looseOrNull\":null,\"version\":2,\"level\":\"low\",\"anything\":1,\"chain\":{\"name\":\"a\",\"origin\":null,\"next\":{\"name\":1}},\"json\":null,\"expr\":1}",
     "status": 400,
     "body": {
       "error": "Validation error: chain.next.name: Invalid input: expected string, received number, chain.next.origin: Invalid input: expected object, received undefined",
@@ -592,7 +592,7 @@
     "request": "POST /api/odd {}",
     "status": 400,
     "body": {
-      "error": "Validation error: type: Invalid input: expected string, received undefined, createdAt: Invalid input: expected string, received undefined, created_at: Invalid input: expected string, received undefined, 2fa: Invalid input: expected boolean, received undefined, pair: Invalid input: expected tuple, received undefined, scores: Invalid input: expected record, received undefined, loose: Invalid input, looseOrNull: Invalid input, version: Invalid input: expected 2, anything: Invalid input: expected nonoptional, received undefined, chain: Invalid input: expected object, received undefined, json: Invalid input, expr: Invalid input",
+      "error": "Validation error: type: Invalid input: expected string, received undefined, createdAt: Invalid input: expected string, received undefined, created_at: Invalid input: expected string, received undefined, 2fa: Invalid input: expected boolean, received undefined, pair: Invalid input: expected tuple, received undefined, scores: Invalid input: expected record, received undefined, loose: Invalid input, looseOrNull: Invalid input, version: Invalid input: expected 2, level: Invalid option: expected one of \"very-high\"|\"low\", anything: Invalid input: expected nonoptional, received undefined, chain: Invalid input: expected object, received undefined, json: Invalid input, expr: Invalid input",
       "in": "body",
       "issues": [
         {
@@ -656,6 +656,13 @@
             "version"
           ],
           "message": "Invalid input: expected 2",
+          "code": "invalid_value"
+        },
+        {
+          "path": [
+            "level"
+          ],
+          "message": "Invalid option: expected one of \"very-high\"|\"low\"",
           "code": "invalid_value"
         },
         {

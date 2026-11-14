@@ -67,6 +67,8 @@ const Odd = z.object({
   loose: z.union([z.string(), z.number(), z.array(z.string())]),
   looseOrNull: z.union([z.string(), z.number(), z.null()]),
   version: z.literal(2),
+  // Words joined in a way that is not an identifier.
+  level: z.enum(["very-high", "low"]),
   anything: z.unknown(),
   chain: Link,
   json: Json,

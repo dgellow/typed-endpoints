@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # Run the Rust side (e2e_tests/rust): the axum server built from the
-# generated module is checked by clippy, started, and the conformance
-# tests that hold for the TypeScript server are run against it.
+# generated module is checked by rustfmt and clippy, started, and the
+# conformance tests that hold for the TypeScript server are run against it.
 
 set -euo pipefail
 
@@ -16,8 +16,15 @@ fi
 
 cd "$project"
 
-# The generated module and the hand-written handlers: no warning allowed.
-cargo clippy --locked --quiet -- -D warnings
+# The generated module and the hand-written handlers read as Rust does:
+# formatted as rustfmt formats (the generated module under both style
+# editions, so that it is in any crate), and nothing for clippy to say,
+# its pedantic lints included.
+cargo fmt --check
+for edition in 2021 2024; do
+  rustfmt --check --edition "$edition" src/api_generated.rs
+done
+cargo clippy --locked --quiet --all-targets -- -D warnings -W clippy::pedantic
 cargo build --locked --quiet
 
 log="$(mktemp)"
