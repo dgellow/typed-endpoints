@@ -91,7 +91,8 @@ jobs:
           deno-version: v${{ steps.versions.outputs.deno }}
           cache: true
 
-      # uv installs the interpreter .python-version names.
+      # uv installs the interpreter .python-version names, as its own build
+      # (python-preference in pyproject.toml): the runner's Python is not used.
       - uses: astral-sh/setup-uv@v6
         with:
           version: ${{ steps.versions.outputs.uv }}

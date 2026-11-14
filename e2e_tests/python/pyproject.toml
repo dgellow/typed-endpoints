@@ -17,6 +17,9 @@ dev = [
 [tool.uv]
 package = false
 required-version = "==0.11.32"
+# The interpreter is the build uv installs for .python-version, never one
+# that happens to be on the machine: the same binary everywhere.
+python-preference = "only-managed"
 
 [tool.pyright]
 include = ["api_generated.py", "app.py", "client_generated.py", "test_client.py", "test_pagination.py", "test_runtime.py"]
