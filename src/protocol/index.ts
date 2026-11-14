@@ -168,6 +168,7 @@ export type {
 
 // Protocol client
 export {
+  completeRequest,
   createMockExecutor,
   createSession,
   present,
@@ -185,6 +186,7 @@ export type {
   DropSeen,
   ExecuteResult,
   ExecutionContext,
+  Forwarded,
   HasPath,
   HasPathIn,
   IsAny,

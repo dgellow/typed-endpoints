@@ -116,7 +116,9 @@ e2e_tests/framework-types/ # Compile-only check against the frameworks' types
   `e2e_tests/framework-types/check.ts`, and a real run if the framework is light
   enough to install in `scripts/test-bun`
 - Protocol module: `dependentStep()` for dynamic schemas, `mappedStep()` for
-  static literal forwarding
+  static literal forwarding. The fields a mapped step forwards are optional in
+  its request (`Forwarded` in `StepInput`); `completeRequest()` fills them in
+  for sessions and plans, and a value that is given is still checked
 - A dependent step names its dependency by reference (`dependsOn: stepObject`)
   and states the responses it can follow with `when`, not with `z.never()`
 - Type-level guarantees are tested with `@ts-expect-error`; an unused directive
