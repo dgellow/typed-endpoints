@@ -9,6 +9,7 @@
  * @module
  */
 
+import { dirname } from "@std/path";
 import type { Plugin } from "vite";
 import { generateOpenApiSpec, type GeneratorOptions } from "../core/openapi.ts";
 import { generateProtocolTypesFromModule } from "../protocol/typegen.ts";
@@ -65,10 +66,7 @@ export function protocolTypesPlugin(
         );
 
         // Ensure output directory exists
-        const dir = outputPath.split("/").slice(0, -1).join("/");
-        if (dir) {
-          await Deno.mkdir(dir, { recursive: true });
-        }
+        await Deno.mkdir(dirname(outputPath), { recursive: true });
 
         await Deno.writeTextFile(outputPath, output);
         console.log(`\x1b[32m✓\x1b[0m Generated ${outputPath}`);
@@ -104,10 +102,7 @@ export function openApiPlugin(options: OpenApiPluginOptions = {}): Plugin {
         const spec = await generateOpenApiSpec(generatorOptions);
 
         // Ensure output directory exists
-        const dir = outputPath.split("/").slice(0, -1).join("/");
-        if (dir) {
-          await Deno.mkdir(dir, { recursive: true });
-        }
+        await Deno.mkdir(dirname(outputPath), { recursive: true });
 
         await Deno.writeTextFile(
           outputPath,
