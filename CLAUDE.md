@@ -76,6 +76,7 @@ from it the shell, `git`, `rustup` and Node for the actions.
 src/
 ├── core/           # Shared types, request validation, OpenAPI generation
 │   ├── routes.ts   # Route discovery, path conversion, operationId derivation
+│   ├── path_segment.ts # pathSegment(), pathRest(): a path parameter in a URL; refuses "", "." and ".."
 │   ├── handlers.ts # buildHandlers(), defineIntegration(): validation + SSE for any framework
 │   ├── file_routes.ts # loadFileRoutes(), path formatting for routers
 │   ├── module_api.ts # readModuleApi(): handler object, per-method exports, default export

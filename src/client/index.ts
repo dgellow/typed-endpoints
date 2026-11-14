@@ -33,6 +33,7 @@ import type {
   TypedClient,
   TypedSseEvent,
 } from "./types.ts";
+import { pathRest, pathSegment } from "../core/path_segment.ts";
 import { createSseParser } from "./sse.ts";
 
 export { SSE_FAILURE_COMMENT } from "./sse.ts";
@@ -359,10 +360,12 @@ function fillTemplate(
         `${call}: no value for the path parameter "${name}" of ${template}; pass it in \`params\``,
       );
     }
-    // A catch-all spans segments: encode each one, keep the slashes.
+    const describe = () =>
+      `${call}: the path parameter "${name}" of ${template}`;
+    // A catch-all spans segments: each one is encoded, the slashes kept.
     return plus === "+"
-      ? String(value).split("/").map(encodeURIComponent).join("/")
-      : encodeURIComponent(String(value));
+      ? pathRest(value, describe)
+      : pathSegment(value, describe);
   });
 }
 
@@ -797,7 +800,9 @@ export function createClient<Api extends ApiSchema>(
     return {
       method: legacyMethods[methodName],
       path: basePath + "/" + pathSegments.join("/") +
-        (id === undefined ? "" : "/" + encodeURIComponent(id)),
+        (id === undefined
+          ? ""
+          : "/" + pathSegment(id, () => `${pathSegments.join(".")}: the id`)),
       body,
       options,
     };

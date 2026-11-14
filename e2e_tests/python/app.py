@@ -132,7 +132,10 @@ class Notes:
         if query.pause is not None:
             await asyncio.sleep(query.pause / 1000)
         # A client that reconnects continues after the event it has.
-        start = 0 if last_event_id is None else int(last_event_id) + 1
+        start = 0
+        if last_event_id is not None:
+            # An id that is not one of this stream's: nothing follows it.
+            start = int(last_event_id) + 1 if last_event_id.isdecimal() else query.count
         for n in range(start, query.count):
             if last_event_id is None and n == query.fail_at:
                 message = "backend went away"

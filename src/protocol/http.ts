@@ -7,6 +7,7 @@
 
 import type { AnyStep, Protocol, RequestLocations } from "./types.ts";
 import type { ExecutionContext, StepExecutor } from "./client.ts";
+import { pathSegment } from "../core/path_segment.ts";
 import { getNestedValue } from "./mapping.ts";
 
 // =============================================================================
@@ -305,7 +306,11 @@ function splitRequest(
         `Step "${stepName}": the request has no value for path parameter "${key}" of ${method} ${template}`,
       );
     }
-    return encodeURIComponent(String(value));
+    return pathSegment(
+      value,
+      () =>
+        `Step "${stepName}": the path parameter "${key}" of ${method} ${template}`,
+    );
   });
 
   const queryString = query.toString();

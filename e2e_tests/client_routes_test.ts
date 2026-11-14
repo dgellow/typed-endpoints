@@ -168,6 +168,36 @@ Deno.test("values are encoded; a catch-all keeps its slashes", async () => {
   }
 });
 
+Deno.test("a value that would make the request go to another path is refused", async () => {
+  const { client, seen, close } = await serve();
+  try {
+    const before = seen.length;
+    // `..` as an id is the URL of the collection above; `.` and an empty
+    // id are the collection itself. No request is sent.
+    for (const id of ["..", ".", ""]) {
+      assertThrows(
+        () => client.users.posts.retrieve(id, { params: { id: "7" } }),
+        TypeError,
+        "cannot be a segment of a path",
+      );
+    }
+    assertThrows(
+      () => client.users.posts.retrieve("p1", { params: { id: ".." } }),
+      TypeError,
+      'users.posts.retrieve: the path parameter "id" of',
+    );
+    // A catch-all may have slashes, and no segment that climbs.
+    assertThrows(
+      () => client.files.retrieve("docs/../../admin"),
+      TypeError,
+      'has a segment that is "." or ".."',
+    );
+    assertEquals(seen.length, before);
+  } finally {
+    await close();
+  }
+});
+
 // =============================================================================
 // Methods
 // =============================================================================

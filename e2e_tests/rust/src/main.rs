@@ -205,11 +205,12 @@ impl api::Handlers for Notes {
 
         // A client that reconnects continues after the event it has.
         let resumed = last_event_id.is_some();
+        let count = i64::try_from(query.count)?;
         let start = match last_event_id {
-            Some(id) => id.parse::<i64>()? + 1,
+            // An id that is not one of this stream's: nothing follows it.
+            Some(id) => id.parse::<i64>().map_or(count, |seen| seen + 1),
             None => 0,
         };
-        let count = i64::try_from(query.count)?;
         let pause = query.pause.map(u64::try_from).transpose()?;
         Ok(Box::pin(async_stream::try_stream! {
             if let Some(pause) = pause {

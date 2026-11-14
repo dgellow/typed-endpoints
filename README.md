@@ -1077,11 +1077,15 @@ What differs, and what does not cross:
   Parsing it and writing it back could change the text
 - A JSON body sent as `text/plain` is read by the TypeScript handlers and
   refused by FastAPI; a form body is a 400 there, not a 415
-- `\d` in a pattern matches every Unicode digit; `2.0` is refused for an
-  integer; an explicit `null` is accepted for an optional field; a scalar query
-  parameter given twice takes the last value; a value that fits no member of a
-  union is reported once per member. The conformance suite asserts each of
-  these, so the list stays true
+- `2.0` is refused for an integer; an explicit `null` is accepted for an
+  optional field; a scalar query parameter given twice takes the last value; a
+  value that fits no member of a union is reported once per member; a path that
+  is not UTF-8 once decoded reaches the handler. The conformance suite asserts
+  each of these, so the list stays true
+- A pattern is compiled as JavaScript reads it: the classes `\d` and `\w` are
+  ASCII, and `$` is the end of the text (Python's `$` is also before a last line
+  break). An independent review found that the generated module accepted
+  `"123\n"` for `/^\d+$/`; the suite has the case now, for every server
 - The modules need Python 3.12: generic classes and `type` statements are
   written as that version writes them
 - A request that names a member by its Python attribute (`created_at`) is
@@ -1118,9 +1122,12 @@ for item in client.notes_list_items(api.NotesListQuery(tag=["urgent"])):
 | `notes.list.pages()`, `notes.list.items()` | `notes_list_pages()`, `notes_list_items()`: iterators (async iterators on `AsyncClient`) that find the next page by the endpoint's pagination style |
 
 Methods are named after the operation id; there is no resource hierarchy. A body
-field that was not set is not sent, and responses are parsed by strict models.
-The client's tests run against the fixture's TypeScript handlers and against the
-generated FastAPI application.
+field that was not set is not sent, and responses are parsed by strict models. A
+response that is not what the operation declares is an `ApiError` too: a
+declared status with another body (a proxy's 404), and a success that does not
+parse (`ResponseError`). A path parameter that is empty, `.` or `..` is refused
+before a request is sent (`PathError`). The client's tests run against the
+fixture's TypeScript handlers and against the generated FastAPI application.
 
 The module is built from a contract, which is also available on its own:
 `generateContract()` (`--format contract`) describes every operation with its
@@ -1390,6 +1397,12 @@ Methods:
 
 The `id` argument exists when the route's path ends with a parameter. Options:
 `query`, `params` (path parameters other than the id), `signal`.
+
+A path parameter is one segment of the URL: a slash in it is encoded. A value
+that is empty, `.` or `..` is refused with a `TypeError` before any request is
+sent, and so is a catch-all with such a segment. A URL parser removes a dot
+segment, also a percent-encoded one, so `notes.retrieve("..")` would otherwise
+ask for the collection above the notes.
 
 ### Pagination Helpers
 

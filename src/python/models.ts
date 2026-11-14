@@ -190,6 +190,34 @@ function attributeName(wireName: string): string {
     : named;
 }
 
+/**
+ * A JavaScript pattern as Python's `re` reads it the same way: `$` is the
+ * end of the text there, and before a last line break here, where `\Z` is
+ * the end. (The classes are made ASCII by a flag, where the pattern is
+ * compiled.)
+ */
+export function pythonPattern(pattern: string): string {
+  let out = "";
+  let inClass = false;
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === "\\") {
+      out += c + (pattern[++i] ?? "");
+    } else if (c === "[") {
+      inClass = true;
+      out += c;
+    } else if (c === "]") {
+      inClass = false;
+      out += c;
+    } else if (c === "$" && !inClass) {
+      out += "\\Z";
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
 /** What Pydantic's `to_camel` makes of an attribute it is sure about. */
 function camelCase(attribute: string): string | undefined {
   if (/^[a-z]+$/.test(attribute)) return attribute;
@@ -308,6 +336,8 @@ export class PythonModels {
   private readonly patterns = new Map<string, string>();
   /** The base classes the models use. */
   private readonly bases = new Set<BaseKey>();
+  /** Whether a member has a pattern. */
+  private usesPatterns = false;
   /** Whether a type expression used `SafeInt`. */
   usesSafeInt = false;
   /** Whether a definition is a `type` statement, which needs Python 3.12. */
@@ -367,8 +397,20 @@ export class PythonModels {
     const classes = this.definitions.filter((d) => d.kind === "class");
     const generated = this.camelCase(classes);
     const lines: string[] = [];
+    if (this.usesPatterns) {
+      lines.push(
+        "def _pattern(source: str) -> re.Pattern[str]:",
+        '    """Compile a pattern of the API as JavaScript reads it.',
+        "",
+        "    There the classes for digits and for word characters are ASCII.",
+        '    """',
+        "    return re.compile(source, re.ASCII)",
+        "",
+        "",
+      );
+    }
     for (const [text, name] of this.patterns) {
-      lines.push(...stringConstant(0, name, text));
+      lines.push(...stringConstant(0, name, text, "_pattern"));
     }
     if (this.patterns.size > 0) lines.push("", "");
 
@@ -654,9 +696,11 @@ export class PythonModels {
    * A pattern as `Field(pattern=...)` takes it: the text, or the name of
    * a constant when the text is long or is what a format means.
    */
-  private pattern(text: string, format: unknown): string {
+  private pattern(source: string, format: unknown): string {
+    this.usesPatterns = true;
+    const text = pythonPattern(source);
     if (typeof format !== "string" && text.length <= 40) {
-      return stringLiteral(text);
+      return `_pattern(${stringLiteral(text)})`;
     }
     const known = this.patterns.get(text);
     if (known !== undefined) return known;

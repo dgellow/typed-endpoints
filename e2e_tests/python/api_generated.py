@@ -9,6 +9,7 @@ Needs Python 3.12.
 import asyncio
 import json
 import logging
+import re
 from collections.abc import AsyncIterator, Awaitable
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal, Protocol, cast
@@ -56,20 +57,28 @@ class InvalidRequest(BaseModel):
 # =============================================================================
 
 
-_DATE_TIME_PATTERN = (
+def _pattern(source: str) -> re.Pattern[str]:
+    """Compile a pattern of the API as JavaScript reads it.
+
+    There the classes for digits and for word characters are ASCII.
+    """
+    return re.compile(source, re.ASCII)
+
+
+_DATE_TIME_PATTERN = _pattern(
     r"^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)"
     r"-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)"
     r"-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3])"
-    r":[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$"
+    r":[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))\Z"
 )
-_UUID_PATTERN = (
-    "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-f"
-    "A-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff"
-    ")$"
+_UUID_PATTERN = _pattern(
+    r"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-"
+    r"fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffff"
+    r"ff)\Z"
 )
-_EMAIL_PATTERN = (
+_EMAIL_PATTERN = _pattern(
     r"^(?:[A-Za-z0-9_'+\-]+\.)*[A-Za-z0-9_'+\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9"
-    r"\-]*\.)+[A-Za-z]{2,}$"
+    r"\-]*\.)+[A-Za-z]{2,}\Z"
 )
 
 
@@ -113,9 +122,9 @@ class EdgesCreateBody(_Json):
     """The body of `POST /api/edges`."""
 
     short: str | None = Field(default=None, max_length=4)
-    digits: str | None = Field(default=None, pattern=r"^\d+$")
-    plain: str | None = Field(default=None, pattern=r"^[\D]+$")
-    word: str | None = Field(default=None, pattern=r"^(?!admin)\w+$")
+    digits: str | None = Field(default=None, pattern=_pattern(r"^\d+\Z"))
+    plain: str | None = Field(default=None, pattern=_pattern(r"^[\D]+\Z"))
+    word: str | None = Field(default=None, pattern=_pattern(r"^(?!admin)\w+\Z"))
     count: SafeInt | None = None
     step: float | None = Field(default=None, multiple_of=0.1)
     huge: float | None = Field(default=None, le=9007199254740991)
@@ -764,7 +773,12 @@ def _add_trees_create(router: APIRouter, handlers: Handlers) -> None:
 
 
 def create_router(handlers: Handlers) -> APIRouter:
-    """Make the operations routes that call the given handlers."""
+    """Make a router whose routes call the given handlers.
+
+    An application that includes it also needs `install_error_handlers()`,
+    which `create_app()` calls: without it, a request that fails validation
+    is answered by FastAPI, as a 422 in its own shape.
+    """
     router = APIRouter()
     _add_echo_retrieve(router, handlers)
     _add_edges_create(router, handlers)
@@ -788,14 +802,13 @@ _PREFIX = {
 }
 
 
-class UndeclaredEventError(ValueError):
-    """A handler yielded an event its stream does not declare."""
+class EventError(ValueError):
+    """A handler yielded an event that cannot be written to its stream."""
 
-    def __init__(self, name: object) -> None:
-        """Name the event."""
-        super().__init__(
-            f"the handler yielded an event the stream does not declare: {name!r}"
-        )
+
+# What the task that runs a handler's generator puts after its last event.
+_END = object()
+_FAILED = object()
 
 
 def _describe(issue: dict[str, Any]) -> str:
@@ -917,14 +930,22 @@ def _frame(event: object, events: dict[str, TypeAdapter[Any]]) -> str:
     name = getattr(event, "event", None)
     data = events.get(name) if isinstance(name, str) else None
     if data is None:
-        raise UndeclaredEventError(name)
+        message = f"the handler yielded an event the stream does not declare: {name!r}"
+        raise EventError(message)
     lines = [f"event: {name}"]
     # An empty id is meaningful: it resets the client's last event id.
     identifier = getattr(event, "id", None)
     if identifier is not None:
+        # A line break would end the field, and the frame with it.
+        if any(character in str(identifier) for character in "\r\n\0"):
+            message = f"the id of the event {name!r} has a line break: {identifier!r}"
+            raise EventError(message)
         lines.append(f"id: {identifier}")
     retry = getattr(event, "retry", None)
     if retry is not None:
+        if int(retry) < 0:
+            message = f"the retry of the event {name!r} is negative: {retry!r}"
+            raise EventError(message)
         lines.append(f"retry: {int(retry)}")
     payload = json.dumps(
         _dump(data, getattr(event, "data", None)),
@@ -935,37 +956,67 @@ def _frame(event: object, events: dict[str, TypeAdapter[Any]]) -> str:
     return "\n".join(lines) + "\n\n"
 
 
+async def _produce(
+    where: str, source: AsyncIterator[object], queue: asyncio.Queue[object]
+) -> None:
+    """Run a handler's generator from its start to its end, in one task.
+
+    What the handler holds across a `yield` (a timeout, a context variable)
+    stays in the task that entered it, and the generator is closed here, not
+    when the garbage collector finds it.
+    """
+    try:
+        try:
+            async for event in source:
+                await queue.put(event)
+        finally:
+            close = getattr(source, "aclose", None)
+            if close is not None:
+                await close()
+    except Exception:
+        logger.exception("%s: SSE stream error", where)
+        await queue.put(_FAILED)
+    else:
+        await queue.put(_END)
+
+
 async def _frames(
     where: str,
     source: AsyncIterator[object],
     events: dict[str, TypeAdapter[Any]],
     keep_alive: float | None,
 ) -> AsyncIterator[str]:
-    pending: asyncio.Future[object] | None = None
+    # One event at a time: the handler is not asked for the next one before
+    # this one is written.
+    queue: asyncio.Queue[object] = asyncio.Queue(maxsize=1)
+    producer = asyncio.create_task(_produce(where, source, queue))
     try:
         while True:
-            if pending is None:
-                pending = asyncio.ensure_future(anext(source))
-            done, _ = await asyncio.wait({pending}, timeout=keep_alive)
-            if not done:
+            try:
+                event = await asyncio.wait_for(queue.get(), keep_alive)
+            except TimeoutError:
                 # A comment: ignored by clients, seen by intermediaries.
                 yield ": keep-alive\n\n"
                 continue
-            finished, pending = pending, None
-            try:
-                event = finished.result()
-            except StopAsyncIteration:
+            if event is _END:
                 return
-            yield _frame(event, events)
-    except Exception:
-        # A stream has no status once it has begun. The comment tells a
-        # client that the stream ended because the handler failed, or
-        # yielded an event its model rejects; the event is never sent.
-        logger.exception("%s: SSE stream error", where)
-        yield ": error\n\n"
+            frame = None
+            if event is not _FAILED:
+                try:
+                    frame = _frame(event, events)
+                except (ValidationError, ValueError):
+                    logger.exception("%s: SSE stream error", where)
+            if frame is None:
+                # A stream has no status once it has begun. The stream ends
+                # here, after a comment: the handler failed, or yielded an
+                # event that cannot be written, which is never sent. A client
+                # that reconnects asks for what follows the last event it has.
+                yield ": error\n\n"
+                return
+            yield frame
     finally:
-        if pending is not None:
-            pending.cancel()
+        producer.cancel()
+        await asyncio.gather(producer, return_exceptions=True)
 
 
 def _stream(

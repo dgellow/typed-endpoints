@@ -48,6 +48,7 @@ const IMPORTS: readonly ImportTable[] = [
     ["asyncio", []],
     ["json", []],
     ["logging", []],
+    ["re", []],
     ["collections.abc", ["AsyncIterator", "Awaitable"]],
     ["dataclasses", ["dataclass"]],
     ["typing", ["Annotated", "Any", "Literal", "Protocol", "cast"]],
@@ -111,14 +112,13 @@ _PREFIX = {
 }
 
 
-class UndeclaredEventError(ValueError):
-    """A handler yielded an event its stream does not declare."""
+class EventError(ValueError):
+    """A handler yielded an event that cannot be written to its stream."""
 
-    def __init__(self, name: object) -> None:
-        """Name the event."""
-        super().__init__(
-            f"the handler yielded an event the stream does not declare: {name!r}"
-        )
+
+# What the task that runs a handler's generator puts after its last event.
+_END = object()
+_FAILED = object()
 
 
 def _describe(issue: dict[str, Any]) -> str:
@@ -240,14 +240,22 @@ def _frame(event: object, events: dict[str, TypeAdapter[Any]]) -> str:
     name = getattr(event, "event", None)
     data = events.get(name) if isinstance(name, str) else None
     if data is None:
-        raise UndeclaredEventError(name)
+        message = f"the handler yielded an event the stream does not declare: {name!r}"
+        raise EventError(message)
     lines = [f"event: {name}"]
     # An empty id is meaningful: it resets the client's last event id.
     identifier = getattr(event, "id", None)
     if identifier is not None:
+        # A line break would end the field, and the frame with it.
+        if any(character in str(identifier) for character in "\\r\\n\\0"):
+            message = f"the id of the event {name!r} has a line break: {identifier!r}"
+            raise EventError(message)
         lines.append(f"id: {identifier}")
     retry = getattr(event, "retry", None)
     if retry is not None:
+        if int(retry) < 0:
+            message = f"the retry of the event {name!r} is negative: {retry!r}"
+            raise EventError(message)
         lines.append(f"retry: {int(retry)}")
     payload = json.dumps(
         _dump(data, getattr(event, "data", None)),
@@ -258,37 +266,67 @@ def _frame(event: object, events: dict[str, TypeAdapter[Any]]) -> str:
     return "\\n".join(lines) + "\\n\\n"
 
 
+async def _produce(
+    where: str, source: AsyncIterator[object], queue: asyncio.Queue[object]
+) -> None:
+    """Run a handler's generator from its start to its end, in one task.
+
+    What the handler holds across a \`yield\` (a timeout, a context variable)
+    stays in the task that entered it, and the generator is closed here, not
+    when the garbage collector finds it.
+    """
+    try:
+        try:
+            async for event in source:
+                await queue.put(event)
+        finally:
+            close = getattr(source, "aclose", None)
+            if close is not None:
+                await close()
+    except Exception:
+        logger.exception("%s: SSE stream error", where)
+        await queue.put(_FAILED)
+    else:
+        await queue.put(_END)
+
+
 async def _frames(
     where: str,
     source: AsyncIterator[object],
     events: dict[str, TypeAdapter[Any]],
     keep_alive: float | None,
 ) -> AsyncIterator[str]:
-    pending: asyncio.Future[object] | None = None
+    # One event at a time: the handler is not asked for the next one before
+    # this one is written.
+    queue: asyncio.Queue[object] = asyncio.Queue(maxsize=1)
+    producer = asyncio.create_task(_produce(where, source, queue))
     try:
         while True:
-            if pending is None:
-                pending = asyncio.ensure_future(anext(source))
-            done, _ = await asyncio.wait({pending}, timeout=keep_alive)
-            if not done:
+            try:
+                event = await asyncio.wait_for(queue.get(), keep_alive)
+            except TimeoutError:
                 # A comment: ignored by clients, seen by intermediaries.
                 yield ": keep-alive\\n\\n"
                 continue
-            finished, pending = pending, None
-            try:
-                event = finished.result()
-            except StopAsyncIteration:
+            if event is _END:
                 return
-            yield _frame(event, events)
-    except Exception:
-        # A stream has no status once it has begun. The comment tells a
-        # client that the stream ended because the handler failed, or
-        # yielded an event its model rejects; the event is never sent.
-        logger.exception("%s: SSE stream error", where)
-        yield ": error\\n\\n"
+            frame = None
+            if event is not _FAILED:
+                try:
+                    frame = _frame(event, events)
+                except (ValidationError, ValueError):
+                    logger.exception("%s: SSE stream error", where)
+            if frame is None:
+                # A stream has no status once it has begun. The stream ends
+                # here, after a comment: the handler failed, or yielded an
+                # event that cannot be written, which is never sent. A client
+                # that reconnects asks for what follows the last event it has.
+                yield ": error\\n\\n"
+                return
+            yield frame
     finally:
-        if pending is not None:
-            pending.cancel()
+        producer.cancel()
+        await asyncio.gather(producer, return_exceptions=True)
 
 
 def _stream(
@@ -561,7 +599,12 @@ export function renderFastApi(
     "",
     "",
     "def create_router(handlers: Handlers) -> APIRouter:",
-    '    """Make the operations routes that call the given handlers."""',
+    '    """Make a router whose routes call the given handlers.',
+    "",
+    "    An application that includes it also needs `install_error_handlers()`,",
+    "    which `create_app()` calls: without it, a request that fails validation",
+    "    is answered by FastAPI, as a 422 in its own shape.",
+    '    """',
     "    router = APIRouter()",
     ...rendered.map((item) => `    _add_${item.method}(router, handlers)`),
     "    return router",

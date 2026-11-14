@@ -338,16 +338,25 @@ export function stringLiteral(value: string): string {
 /**
  * `target = "text"`, with a text that is too long written as literals
  * that Python joins, in parentheses.
+ *
+ * @param call A function the text is the argument of: `target = call("text")`.
  */
 export function stringConstant(
   indent: number,
   target: string,
   value: string,
+  call = "",
 ): string[] {
   const pad = " ".repeat(indent);
-  const flat = `${pad}${target} = ${stringLiteral(value)}`;
+  const flat = call === ""
+    ? `${pad}${target} = ${stringLiteral(value)}`
+    : `${pad}${target} = ${call}(${stringLiteral(value)})`;
   if (flat.length <= WIDTH) return [flat];
   const room = WIDTH - indent - 4;
+  // Every piece is written the way the whole text is: raw, or not.
+  const raw = stringLiteral(value).startsWith("r");
+  const literal = (piece: string) =>
+    raw ? `r"${piece}"` : JSON.stringify(piece);
   const pieces: string[] = [];
   let rest = value;
   while (rest !== "") {
@@ -355,7 +364,7 @@ export function stringConstant(
     let size = Math.min(rest.length, room);
     while (
       size > 1 &&
-      (stringLiteral(rest.slice(0, size)).length > room ||
+      (literal(rest.slice(0, size)).length > room ||
         rest[size - 1] === "\\")
     ) size--;
     // Rather after an alternative or a group than in the middle of one.
@@ -366,11 +375,11 @@ export function stringConstant(
       );
       if (cut >= size - 24 && cut > 0) size = cut + 1;
     }
-    pieces.push(stringLiteral(rest.slice(0, size)));
+    pieces.push(literal(rest.slice(0, size)));
     rest = rest.slice(size);
   }
   return [
-    `${pad}${target} = (`,
+    `${pad}${target} = ${call}(`,
     ...pieces.map((piece) => `${pad}    ${piece}`),
     `${pad})`,
   ];

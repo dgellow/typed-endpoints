@@ -52,6 +52,7 @@ export interface PythonClientOptions {
 /** What the module may import: the names its source uses are imported. */
 const IMPORTS: readonly ImportTable[] = [
   [
+    ["re", []],
     ["collections.abc", ["AsyncIterator", "Iterator", "Mapping"]],
     ["dataclasses", ["dataclass"]],
     ["typing", ["Annotated", "Any", "Literal", "cast"]],
@@ -59,7 +60,10 @@ const IMPORTS: readonly ImportTable[] = [
   ],
   [
     ["httpx", []],
-    ["pydantic", ["BaseModel", "ConfigDict", "Field", "TypeAdapter"]],
+    [
+      "pydantic",
+      ["BaseModel", "ConfigDict", "Field", "TypeAdapter", "ValidationError"],
+    ],
     ["pydantic.alias_generators", ["to_camel"]],
   ],
 ];
@@ -93,8 +97,16 @@ class ApiError(Exception):
         self.body = body
 
 
+class ResponseError(ApiError):
+    """A response whose body is not what its operation declares."""
+
+
 class PaginationError(RuntimeError):
     """A paginated list cannot be followed to its next page."""
+
+
+class PathError(ValueError):
+    """A path parameter that would make the request go to another path."""
 `.trim();
 
 const RUNTIME = `
@@ -103,12 +115,22 @@ type _Step = tuple[Literal["query"], dict[str, Any]] | tuple[Literal["url"], str
 
 
 def _segment(value: str) -> str:
-    """Encode a path parameter."""
+    """Encode a path parameter.
+
+    Empty, \`.\` and \`..\` are refused: a URL with such a segment is the URL
+    of another path, whatever the encoding.
+    """
+    if value in {"", ".", ".."}:
+        message = f"{value!r} cannot be a segment of a path"
+        raise PathError(message)
     return quote(value, safe="")
 
 
 def _rest(value: str) -> str:
     """Encode a catch-all path parameter: it keeps its slashes."""
+    if any(segment in {".", ".."} for segment in value.split("/")):
+        message = f"{value!r} has a segment that is \`.\` or \`..\`"
+        raise PathError(message)
     return quote(value, safe="/")
 
 
@@ -137,11 +159,19 @@ def _content(response: httpx.Response) -> object:
         return response.text
 
 
+def _parse[T](status: int, content: object, adapter: TypeAdapter[T]) -> T:
+    """Read a body as its type; one that is something else raises."""
+    try:
+        return adapter.validate_python(content)
+    except ValidationError as error:
+        raise ResponseError(status, content) from error
+
+
 def _expect[T](response: httpx.Response, adapter: TypeAdapter[T]) -> T:
     """Parse the body of a success; any other status raises."""
     if not response.is_success:
         raise ApiError(response.status_code, _content(response))
-    return adapter.validate_python(_content(response))
+    return _parse(response.status_code, _content(response), adapter)
 
 
 def _result[T](
@@ -151,9 +181,15 @@ def _result[T](
 ) -> T | Fail[Any, Any]:
     """Parse the body of a success, or a declared error as a value."""
     declared = errors.get(response.status_code)
-    if declared is not None:
-        return Fail(response.status_code, declared.validate_python(_content(response)))
-    return _expect(response, adapter)
+    if declared is None:
+        return _expect(response, adapter)
+    content = _content(response)
+    try:
+        return Fail(response.status_code, declared.validate_python(content))
+    except ValidationError:
+        # The status, from something that is not this API: a proxy, a
+        # framework's own answer.
+        raise ApiError(response.status_code, content) from None
 
 
 def _at(value: object, path: str | None) -> object:
@@ -232,7 +268,8 @@ def _after_page(
     total_pages = _at(page, meta.get("totalPages"))
     total = _at(page, meta.get("total"))
     last = (
-        count < size
+        count == 0
+        or count < size
         or (isinstance(total_pages, int) and current >= total_pages)
         or (isinstance(total, int) and (current - 1) * size + count >= total)
     )
@@ -697,7 +734,7 @@ function operationMethods(
         `Yield every page of \`${label}\`, from the one the query asks for.`,
       ),
       ...fit(8, `${loop} page in `, pages, ":"),
-      `            yield _${constant}_RESPONSE.validate_python(page)`,
+      `            yield _parse(200, page, _${constant}_RESPONSE)`,
     );
     if (item.item) {
       lines.push(
@@ -710,8 +747,11 @@ function operationMethods(
         ),
         ...docstring(8, `Yield every item of \`${label}\`, across its pages.`),
         ...fit(8, `${loop} page in `, pages, ":"),
+        // The page is read as a page first: something else is not an
+        // empty list.
+        `            _parse(200, page, _${constant}_RESPONSE)`,
         `            for item in _page_items(page, _${constant}_PAGINATION):`,
-        `                yield _${constant}_ITEM.validate_python(item)`,
+        `                yield _parse(200, item, _${constant}_ITEM)`,
       );
     }
   }
