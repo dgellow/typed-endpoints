@@ -93,34 +93,74 @@ export function getNestedValue(obj: unknown, path: string): unknown {
   );
 }
 
+/** Structural equality for values that can travel in a request or response. */
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== "object" || typeof b !== "object" || !a || !b) return false;
+
+  if (a instanceof Date || b instanceof Date) {
+    return a instanceof Date && b instanceof Date &&
+      a.getTime() === b.getTime();
+  }
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length &&
+      a.every((item, i) => deepEqual(item, b[i]));
+  }
+
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  return keysA.length === keysB.length &&
+    keysA.every((key) =>
+      Object.hasOwn(b, key) &&
+      deepEqual(
+        (a as Record<string, unknown>)[key],
+        (b as Record<string, unknown>)[key],
+      )
+    );
+}
+
 /**
- * Clone a ZodObject schema, replacing specified fields with z.literal() of their actual values.
+ * Derive a schema that also requires the given fields to hold the given
+ * values, as if each were declared `z.literal(value)`.
  *
- * Takes the base static schema and a record of field overrides (field name → actual value),
- * and returns a new schema where overridden fields use z.literal(actualValue).
+ * The base schema is used as it is, so everything it enforces stays
+ * enforced: strictness, catchall, refinements, and the field's own checks.
+ * The forwarded values are compared with the raw input before the base
+ * schema runs. Values are compared structurally, so an object or array
+ * forwarded from an earlier response matches an equal one.
  *
  * @example
  * ```typescript
  * const base = z.object({ code: z.string(), grant_type: z.literal("authorization_code") });
  * const derived = deriveSchemaWithLiterals(base, { code: "abc123" });
- * // derived is equivalent to:
- * // z.object({ code: z.literal("abc123"), grant_type: z.literal("authorization_code") })
+ * derived.safeParse({ code: "abc123", grant_type: "authorization_code" }).success; // true
+ * derived.safeParse({ code: "other", grant_type: "authorization_code" }).success;  // false
  * ```
  */
 export function deriveSchemaWithLiterals(
-  // deno-lint-ignore no-explicit-any
-  baseSchema: z.ZodObject<any>,
+  baseSchema: z.ZodType,
   overrides: Record<string, unknown>,
-  // deno-lint-ignore no-explicit-any
-): z.ZodObject<any> {
-  const shape = { ...baseSchema.shape };
+): z.ZodType {
+  const fields = Object.keys(overrides);
+  if (fields.length === 0) return baseSchema;
 
-  for (const key of Object.keys(shape)) {
-    if (key in overrides) {
-      // deno-lint-ignore no-explicit-any
-      shape[key] = z.literal(overrides[key] as any);
+  const forwarded = z.unknown().superRefine((input, ctx) => {
+    // Not an object: let the base schema report the type error.
+    if (typeof input !== "object" || input === null) return;
+
+    for (const field of fields) {
+      const actual = (input as Record<string, unknown>)[field];
+      if (!deepEqual(actual, overrides[field])) {
+        ctx.addIssue({
+          code: "custom",
+          path: [field],
+          message: `Invalid input: expected ${
+            JSON.stringify(overrides[field])
+          } (the value from the earlier step)`,
+        });
+      }
     }
-  }
+  });
 
-  return z.object(shape);
+  return forwarded.pipe(baseSchema);
 }
