@@ -110,8 +110,11 @@ Deno.test("generateTypes: client format rejects endpoints with the same method n
     Error,
     "Several endpoints generate the same client method",
   );
-  assertStringIncludes(error.message, "users.update: PUT /api/users/[id]");
-  assertStringIncludes(error.message, "and PATCH /api/users/[id]");
+  assertStringIncludes(error.message, "users.retrieve: GET /api/users/[id]");
+  assertStringIncludes(error.message, "and GET /api/users/[slug]");
+  // PUT and PATCH on one path are `replace` and `update`: no collision.
+  assertEquals(error.message.includes("users.update"), false);
+  assertEquals(error.message.includes("users.replace"), false);
 });
 
 Deno.test("generateTypes: routes format rejects duplicate route ids", async () => {
@@ -120,8 +123,9 @@ Deno.test("generateTypes: routes format rejects duplicate route ids", async () =
     Error,
     "Several endpoints generate the same route id",
   );
-  assertStringIncludes(error.message, "usersUpdate: PUT /api/users/[id]");
+  assertStringIncludes(error.message, "usersRetrieve: GET /api/users/[id]");
   assertStringIncludes(error.message, "operationId");
+  assertEquals(error.message.includes("usersUpdate"), false);
 });
 
 Deno.test("generateTypes: types format keeps PUT and PATCH apart", async () => {

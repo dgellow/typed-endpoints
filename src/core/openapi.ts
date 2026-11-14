@@ -123,6 +123,7 @@ export async function generateOpenApiSpec(
 
   const problems: string[] = [];
   const operations: Operation[] = [];
+  const methodsOfPath = new Map<string, HttpMethod[]>();
 
   for (const filePath of routeFiles) {
     // Not every file below the directory is a route in every convention.
@@ -147,15 +148,30 @@ export async function generateOpenApiSpec(
     const apiPath = route.apiPath;
     for (const method of HTTP_METHODS) {
       const def = apiDef[method];
-      if (!def?.public) continue;
+      if (!def) continue;
+      // Every method counts for naming, public or not, so that an id is
+      // the same here and in the generated route table.
+      methodsOfPath.set(apiPath, [...methodsOfPath.get(apiPath) ?? [], method]);
+      if (!def.public) continue;
       operations.push({
         filePath,
+        apiPath,
         path: apiPathToTemplate(apiPath),
         method,
         def,
-        operationId: def.operationId ?? deriveOperationId(apiPath, method),
+        operationId: def.operationId ?? "",
       });
     }
+  }
+
+  // A derived id depends on the other methods of the path (PUT is
+  // "replace" next to PATCH), which may be defined in other files.
+  for (const op of operations) {
+    op.operationId ||= deriveOperationId(
+      op.apiPath,
+      op.method,
+      methodsOfPath.get(op.apiPath),
+    );
   }
 
   // operationId must be unique within a spec.
@@ -206,11 +222,14 @@ export async function generateOpenApiSpec(
 /** A public endpoint method that goes into the spec. */
 interface Operation {
   readonly filePath: string;
+  /** Path in file-route notation, e.g. `/api/users/[id]`. */
+  readonly apiPath: string;
   /** Path template, e.g. `/api/users/{id}`. */
   readonly path: string;
   readonly method: HttpMethod;
   readonly def: MethodDefWithPagination;
-  readonly operationId: string;
+  /** Explicit, or derived once every method of the path is known. */
+  operationId: string;
 }
 
 function registerEndpoint(

@@ -261,10 +261,17 @@ export function endsWithParam(path: string): boolean {
  * - POST /users -> create
  * - PUT/PATCH /users/[id] -> update
  * - DELETE /users/[id] -> delete
+ *
+ * A path that defines both PUT and PATCH has two ways to change a
+ * resource: PATCH is `update` (change some fields) and PUT is `replace`
+ * (send the whole resource).
+ *
+ * @param siblings Every method the path defines, when known.
  */
 export function httpMethodToResourceMethod(
   method: string,
   path: string,
+  siblings: readonly string[] = [],
 ): string {
   switch (method) {
     case "GET":
@@ -272,6 +279,7 @@ export function httpMethodToResourceMethod(
     case "POST":
       return "create";
     case "PUT":
+      return siblings.includes("PATCH") ? "replace" : "update";
     case "PATCH":
       return "update";
     case "DELETE":
@@ -300,9 +308,26 @@ export function pathToResourceSegments(path: string): string[] {
  * The OpenAPI generator and the routes format both use it, so an operation
  * in the spec and its entry in the generated route table share one id.
  */
-export function deriveOperationId(path: string, method: string): string {
+export function deriveOperationId(
+  path: string,
+  method: string,
+  siblings: readonly string[] = [],
+): string {
   const baseName = pathToResourceSegments(path)
     .map((segment, i) => (i === 0 ? segment : capitalize(segment)))
     .join("");
-  return baseName + capitalize(httpMethodToResourceMethod(method, path));
+  return baseName +
+    capitalize(httpMethodToResourceMethod(method, path, siblings));
+}
+
+/**
+ * A path in file-route notation as a URI template for the typed client:
+ * `/users/[id]` is `/users/{id}`, and a catch-all `/files/[...path]` is
+ * `/files/{+path}`, the reserved expansion of RFC 6570, whose value keeps
+ * its slashes.
+ */
+export function apiPathToClientTemplate(apiPath: string): string {
+  return apiPath
+    .replace(/\[\.\.\.(\w+)\]/g, "{+$1}")
+    .replace(/\[(\w+)\]/g, "{$1}");
 }

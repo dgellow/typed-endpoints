@@ -87,6 +87,8 @@ export interface Api {
   tasks: {
     events: {
       subscribe: {
+        path: "/api/tasks/{id}/events";
+        params: { id: string; };
         events: {
           progress: { percent: number; };
           complete: { result: string; };
@@ -97,6 +99,7 @@ export interface Api {
   };
   users: {
     list: {
+      path: "/api/users";
       query: { cursor?: string | undefined; limit?: number | undefined; };
       response: { data: { id: string; name: string; email: string; }[]; nextCursor?: string | undefined; };
       pagination: {
@@ -108,24 +111,40 @@ export interface Api {
       };
     };
     create: {
+      path: "/api/users";
       body: { name: string; email: string; };
       response: { id: string; name: string; email: string; };
     };
     retrieve: {
+      path: "/api/users/{id}";
+      params: { id: string; };
       response: { id: string; name: string; email: string; };
     };
     delete: {
+      path: "/api/users/{id}";
+      params: { id: string; };
     };
   };
   webhooks: {
     stripe: {
       create: {
+        path: "/webhooks/stripe";
         body: { type: string; data: { id: string; }; };
         response: { received: boolean; };
       };
     };
   };
 }
+
+/** Pass to \`createClient<Api>({ baseUrl, routes })\`. */
+export const routes = {
+  "tasks.events.subscribe": { method: "GET", path: "/api/tasks/{id}/events" },
+  "users.list": { method: "GET", path: "/api/users" },
+  "users.create": { method: "POST", path: "/api/users" },
+  "users.retrieve": { method: "GET", path: "/api/users/{id}" },
+  "users.delete": { method: "DELETE", path: "/api/users/{id}" },
+  "webhooks.stripe.create": { method: "POST", path: "/webhooks/stripe" },
+} as const;
 '
 `;
 
@@ -168,16 +187,19 @@ export type Recursive = { /** Display name */ name: string; createdAt: string; "
 export interface Api {
   categories: {
     list: {
+      path: "/api/categories";
       query: { depth?: number | undefined; tag?: string[] | undefined; };
       response: Recursive[];
     };
     create: {
+      path: "/api/categories";
       body: { name: string; kind?: "leaf" | "branch" | undefined; label?: "the \\\\"root\\\\"" | undefined; };
       response: Recursive;
     };
   };
   jobs: {
     subscribe: {
+      path: "/api/jobs/{id}";
       params: { id: string; };
       events: {
         progress: { percent: number; };
@@ -188,14 +210,27 @@ export interface Api {
   users: {
     posts: {
       retrieve: {
+        path: "/api/users/{id}/posts/{postId}";
+        params: { id: string; postId: string; };
         response: { id: string; };
       };
       list: {
+        path: "/api/users/{id}/posts";
+        params: { id: string; };
         response: { id: string; }[];
       };
     };
   };
 }
+
+/** Pass to \`createClient<Api>({ baseUrl, routes })\`. */
+export const routes = {
+  "categories.list": { method: "GET", path: "/api/categories" },
+  "categories.create": { method: "POST", path: "/api/categories" },
+  "jobs.subscribe": { method: "GET", path: "/api/jobs/{id}" },
+  "users.posts.retrieve": { method: "GET", path: "/api/users/{id}/posts/{postId}" },
+  "users.posts.list": { method: "GET", path: "/api/users/{id}/posts" },
+} as const;
 '
 `;
 

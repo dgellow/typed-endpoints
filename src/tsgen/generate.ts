@@ -2,10 +2,10 @@ import { writeFile } from "node:fs/promises";
 import { denoEval, isDeno } from "../core/runtime.ts";
 import type { AnyPaginationMeta } from "../pagination/types.ts";
 import {
+  apiPathToClientTemplate,
   apiPathToTemplate,
   capitalize,
   deriveOperationId,
-  endsWithParam,
   fileUrlOf,
   HTTP_METHODS,
   httpMethodToResourceMethod,
@@ -116,6 +116,8 @@ interface EndpointType {
   /** URL path in file-route notation, e.g. `/api/users/[id]`. */
   readonly path: string;
   readonly method: string;
+  /** Every method the path defines, across files. */
+  readonly siblings: readonly string[];
   readonly filePath: string;
   readonly request?: string;
   readonly query?: string;
@@ -167,10 +169,13 @@ function buildEndpoints(extraction: Extraction): EndpointType[] {
 
   // How many methods a path has, across files: one file per method is a
   // layout too (Nitro's `users.get.ts` next to `users.post.ts`).
-  const methodsOfPath = new Map<string, number>();
+  const methodsOfPath = new Map<string, string[]>();
   for (const { apiPath, methods } of extraction.routes) {
-    const count = HTTP_METHODS.filter((m) => methods[m]).length;
-    methodsOfPath.set(apiPath, (methodsOfPath.get(apiPath) ?? 0) + count);
+    const defined = HTTP_METHODS.filter((m) => methods[m]);
+    methodsOfPath.set(apiPath, [
+      ...methodsOfPath.get(apiPath) ?? [],
+      ...defined,
+    ]);
   }
 
   for (const { filePath, apiPath, methods } of extraction.routes) {
@@ -180,7 +185,7 @@ function buildEndpoints(extraction: Extraction): EndpointType[] {
     for (const method of defined) {
       const def: ExtractedMethod = methods[method];
       // Disambiguate if multiple methods on same endpoint
-      const name = methodsOfPath.get(apiPath)! > 1
+      const name = methodsOfPath.get(apiPath)!.length > 1
         ? `${baseName}${capitalize(method.toLowerCase())}`
         : baseName;
 
@@ -188,6 +193,7 @@ function buildEndpoints(extraction: Extraction): EndpointType[] {
         name,
         path: apiPath,
         method,
+        siblings: methodsOfPath.get(apiPath)!,
         filePath,
         request: def.body,
         query: def.query,
@@ -378,7 +384,7 @@ function generateRoutesFormat(endpoints: EndpointType[]): string {
   const ids = endpoints.map((endpoint) =>
     [
       endpoint.operationId ??
-        deriveOperationId(endpoint.path, endpoint.method),
+        deriveOperationId(endpoint.path, endpoint.method, endpoint.siblings),
       endpoint,
     ] as const
   );
@@ -471,7 +477,11 @@ function generateClientFormat(
     // SSE endpoints use "subscribe" method
     const methodName = endpoint.events
       ? "subscribe"
-      : httpMethodToResourceMethod(endpoint.method, endpoint.path);
+      : httpMethodToResourceMethod(
+        endpoint.method,
+        endpoint.path,
+        endpoint.siblings,
+      );
     return { endpoint, segments, methodName };
   });
 
@@ -530,9 +540,14 @@ function generateClientFormat(
   function renderNode(node: ResourceNode, indent: string): void {
     for (const [methodName, { endpoint }] of Object.entries(node.methods)) {
       lines.push(`${indent}${methodName}: {`);
-      // A subscription to a path that ends with a parameter takes that id;
-      // the client reads this from `params`.
-      if (endpoint.events && endpoint.params && endsWithParam(endpoint.path)) {
+      // The path template tells the client types which path parameters a
+      // call supplies: the trailing one as `id`, the others in `params`.
+      lines.push(
+        `${indent}  path: ${
+          JSON.stringify(apiPathToClientTemplate(endpoint.path))
+        };`,
+      );
+      if (endpoint.params) {
         lines.push(`${indent}  params: ${endpoint.params};`);
       }
       if (endpoint.query) {
@@ -575,6 +590,20 @@ function generateClientFormat(
   renderNode(root, "  ");
 
   lines.push("}");
+  lines.push("");
+
+  // The same routes as a value: how the client turns `users.posts.list`
+  // into a method and a URL. Types are erased, so it cannot read `Api`.
+  lines.push("/** Pass to `createClient<Api>({ baseUrl, routes })`. */");
+  lines.push("export const routes = {");
+  for (const { endpoint, segments, methodName } of placed) {
+    lines.push(
+      `  ${JSON.stringify([...segments, methodName].join("."))}: { method: ${
+        JSON.stringify(endpoint.method)
+      }, path: ${JSON.stringify(apiPathToClientTemplate(endpoint.path))} },`,
+    );
+  }
+  lines.push("} as const;");
   lines.push("");
 
   return lines.join("\n");
