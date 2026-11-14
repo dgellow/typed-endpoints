@@ -1085,17 +1085,17 @@ module does.
 
 What is kept the same on both sides:
 
-|                                                     | TypeScript handlers                                    | Generated FastAPI module                                                                                                                                                         |
-| --------------------------------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A body's types                                      | not coerced (`"5"` is not a number)                    | checked as JSON against the contract; `2.0` is the integer `2`, as in JavaScript                                                                                                 |
-| What is a JSON body                                 | what parses, also as `text/plain`; else a 400 or a 415 | the same, and `NaN`, `Infinity` and `1e999` do not parse                                                                                                                         |
-| Query and path parameters                           | coerced from text where the schema says so             | read as JavaScript reads text (`0x10` is 16, blank is 0); a key given twice is a list                                                                                            |
-| Lengths, bounds, patterns, literals, closed objects | Zod                                                    | the contract's schema, checked by the module; the Pydantic fields state the same constraints                                                                                     |
-| An optional field that was not set                  | absent from the response                               | absent (`exclude_unset`), never `null`                                                                                                                                           |
-| What a handler returns or yields                    | parsed by the schema before it is sent                 | validated again as plain data, also when it is a model instance: Pydantic trusts an instance, and one built with `model_construct()` or changed afterwards may not fit its model |
-| A request that fails validation                     | 400 `{ error, in, issues: [{ path, message, code }] }` | the same answer, word for word: the 27 recorded refusals                                                                                                                         |
-| A field name that is not a Python attribute name    | as written (`from`, `data-id`, `createdAt`)            | a snake-case attribute (`from_`, `data_id`, `created_at`) with the wire name as alias; a request is read by wire names only                                                      |
-| The same object in two operations                   | one type                                               | one class, with a name per operation                                                                                                                                             |
+|                                                     | TypeScript handlers                                    | Generated FastAPI module                                                                                                                                                            |
+| --------------------------------------------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A body's types                                      | not coerced (`"5"` is not a number)                    | checked as JSON against the contract; `2.0` is the integer `2`, as in JavaScript                                                                                                    |
+| What is a JSON body                                 | what parses, also as `text/plain`; else a 400 or a 415 | the same, and `NaN`, `Infinity` and `1e999` do not parse                                                                                                                            |
+| Query and path parameters                           | coerced from text where the schema says so             | read as JavaScript reads text (`0x10` is 16, blank is 0, `Infinity` is refused by that name); a key given twice is a list, and a list that has to be there is empty without its key |
+| Lengths, bounds, patterns, literals, closed objects | Zod                                                    | the contract's schema, checked by the module; the Pydantic fields state the same constraints                                                                                        |
+| An optional field that was not set                  | absent from the response                               | absent (`exclude_unset`), never `null`                                                                                                                                              |
+| What a handler returns or yields                    | parsed by the schema before it is sent                 | validated again as plain data, also when it is a model instance: Pydantic trusts an instance, and one built with `model_construct()` or changed afterwards may not fit its model    |
+| A request that fails validation                     | 400 `{ error, in, issues: [{ path, message, code }] }` | the same answer, word for word: the 27 recorded refusals                                                                                                                            |
+| A field name that is not a Python attribute name    | as written (`from`, `data-id`, `createdAt`)            | a snake-case attribute (`from_`, `data_id`, `created_at`) with the wire name as alias; a request is read by wire names only                                                         |
+| The same object in two operations                   | one type                                               | one class, with a name per operation                                                                                                                                                |
 
 The description FastAPI serves of the application (`/openapi.json`, `/docs`)
 says what the application answers: for each operation the response model, the
@@ -1387,13 +1387,16 @@ exception: they keep their notes in memory and so await nothing, which a
 pedantic lint points out; `cargo test` passes, which also compiles the samples
 in the module's documentation; the server runs; and the conformance tests of the
 Python section, event streams included, hold for it with no declared difference.
-A request axum itself refuses (a path that is not UTF-8 once decoded, a body it
-does not read) is answered as JSON, in the words of the TypeScript handlers
-where they refuse it too. Among them: three bodies nested 40 levels deep are
-checked in milliseconds, a handler that fails outside the contract is a 500 that
-does not say why, and `2.0` is accepted where the contract says `2`. One
-behaviour has no permanent test, because the fixture cannot hold it: a pattern
-that does not compile stops the server when the router is built.
+A request axum itself refuses (a body it does not read) is answered as JSON, in
+the words of the TypeScript handlers where they refuse it too. A path that
+cannot be decoded (bytes that are not UTF-8, a percent sign that starts no
+escape) is refused by a layer of the router, before anything else of the request
+is read; axum by itself gives the handler `%zz` as it was sent. Among them:
+three bodies nested 40 levels deep are checked in milliseconds, a handler that
+fails outside the contract is a 500 that does not say why, and `2.0` is accepted
+where the contract says `2`. One behaviour has no permanent test, because the
+fixture cannot hold it: a pattern that does not compile stops the server when
+the router is built.
 
 ## API
 

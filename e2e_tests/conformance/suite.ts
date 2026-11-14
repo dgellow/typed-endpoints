@@ -787,8 +787,73 @@ export function conformance(
     assertEquals(body.issues.map((issue) => issue.path), [["limit"]]);
   });
 
-  test("edge: a path that is not UTF-8 once decoded is refused", async () => {
-    for (const id of ["%FF", "%E0%A4%A"]) {
+  test("edge: a list in a query", async () => {
+    const labels = async (query: string) => {
+      const response = await send("GET", `/api/edges${query}`);
+      assertEquals(response.status, 200, query);
+      return (await response.json()).labels;
+    };
+    assertEquals(await labels("?label=a&label=b"), ["a", "b"]);
+    // One occurrence is a list of one. None, of a list that has to be
+    // there, is an empty list: a query cannot say that otherwise.
+    assertEquals(await labels("?label=a"), ["a"]);
+    assertEquals(await labels(""), []);
+  });
+
+  test("edge: text is read as a number the way JavaScript reads it", async () => {
+    /** The status for `?limit=`, and what is wrong with it. */
+    const limit = async (text: string) => {
+      const response = await send("GET", `/api/notes?limit=${text}`);
+      if (response.status === 200) {
+        await response.body?.cancel();
+        return [];
+      }
+      assertEquals(response.status, 400, text);
+      const body = await response.json() as Invalid;
+      assertEquals(body.in, "query", text);
+      return body.issues.map((issue) => issue.message);
+    };
+
+    // Another base, an exponent, no digit before or after the point, a sign.
+    for (const text of ["0x10", "0b11", "1e1", ".5e1", "5.", "%2B5"]) {
+      assertEquals(await limit(text), [], text);
+    }
+    // Blank text is 0.
+    assertEquals(await limit("%20"), ["Too small: expected number to be >=1"]);
+    // What other languages read as a number, and JavaScript does not.
+    for (const text of ["abc", "1_0", "%D9%A1", "0x", "-0x1", "infinity"]) {
+      assertEquals(
+        await limit(text),
+        ["Invalid input: expected number, received NaN"],
+        text,
+      );
+    }
+    // Infinity, and a number too large to be one, are refused by name.
+    for (
+      const [text, received] of [
+        ["Infinity", "Infinity"],
+        ["%2BInfinity", "Infinity"],
+        ["-Infinity", "-Infinity"],
+        ["1e999", "Infinity"],
+      ]
+    ) {
+      assertEquals(
+        await limit(text),
+        [`Invalid input: expected number, received ${received}`],
+        text,
+      );
+    }
+    // An integer is one a JavaScript number holds exactly: said before
+    // the bound the schema states.
+    assertEquals(await limit("9007199254740993"), [
+      "Too big: expected int to be <=9007199254740991",
+      "Too big: expected number to be <=100",
+    ]);
+  });
+
+  test("edge: a path that cannot be decoded is refused", async () => {
+    // Not UTF-8 once decoded, and a percent sign that starts no escape.
+    for (const id of ["%FF", "%E0%A4%A", "%zz", "%"]) {
       const response = await send("GET", `/api/notes/${id}`);
       assertEquals(response.status, 400);
       // JSON, as every refusal is.

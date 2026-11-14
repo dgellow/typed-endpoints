@@ -128,6 +128,18 @@ class EchoRetrieveResponse(_ClosedJson):
     segments: list[str]
 
 
+class EdgesListResponse(_ClosedJson):
+    """The response of `GET /api/edges`."""
+
+    labels: list[str]
+
+
+class EdgesListQuery(_Model):
+    """The query of `GET /api/edges`."""
+
+    label: list[str]
+
+
 class EdgesCreateResponse(_ClosedJson):
     """The response of `POST /api/edges`."""
 
@@ -426,6 +438,7 @@ type NotesRetrieveResult = Note | Fail[Literal[404], NotFound]
 _ECHO_RETRIEVE_RESPONSE: TypeAdapter[EchoRetrieveResponse] = TypeAdapter(
     EchoRetrieveResponse
 )
+_EDGES_LIST_RESPONSE: TypeAdapter[EdgesListResponse] = TypeAdapter(EdgesListResponse)
 _EDGES_CREATE_BODY: TypeAdapter[Any] = TypeAdapter(EdgesCreateBody)
 _EDGES_CREATE_RESPONSE: TypeAdapter[EdgesCreateResponse] = TypeAdapter(
     EdgesCreateResponse
@@ -769,6 +782,11 @@ class Client:
         response = self._send("GET", f"/api/echo/{_rest(path)}")
         return _expect(response, _ECHO_RETRIEVE_RESPONSE)
 
+    def edges_list(self, query: EdgesListQuery | None = None) -> EdgesListResponse:
+        """Call `GET /api/edges`."""
+        response = self._send("GET", "/api/edges", _query(query))
+        return _expect(response, _EDGES_LIST_RESPONSE)
+
     def edges_create(self, body: EdgesCreateBody) -> EdgesCreateResponse:
         """Call `POST /api/edges`."""
         response = self._send(
@@ -962,6 +980,13 @@ class AsyncClient:
         """Call `GET /api/echo/{+path}`."""
         response = await self._send("GET", f"/api/echo/{_rest(path)}")
         return _expect(response, _ECHO_RETRIEVE_RESPONSE)
+
+    async def edges_list(
+        self, query: EdgesListQuery | None = None
+    ) -> EdgesListResponse:
+        """Call `GET /api/edges`."""
+        response = await self._send("GET", "/api/edges", _query(query))
+        return _expect(response, _EDGES_LIST_RESPONSE)
 
     async def edges_create(self, body: EdgesCreateBody) -> EdgesCreateResponse:
         """Call `POST /api/edges`."""

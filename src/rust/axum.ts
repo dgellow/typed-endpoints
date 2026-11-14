@@ -731,6 +731,9 @@ function router(
         ")",
       )
     ),
+    // Around every route: a path that cannot be decoded is refused before
+    // anything else of the request is read.
+    "        .layer(axum::middleware::from_fn(runtime::well_formed))",
     "        .with_state(handlers)",
     "}",
   ];

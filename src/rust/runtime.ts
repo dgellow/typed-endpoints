@@ -186,6 +186,7 @@ mod runtime {
     use axum::body::Bytes;
     use axum::extract::rejection::{BytesRejection, PathRejection};
     use axum::http::{HeaderMap, StatusCode};
+    use axum::middleware::Next;
     use axum::response::{IntoResponse, Response};
     use serde::de::DeserializeOwned;
     use serde::{Deserialize, Serialize};
@@ -740,9 +741,10 @@ mod runtime {
                     "Invalid input: expected int, received number",
                 );
                 return false;
-            } else if self.text && numeric && actual == Type::String {
-                // Text that is not a number, read as a number.
-                "NaN"
+            } else if let (true, true, Some(text)) = (self.text, numeric, value.as_str()) {
+                // Text that is not a number, read as a number: none at
+                // all, or one too large to be one.
+                infinity(text).unwrap_or("NaN")
             } else {
                 actual.name()
             };
@@ -868,26 +870,41 @@ mod runtime {
 
         fn check_number(&mut self, schema: &Schema, amount: f64) {
             // An integer is bounded by the range a JavaScript number holds
-            // exactly, and Zod says "int" for that bound. The contract
-            // cannot say whether the author of an integer wrote the same
-            // bound again; Zod then reports it twice, this once.
+            // exactly. Zod says "int" for that bound, before any bound the
+            // schema states. The contract cannot say whether the author
+            // of an integer wrote the same bound again; Zod then reports
+            // it twice, this once.
             let integer = schema.allows(Type::Integer);
+            if integer && amount > MAX_SAFE_INTEGER {
+                let maximum = js_number(MAX_SAFE_INTEGER);
+                self.issue(
+                    Code::TooBig,
+                    format!("Too big: expected int to be <={maximum}"),
+                );
+            }
+            if integer && amount < -MAX_SAFE_INTEGER {
+                let minimum = js_number(-MAX_SAFE_INTEGER);
+                self.issue(
+                    Code::TooSmall,
+                    format!("Too small: expected int to be >={minimum}"),
+                );
+            }
+            // A bound of the schema's own: not the one said above, which
+            // the contract states again for every integer.
             #[allow(
                 clippy::float_cmp,
                 reason = "the bound is that number or another, not a result of arithmetic"
             )]
-            let what = |bound: f64| {
-                if integer && bound.abs() == MAX_SAFE_INTEGER {
-                    "int"
-                } else {
-                    "number"
-                }
-            };
-            if let Some(minimum) = schema.minimum.filter(|minimum| amount < *minimum) {
-                let (what, minimum) = (what(minimum), js_number(minimum));
+            let own = |bound: &f64| !(integer && bound.abs() == MAX_SAFE_INTEGER);
+            if let Some(minimum) = schema
+                .minimum
+                .filter(own)
+                .filter(|minimum| amount < *minimum)
+            {
+                let minimum = js_number(minimum);
                 self.issue(
                     Code::TooSmall,
-                    format!("Too small: expected {what} to be >={minimum}"),
+                    format!("Too small: expected number to be >={minimum}"),
                 );
             }
             if let Some(minimum) = schema
@@ -900,11 +917,15 @@ mod runtime {
                     format!("Too small: expected number to be >{minimum}"),
                 );
             }
-            if let Some(maximum) = schema.maximum.filter(|maximum| amount > *maximum) {
-                let (what, maximum) = (what(maximum), js_number(maximum));
+            if let Some(maximum) = schema
+                .maximum
+                .filter(own)
+                .filter(|maximum| amount > *maximum)
+            {
+                let maximum = js_number(maximum);
                 self.issue(
                     Code::TooBig,
-                    format!("Too big: expected {what} to be <={maximum}"),
+                    format!("Too big: expected number to be <={maximum}"),
                 );
             }
             if let Some(maximum) = schema
@@ -1016,17 +1037,35 @@ mod runtime {
                 .ok()
                 .map(Number::from);
         }
-        // Rust also reads "inf" and "nan" as numbers; JavaScript does not.
-        if text
-            .chars()
-            .any(|c| c.is_alphabetic() && !matches!(c, 'e' | 'E'))
-        {
-            return None;
-        }
-        let number = text.parse::<f64>().ok()?;
+        let number = decimal(text)?;
         whole(number)
             .map(Number::from)
             .or_else(|| Number::from_f64(number))
+    }
+
+    /// The decimal number a text is, as JavaScript writes one. Rust also
+    /// reads "inf" and "nan" as numbers; JavaScript does not.
+    fn decimal(text: &str) -> Option<f64> {
+        let words = |c: char| c.is_alphabetic() && !matches!(c, 'e' | 'E');
+        if text.chars().any(words) {
+            return None;
+        }
+        text.parse().ok()
+    }
+
+    /// The infinity a text is read as, by the name JavaScript has for it:
+    /// the word itself, or a number too large to be one. JSON has neither,
+    /// so only text can be one.
+    fn infinity(text: &str) -> Option<&'static str> {
+        let text = text.trim();
+        let (name, unsigned) = match text.strip_prefix('-') {
+            Some(rest) => ("-Infinity", rest),
+            None => ("Infinity", text.strip_prefix('+').unwrap_or(text)),
+        };
+        let infinite = unsigned == "Infinity"
+            || (!unsigned.starts_with(['+', '-'])
+                && decimal(unsigned).is_some_and(f64::is_infinite));
+        infinite.then_some(name)
     }
 
     /// Query and path values arrive as text. Where the schema asks for a
@@ -1060,8 +1099,8 @@ mod runtime {
                 ),
                 None => Value::Array(items),
             },
-            Value::Object(members) => Value::Object(
-                members
+            Value::Object(members) => {
+                let mut shaped: Map<String, Value> = members
                     .into_iter()
                     .map(|(name, member)| match schema.property(&name) {
                         Some(property) => {
@@ -1070,8 +1109,19 @@ mod runtime {
                         }
                         None => (name, member),
                     })
-                    .collect(),
-            ),
+                    .collect();
+                // No occurrence of a key that takes a list, and has to be
+                // there: an empty list, which text cannot say otherwise.
+                for name in schema.required {
+                    let list = schema
+                        .property(name)
+                        .is_some_and(|property| property.resolved().allows(Type::Array));
+                    if list && !shaped.contains_key(*name) {
+                        shaped.insert((*name).to_owned(), Value::Array(Vec::new()));
+                    }
+                }
+                Value::Object(shaped)
+            }
             other => other,
         }
     }
@@ -1127,6 +1177,35 @@ mod runtime {
         fn into_response(self) -> Response {
             *self.0
         }
+    }
+
+    /// Whether a path, as it was sent, cannot be decoded: a percent sign
+    /// that starts no escape, or bytes that are not UTF-8 once decoded.
+    fn malformed(path: &str) -> bool {
+        let mut decoded = Vec::with_capacity(path.len());
+        let mut bytes = path.bytes();
+        while let Some(byte) = bytes.next() {
+            if byte != b'%' {
+                decoded.push(byte);
+                continue;
+            }
+            let digit = |byte: Option<u8>| char::from(byte?).to_digit(16);
+            let (Some(high), Some(low)) = (digit(bytes.next()), digit(bytes.next())) else {
+                return true;
+            };
+            // Two hexadecimal digits: at most 255.
+            decoded.push(u8::try_from(high * 16 + low).unwrap_or(u8::MAX));
+        }
+        std::str::from_utf8(&decoded).is_err()
+    }
+
+    /// Refuses a request whose path cannot be decoded, before anything
+    /// else of it is read: the path is what led to the route.
+    pub(super) async fn well_formed(request: axum::extract::Request, next: Next) -> Response {
+        if malformed(request.uri().path()) {
+            return error(StatusCode::BAD_REQUEST, "Malformed URL path");
+        }
+        next.run(request).await
     }
 
     /// A checked value as the type a handler receives.
