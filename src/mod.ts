@@ -72,6 +72,16 @@ export {
   type ProtocolTypesPluginOptions,
 } from "./integrations/vite.ts";
 
+// Route handlers for any framework
+export {
+  buildHandlers,
+  type BuildHandlersOptions,
+  type HandlerMethodDef,
+  type Handlers,
+  type HandlerSseMethodDef,
+  type RequestAccess,
+} from "./core/handlers.ts";
+
 // Fresh adapter
 export {
   type ApiDefOf,
