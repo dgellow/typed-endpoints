@@ -1,8 +1,8 @@
 /**
  * JSON Schema to Pydantic models.
  *
- * Renders the schemas of a contract as Python source: a `BaseModel` class
- * for every object, and a type expression for everything else. What a Zod
+ * Renders the schemas of a contract as Python source: a model class for
+ * every object, and a type expression for everything else. What a Zod
  * schema checks is kept where Pydantic can state it: lengths, bounds,
  * patterns, literals, closed objects.
  *
@@ -11,16 +11,34 @@
  * - A string with a format (`date-time`, `uuid`) stays a `str` with its
  *   pattern. Parsing it into a `datetime` and writing it back can change
  *   the text.
- * - A field keeps its wire name. A name Python cannot use as an attribute
- *   (`from`, `data-id`, `_private`) gets a Python name and an alias.
  * - A field that may be absent is `T | None = None`; responses are
  *   written without the fields that were not set, so absent stays absent.
+ *
+ * And the module is written as Python is written (`ruff format` leaves it
+ * alone, `ruff check` with every rule has nothing to say):
+ *
+ * - An attribute is in snake case and has an alias for its name on the
+ *   wire. When most names are camel case the models share Pydantic's
+ *   `to_camel` alias generator, and only the exceptions say their alias.
+ * - What a member has to satisfy is in its `Field(...)`, not in an
+ *   `Annotated[...]` around its type, unless the type is inside another.
+ * - What the models have in common is in base classes, defined once.
+ * - A long pattern is a constant with a name.
+ * - Every class has a docstring: the description of its schema, or where
+ *   the class is used.
  *
  * @module
  */
 
 import type { JsonSchema } from "../contract/index.ts";
 import { canonical } from "../contract/types.ts";
+import {
+  assignment,
+  docstring,
+  splitTop,
+  stringConstant,
+  stringLiteral,
+} from "./format.ts";
 
 /** Python keywords and names a Pydantic model already uses. */
 const RESERVED: ReadonlySet<string> = new Set([
@@ -100,6 +118,43 @@ export function snakeCase(name: string): string {
   return RESERVED.has(safe) ? `${safe}_` : safe;
 }
 
+/** Names of Python's own that an argument should not take. */
+const BUILTINS: ReadonlySet<string> = new Set([
+  "all",
+  "any",
+  "bytes",
+  "dir",
+  "filter",
+  "format",
+  "hash",
+  "help",
+  "id",
+  "input",
+  "iter",
+  "len",
+  "list",
+  "map",
+  "max",
+  "min",
+  "next",
+  "object",
+  "open",
+  "print",
+  "range",
+  "set",
+  "str",
+  "sum",
+  "type",
+  "vars",
+  "zip",
+]);
+
+/** The name of an argument for a value called `name`: `id` is `id_`. */
+export function argumentName(name: string): string {
+  const snake = snakeCase(name);
+  return BUILTINS.has(snake) ? `${snake}_` : snake;
+}
+
 /** A JSON value as a Python literal. */
 export function pythonLiteral(value: unknown): string {
   if (value === null || value === undefined) return "None";
@@ -108,36 +163,110 @@ export function pythonLiteral(value: unknown): string {
   if (typeof value === "number") return String(value);
   // A JSON string literal is a Python string literal, except for the
   // characters JSON leaves alone and Python reads as escapes.
-  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "string") {
+    const double = JSON.stringify(value);
+    // The quotes that need no escape, as the formatter chooses them.
+    return value.includes('"') && !value.includes("'")
+      ? `'${double.slice(1, -1).replaceAll('\\"', '"')}'`
+      : double;
+  }
   if (Array.isArray(value)) return `[${value.map(pythonLiteral).join(", ")}]`;
   const entries = Object.entries(value as Record<string, unknown>)
     .map(([key, member]) => `${JSON.stringify(key)}: ${pythonLiteral(member)}`);
   return `{${entries.join(", ")}}`;
 }
 
-/** The attribute name a field gets, and whether it differs from the wire name. */
+/** The attribute a field is: its wire name in snake case, usable in Python. */
 function attributeName(wireName: string): string {
-  const usable = /^[A-Za-z][A-Za-z0-9_]*$/.test(wireName) &&
-    !RESERVED.has(wireName) && !wireName.startsWith("model_");
-  if (usable) return wireName;
-  const cleaned = wireName.replace(/[^A-Za-z0-9_]/g, "_").replace(/^_+/, "");
-  const named = cleaned === "" || /^[0-9]/.test(cleaned)
-    ? `field_${cleaned}`
-    : cleaned;
+  const snake = wireName
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+  const named = snake === "" || /^[0-9]/.test(snake) ? `field_${snake}` : snake;
+  // `model_` is where Pydantic keeps its own names.
   return RESERVED.has(named) || named.startsWith("model_")
     ? `${named}_`
     : named;
 }
 
+/** What Pydantic's `to_camel` makes of an attribute it is sure about. */
+function camelCase(attribute: string): string | undefined {
+  if (/^[a-z]+$/.test(attribute)) return attribute;
+  if (!/^[a-z]+(_[a-z]+)+$/.test(attribute)) return undefined;
+  return attribute.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+}
+
+/** `a`, `a and b`, `a, b and c`. */
+function listed(items: readonly string[]): string {
+  return items.length <= 1
+    ? items.join("")
+    : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+}
+
 type Schema = Readonly<Record<string, unknown>>;
 
-/** A class or alias the module defines. */
-interface Definition {
+/** A member of a model class. */
+interface FieldInfo {
+  /** The name on the wire. */
+  readonly wire: string;
+  readonly attribute: string;
+  /** The annotation, with names not yet defined marked. */
+  readonly type: string;
+  /** The value a missing member takes, as Python writes it. */
+  readonly fallback?: string;
+  /** What the member has to satisfy: arguments of its `Field(...)`. */
+  readonly constraints: readonly string[];
+  readonly description?: string;
+}
+
+/** A model class the module defines. */
+interface ClassInfo {
+  readonly kind: "class";
   readonly name: string;
-  readonly lines: readonly string[];
+  /** Whether values keep their JSON type (a body, a response). */
+  readonly strict: boolean;
+  /** Whether members the schema does not name are refused. */
+  readonly closed: boolean;
+  readonly description?: string;
+  readonly fields: readonly FieldInfo[];
   /** Whether the class refers to itself or to a class defined later. */
   readonly rebuild: boolean;
 }
+
+/** Something the module defines. */
+type Definition =
+  | ClassInfo
+  /** Another name for a class: the same object in another place. */
+  | { readonly kind: "alias"; readonly name: string; readonly target: string }
+  /** A type that refers to itself. */
+  | { readonly kind: "type"; readonly name: string; readonly text: string };
+
+/** The base classes of the models, by what they add to the one before. */
+const BASES = {
+  model: {
+    name: "_Model",
+    parent: "BaseModel",
+    doc: "What every model of this module has in common.",
+  },
+  closed: {
+    name: "_Closed",
+    parent: "_Model",
+    doc: "A model that refuses members it does not name.",
+  },
+  json: {
+    name: "_Json",
+    parent: "_Model",
+    doc: "A model of JSON: a value keeps the type it has there.",
+  },
+  closedJson: {
+    name: "_ClosedJson",
+    parent: "_Json",
+    doc: "A model of JSON that refuses members it does not name.",
+  },
+} as const;
+
+type BaseKey = keyof typeof BASES;
 
 /** One schema document: its root and the definitions it refers to. */
 interface Document {
@@ -171,6 +300,14 @@ export class PythonModels {
   private readonly open = new Map<Schema, { hint: string; name?: string }>();
   /** Types that refer to themselves, by content: their name. */
   private readonly recursive = new Map<string, string>();
+  /** Where each class is used: as what, by which operations. */
+  private readonly uses = new Map<string, Map<string, string[]>>();
+  /** Where a class that is part of another comes from, by its name. */
+  private readonly origins = new Map<string, string>();
+  /** The constant of each long pattern, by its text. */
+  private readonly patterns = new Map<string, string>();
+  /** The base classes the models use. */
+  private readonly bases = new Set<BaseKey>();
   /** Whether a type expression used `SafeInt`. */
   usesSafeInt = false;
   /** Whether a definition is a `type` statement, which needs Python 3.12. */
@@ -195,18 +332,225 @@ export class PythonModels {
       : this.expand(root, name, document, strict);
   }
 
+  /**
+   * Notes where a type is used, for the docstring of a class whose schema
+   * has no description: "The response of `GET /notes/{id}`".
+   *
+   * @param type A type as `define()` gave it.
+   * @param role What it is there: "response", "404 body".
+   * @param operation The operation, as documentation names it.
+   */
+  describe(type: string, role: string, operation: string): void {
+    const name = this.target(type);
+    let roles = this.uses.get(name);
+    if (!roles) this.uses.set(name, roles = new Map());
+    roles.set(role, [...(roles.get(role) ?? []), operation]);
+  }
+
+  /**
+   * The base class for a model the caller writes itself.
+   *
+   * @param strict Whether its values keep their JSON type.
+   */
+  base(strict: boolean, closed = false): string {
+    const key: BaseKey = strict
+      ? (closed ? "closedJson" : "json")
+      : (closed ? "closed" : "model");
+    // A base class is defined after the ones it extends.
+    if (key === "closedJson") this.bases.add("json");
+    this.bases.add("model").add(key);
+    return BASES[key].name;
+  }
+
   /** The source of every definition. */
   render(): string[] {
+    const classes = this.definitions.filter((d) => d.kind === "class");
+    const generated = this.camelCase(classes);
     const lines: string[] = [];
-    for (const definition of this.definitions) {
-      lines.push(...definition.lines, "", "");
+    for (const [text, name] of this.patterns) {
+      lines.push(...stringConstant(0, name, text));
     }
-    const rebuilds = this.definitions.filter((d) => d.rebuild);
+    if (this.patterns.size > 0) lines.push("", "");
+
+    for (const key of ["model", "closed", "json", "closedJson"] as const) {
+      if (!this.bases.has(key)) continue;
+      const { name, parent, doc } = BASES[key];
+      const config = key === "model"
+        ? [
+          ...(generated ? ["alias_generator=to_camel"] : []),
+          "populate_by_name=True",
+          'regex_engine="python-re"',
+          "use_attribute_docstrings=True",
+        ]
+        : key === "json"
+        ? ["strict=True"]
+        : ['extra="forbid"'];
+      lines.push(
+        `class ${name}(${parent}):`,
+        ...docstring(4, doc),
+        "",
+        ...assignment(
+          4,
+          "model_config",
+          undefined,
+          `ConfigDict(${config.join(", ")})`,
+        ),
+        "",
+        "",
+      );
+    }
+
+    this.definitions.forEach((definition, i) => {
+      if (definition.kind === "alias") {
+        lines.push(`${definition.name} = ${definition.target}`);
+      } else if (definition.kind === "type") {
+        lines.push(
+          ...assignment(
+            0,
+            `type ${definition.name}`,
+            undefined,
+            definition.text,
+          ),
+        );
+      } else {
+        lines.push(...this.classLines(definition, generated));
+      }
+      // Names for the same class stay together; a class stands apart.
+      const next = this.definitions[i + 1];
+      if (definition.kind === "class" || next?.kind !== definition.kind) {
+        lines.push("", "");
+      }
+    });
+    const rebuilds = classes.filter((d) => d.rebuild);
     if (rebuilds.length > 0) {
       for (const { name } of rebuilds) lines.push(`${name}.model_rebuild()`);
       lines.push("", "");
     }
     return lines;
+  }
+
+  /**
+   * Whether the models share an alias generator: when more names on the
+   * wire are camel case than would then have to say their alias.
+   */
+  private camelCase(classes: readonly ClassInfo[]): boolean {
+    let covered = 0;
+    let exceptions = 0;
+    for (const { fields } of classes) {
+      for (const { wire, attribute } of fields) {
+        if (wire === attribute) {
+          // With a generator, `created_at` on the wire is an exception.
+          if (camelCase(attribute) !== wire) exceptions++;
+        } else if (camelCase(attribute) === wire) {
+          covered++;
+        }
+      }
+    }
+    return covered > exceptions;
+  }
+
+  private classLines(definition: ClassInfo, generated: boolean): string[] {
+    const { name, strict, closed } = definition;
+    const lines = [
+      `class ${name}(${this.base(strict, closed)}):`,
+      ...this.classDoc(definition),
+    ];
+    for (const field of definition.fields) {
+      const { wire, attribute } = field;
+      const expected = generated ? camelCase(attribute) : attribute;
+      // A list or a dict as a default is made anew for every instance.
+      const made = field.fallback === "[]"
+        ? "default_factory=list"
+        : field.fallback === "{}"
+        ? "default_factory=dict"
+        : field.fallback !== undefined && /^[[{]/.test(field.fallback)
+        ? `default_factory=lambda: ${field.fallback}`
+        : undefined;
+      const options = [
+        ...(made !== undefined
+          ? [made]
+          : field.constraints.length > 0 || expected !== wire
+          ? (field.fallback === undefined ? [] : [`default=${field.fallback}`])
+          : []),
+        ...field.constraints,
+        // Not `alias`: a type checker would then take the wire name for
+        // the constructor's parameter, which Python cannot always spell.
+        ...(expected === wire ? [] : [
+          `validation_alias=${JSON.stringify(wire)}`,
+          `serialization_alias=${JSON.stringify(wire)}`,
+        ]),
+      ];
+      // A class that does not exist yet can only be named in a string,
+      // and a string is not a type that `|` or `list[...]` accept
+      // everywhere: the whole annotation is the string.
+      const type = field.type.includes(FORWARD)
+        ? annotation(field.type)
+        : field.type;
+      lines.push(
+        ...(lines.length > 1 && lines.at(-1) !== "" &&
+            (field.description !== undefined ||
+              lines.at(-1)!.trimStart().startsWith('"""'))
+          ? [""]
+          : []),
+        ...assignment(
+          4,
+          attribute,
+          type,
+          options.length > 0 ? `Field(${options.join(", ")})` : field.fallback,
+        ),
+        ...(field.description === undefined
+          ? []
+          : docstring(4, field.description, { verbatim: true })),
+      );
+    }
+    return lines;
+  }
+
+  /** The docstring of a class: its description, or where it is used. */
+  private classDoc(definition: ClassInfo): string[] {
+    const { name, description } = definition;
+    const used = this.described(name);
+    const text = description ?? used?.text ?? this.origins.get(name) ??
+      "An object of the API";
+    let lines = docstring(4, text);
+    if (description === undefined && used && lines.length > 1) {
+      lines = docstring(4, `${used.summary}\n\n${used.detail}`);
+    }
+    return definition.fields.length > 0 ? [...lines, ""] : lines;
+  }
+
+  /** "The response of `GET /a` and `PUT /a`; the body of `POST /b`." */
+  private described(
+    name: string,
+  ): { text: string; summary: string; detail: string } | undefined {
+    const roles = this.uses.get(name);
+    if (!roles) return undefined;
+    // Roles the same operations give it are said together.
+    const groups = new Map<string, string[]>();
+    let count = 0;
+    for (const [role, operations] of roles) {
+      const of = listed(operations.map((label) => `\`${label}\``));
+      if (!groups.has(of)) count += operations.length;
+      groups.set(of, [...(groups.get(of) ?? []), role]);
+    }
+    const parts = [...groups].map(([of, named]) =>
+      `the ${listed(named)} of ${of}`
+    );
+    const text = parts.join("; ");
+    const sentence = `${text[0].toUpperCase()}${text.slice(1)}.`;
+    return {
+      text: sentence,
+      // For a list that does not fit on the first line: what it is, then
+      // the operations.
+      summary: `The ${listed([...roles.keys()])} of ${count} operations.`,
+      detail: groups.size === 1 ? `${[...groups.keys()][0]}.` : sentence,
+    };
+  }
+
+  /** The class a name stands for. */
+  private target(name: string): string {
+    const definition = this.definitions.find((d) => d.name === name);
+    return definition?.kind === "alias" ? this.target(definition.target) : name;
   }
 
   /** Whether a class of that name was defined. */
@@ -282,11 +626,16 @@ export class PythonModels {
       case "boolean":
         return "bool";
       case "string":
-        return constrained("str", {
-          min_length: schema.minLength,
-          max_length: schema.maxLength,
-          pattern: schema.pattern,
-        });
+        return constrained(
+          "str",
+          {
+            min_length: schema.minLength,
+            max_length: schema.maxLength,
+          },
+          typeof schema.pattern === "string"
+            ? [`pattern=${this.pattern(schema.pattern, schema.format)}`]
+            : [],
+        );
       case "integer":
         return this.integer(schema);
       case "number":
@@ -299,6 +648,26 @@ export class PythonModels {
         // No type: anything.
         return "Any";
     }
+  }
+
+  /**
+   * A pattern as `Field(pattern=...)` takes it: the text, or the name of
+   * a constant when the text is long or is what a format means.
+   */
+  private pattern(text: string, format: unknown): string {
+    if (typeof format !== "string" && text.length <= 40) {
+      return stringLiteral(text);
+    }
+    const known = this.patterns.get(text);
+    if (known !== undefined) return known;
+    const base = typeof format === "string"
+      ? `_${format.replace(/[^A-Za-z0-9]+/g, "_").toUpperCase()}_PATTERN`
+      : "_PATTERN";
+    const taken = new Set(this.patterns.values());
+    let name = typeof format === "string" ? base : `${base}_1`;
+    for (let i = 2; taken.has(name); i++) name = `${base}_${i}`;
+    this.patterns.set(text, name);
+    return name;
   }
 
   private integer(schema: Schema): string {
@@ -351,9 +720,22 @@ export class PythonModels {
         | Record<string, Schema>
         | undefined)?.[tag]?.const;
       const suffix = typeof value === "string" ? pascalCase(value) : `${i + 1}`;
+      const origin = this.origins.get(name);
+      const of = origin
+        ? `${origin[0].toLowerCase()}${origin.slice(1)}`
+        : `\`${name}\``;
+      this.originate(
+        `${name}${suffix}`,
+        typeof value === "string"
+          ? `The alternative \`${value}\` of ${of}`
+          : `An alternative of ${of}`,
+      );
       return this.typeOf(member, `${name}${suffix}`, document, strict);
     });
-    const distinct = [...new Set(members)];
+    // None is written last, as Python writes an optional type.
+    const distinct = [...new Set(members)].sort((a, b) =>
+      Number(a === "None") - Number(b === "None")
+    );
     const union = distinct.join(" | ");
     return tag && distinct.length > 1
       ? `Annotated[${union}, Field(discriminator=${JSON.stringify(tag)})]`
@@ -438,11 +820,11 @@ export class PythonModels {
     this.recursive.set(content, entry.name);
     this.usesTypeStatement = true;
     this.definitions.push({
+      kind: "type",
       name: entry.name,
       // The right side of a `type` statement is evaluated when it is
       // used, so it names itself and later classes as they are.
-      lines: [`type ${entry.name} = ${type.replaceAll(FORWARD, "")}`],
-      rebuild: false,
+      text: type.replaceAll(FORWARD, ""),
     });
     return entry.name;
   }
@@ -489,11 +871,7 @@ export class PythonModels {
       const same = this.rendered.get(content);
       if (same !== undefined) {
         const alias = this.unique(name);
-        this.definitions.push({
-          name: alias,
-          lines: [`${alias} = ${same}`],
-          rebuild: false,
-        });
+        this.definitions.push({ kind: "alias", name: alias, target: same });
         return alias;
       }
     }
@@ -504,34 +882,28 @@ export class PythonModels {
     this.building.add(className);
     const required = new Set((schema.required as string[] | undefined) ?? []);
 
-    const config = [
-      ...(strict ? ["strict=True"] : []),
-      ...(additional === false ? ['extra="forbid"'] : []),
-      "populate_by_name=True",
-      'regex_engine="python-re"',
-    ];
-    const body: string[] = [];
-    if (typeof schema.description === "string") {
-      body.push(`    """${docstring(schema.description)}"""`, "");
-    }
-    body.push(`    model_config = ConfigDict(${config.join(", ")})`);
-
+    const fields: FieldInfo[] = [];
+    const taken = new Set<string>();
     let incomplete = false;
-    for (const [wireName, member] of Object.entries(properties ?? {})) {
-      const attribute = attributeName(wireName);
-      let type = this.typeOf(
-        member,
-        `${className}${pascalCase(wireName)}`,
-        document,
-        strict,
-      );
+    for (const [wire, member] of Object.entries(properties ?? {})) {
+      // Two names that are one name in snake case: the second is numbered.
+      const base = attributeName(wire);
+      let attribute = base;
+      for (let i = 2; taken.has(attribute); i++) attribute = `${base}_${i}`;
+      taken.add(attribute);
+
+      const child = `${className}${pascalCase(wire)}`;
+      this.originate(child, `The member \`${wire}\` of \`${className}\``);
+      let type = this.typeOf(member, child, document, strict);
       // A name that did not exist when the class was made: the class is
       // completed once every definition exists.
       if (type.includes(FORWARD)) incomplete = true;
 
-      const options: string[] = [];
+      // What the member has to satisfy is said by its `Field(...)`.
+      const hoisted = hoist(type);
+      type = hoisted.type;
       let fallback: string | undefined;
-      if (!required.has(wireName)) {
+      if (!required.has(wire)) {
         if ("default" in member) {
           fallback = pythonLiteral(member.default);
         } else {
@@ -539,42 +911,45 @@ export class PythonModels {
           fallback = "None";
         }
       }
-      // A class that does not exist yet can only be named in a string,
-      // and a string is not a type that `|` or `list[...]` accept
-      // everywhere: the whole annotation is the string.
-      if (type.includes(FORWARD)) type = annotation(type);
-      if (attribute !== wireName) {
-        // Not `alias`: a type checker would then take the wire name for
-        // the constructor's parameter, which Python cannot spell.
-        options.push(
-          `validation_alias=${JSON.stringify(wireName)}`,
-          `serialization_alias=${JSON.stringify(wireName)}`,
-        );
-      }
-      if (typeof member.description === "string") {
-        options.push(`description=${JSON.stringify(member.description)}`);
-      }
-
-      if (options.length === 0) {
-        body.push(
-          `    ${attribute}: ${type}${fallback ? ` = ${fallback}` : ""}`,
-        );
-      } else {
-        if (fallback !== undefined) options.unshift(`default=${fallback}`);
-        body.push(`    ${attribute}: ${type} = Field(${options.join(", ")})`);
-      }
+      fields.push({
+        wire,
+        attribute,
+        type,
+        ...(fallback !== undefined && { fallback }),
+        constraints: hoisted.constraints,
+        ...(typeof member.description === "string" &&
+          { description: member.description }),
+      });
     }
 
     // The classes of its fields were defined while they were rendered, so
     // this one comes after them. One that refers to itself by name
     // resolves that name once it exists.
     this.building.delete(className);
+    this.base(strict, additional === false);
     this.definitions.push({
+      kind: "class",
       name: className,
-      lines: [`class ${className}(BaseModel):`, ...body],
+      strict,
+      closed: additional === false,
+      ...(typeof schema.description === "string" &&
+        { description: schema.description }),
+      fields,
       rebuild: incomplete,
     });
     return className;
+  }
+
+  /**
+   * Notes where a class that is part of another comes from, and where
+   * the classes inside it would.
+   */
+  private originate(name: string, origin: string): void {
+    if (this.origins.has(name)) return;
+    this.origins.set(name, origin);
+    const inner = `${origin[0].toLowerCase()}${origin.slice(1)}`;
+    this.origins.set(`${name}Item`, `An item of ${inner}`);
+    this.origins.set(`${name}Value`, `A value of ${inner}`);
   }
 }
 
@@ -603,14 +978,52 @@ function annotation(type: string): string {
   return JSON.stringify(text);
 }
 
-/** `Annotated[T, Field(...)]` when there is a constraint, else `T`. */
-function constrained(type: string, constraints: Record<string, unknown>) {
-  const stated = Object.entries(constraints)
-    .filter(([, value]) => value !== undefined)
-    .map(([key, value]) => `${key}=${pythonLiteral(value)}`);
+/**
+ * `Annotated[T, Field(...)]` when there is a constraint, else `T`.
+ *
+ * @param more Constraints that are written already.
+ */
+function constrained(
+  type: string,
+  constraints: Record<string, unknown>,
+  more: readonly string[] = [],
+) {
+  const stated = [
+    ...Object.entries(constraints)
+      .filter(([, value]) => value !== undefined)
+      .map(([key, value]) => `${key}=${pythonLiteral(value)}`),
+    ...more,
+  ];
   return stated.length === 0
     ? type
     : `Annotated[${type}, Field(${stated.join(", ")})]`;
+}
+
+/**
+ * The type of a member without the constraints around it, and those
+ * constraints: `Annotated[str, Field(min_length=1)] | None` is
+ * `str | None` and `min_length=1`. Pydantic applies what a field says to
+ * the value that is not None.
+ */
+function hoist(type: string): { type: string; constraints: string[] } {
+  const members = splitTop(type, " | ");
+  const others = members.filter((member) => member !== "None");
+  if (others.length !== 1) return { type, constraints: [] };
+  const [only] = others;
+  if (!only.startsWith("Annotated[") || !only.endsWith("]")) {
+    return { type, constraints: [] };
+  }
+  const parts = splitTop(only.slice("Annotated[".length, -1), ", ");
+  const field = parts.at(-1)!;
+  if (parts.length !== 2 || !/^Field\(.*\)$/.test(field)) {
+    return { type, constraints: [] };
+  }
+  return {
+    type: members.map((member) => member === only ? parts[0] : member).join(
+      " | ",
+    ),
+    constraints: splitTop(field.slice("Field(".length, -1), ", "),
+  };
 }
 
 function bounds(schema: Schema): Record<string, unknown> {
@@ -673,8 +1086,4 @@ function mergeObjects(members: readonly Schema[]): Schema | undefined {
       ...new Set(members.flatMap((m) => (m.required as string[]) ?? [])),
     ],
   };
-}
-
-function docstring(text: string): string {
-  return text.replaceAll("\\", "\\\\").replaceAll('"""', '\\"\\"\\"');
 }

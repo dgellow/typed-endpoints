@@ -12,6 +12,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pyright>=1.1.400",
+    "ruff==0.17.5",
 ]
 
 [tool.uv]
@@ -24,3 +25,34 @@ python-preference = "only-managed"
 [tool.pyright]
 include = ["api_generated.py", "app.py", "client_generated.py", "test_client.py", "test_pagination.py", "test_runtime.py"]
 typeCheckingMode = "strict"
+
+# The generated modules and the code written against them are formatted as
+# ruff formats and pass every rule ruff has, except the ones listed here.
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    # One of each pair of rules that contradict each other.
+    "D203",
+    "D213",
+    # The formatter decides where a trailing comma goes.
+    "COM812",
+    # No file of this project carries a copyright notice.
+    "CPY001",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"test_*.py" = [
+    # The tests are unittest's, which the standard library has: its
+    # assertions, not pytest's.
+    "PT009",
+    "PT027",
+    # The name of a test says what it tests.
+    "D101",
+    "D102",
+    # A test asserts, and looks at what the module keeps to itself.
+    "S101",
+    "SLF001",
+]

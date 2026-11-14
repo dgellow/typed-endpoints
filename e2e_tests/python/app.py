@@ -7,25 +7,27 @@ generator writes from the TypeScript routes.
 
 import asyncio
 from collections.abc import AsyncIterator
-from typing import Any, Literal
-
-from fastapi.responses import Response
+from typing import Any
 
 import api_generated as api
 
 Note = api.Note
 
 
+class BackendError(RuntimeError):
+    """A failure that is not part of the contract."""
+
+
 class Notes:
     """Implements `api.Handlers` with the notes in memory."""
 
     def __init__(self) -> None:
+        """Start with no notes."""
         self.notes: dict[str, Note] = {}
         self.created = 0
 
-    async def notes_list(
-        self, query: api.NotesListQuery
-    ) -> api.NotesListResponse | Response:
+    async def notes_list(self, query: api.NotesListQuery) -> api.NotesListResult:
+        """List the notes that carry every given tag, a page at a time."""
         wanted = query.tag or []
         matching = sorted(
             (
@@ -42,13 +44,8 @@ class Notes:
             return api.NotesListResponse(items=items, cursor=items[-1].id)
         return api.NotesListResponse(items=items)
 
-    async def notes_create(
-        self, body: api.NotesCreateBody
-    ) -> (
-        api.Note
-        | api.Fail[Literal[409], api.NotesCreateError409]
-        | Response
-    ):
+    async def notes_create(self, body: api.NotesCreateBody) -> api.NotesCreateResult:
+        """Create a note; a title is taken once."""
         for note in self.notes.values():
             if note.title == body.title:
                 return api.Fail(
@@ -59,7 +56,8 @@ class Notes:
 
     async def notes_retrieve(
         self, params: api.NotesRetrieveParams
-    ) -> api.Note | api.Fail[Literal[404], api.NotFound] | Response:
+    ) -> api.NotesRetrieveResult:
+        """Give the note of that id, or say that there is none."""
         note = self.notes.get(params.id)
         if note is None:
             return api.Fail(404, api.NotFound(error="not_found", id=params.id))
@@ -67,30 +65,32 @@ class Notes:
 
     async def notes_update(
         self, params: api.NotesUpdateParams, body: api.NotesUpdateBody
-    ) -> api.Note | Response:
+    ) -> api.NotesUpdateResult:
+        """Replace what the body speaks about; keep the likes."""
         current = self.notes.get(params.id)
         return self._store(params.id, current.likes if current else 0, body)
 
     async def notes_delete(
         self, params: api.NotesDeleteParams, body: api.NotesDeleteBody
-    ) -> api.NotesDeleteResponse | api.Fail[Literal[404], api.NotFound] | Response:
+    ) -> api.NotesDeleteResult:
+        """Delete the note of that id, for the reason given."""
         if self.notes.pop(params.id, None) is None:
             return api.Fail(404, api.NotFound(error="not_found", id=params.id))
         return api.NotesDeleteResponse(deleted=True, reason=body.reason)
 
     async def echo_retrieve(
         self, params: api.EchoRetrieveParams
-    ) -> api.EchoRetrieveResponse | Response:
-        # A failure that is not part of the contract.
+    ) -> api.EchoRetrieveResult:
+        """Give back the path, whole and in segments."""
         if params.path == "fail":
-            raise RuntimeError("the backend is down")
+            message = "the backend is down"
+            raise BackendError(message)
         return api.EchoRetrieveResponse(
             path=params.path, segments=params.path.split("/")
         )
 
-    async def shapes_create(
-        self, body: api.ShapesCreateBody
-    ) -> api.ShapesCreateResponse | Response:
+    async def shapes_create(self, body: api.ShapesCreateBody) -> api.ShapesCreateResult:
+        """Give the area of a shape."""
         shape = body.shape
         if isinstance(shape, api.ShapesCreateBodyShapeCircle):
             area = 3 * shape.radius * shape.radius
@@ -108,16 +108,15 @@ class Notes:
             note=body.note,
         )
 
-    async def odd_create(
-        self, body: api.OddCreateBody
-    ) -> api.OddCreateResponse | Response:
+    async def odd_create(self, body: api.OddCreateBody) -> api.OddCreateResult:
+        """Give back what was sent."""
         # What was sent, and the default the body's model filled in.
         sent = body.model_dump(by_alias=True, exclude_unset=True)
         return api.OddCreateResponse.model_validate({**sent, "limit": body.limit})
 
-    async def trees_create(
-        self, body: api.TreesCreateBody
-    ) -> api.TreesCreateResponse | Response:
+    async def trees_create(self, body: api.TreesCreateBody) -> api.TreesCreateResult:
+        """Give the depth of a tree, and the tree."""
+
         def depth(tree: api.TreesCreateBody) -> int:
             return 1 + max((depth(child) for child in tree.children), default=0)
 
@@ -129,14 +128,16 @@ class Notes:
     async def ticks_list(
         self, query: api.TicksListQuery, last_event_id: str | None
     ) -> AsyncIterator[api.TicksListEvent]:
+        """Count up to `query.count`, an event per number, then say the total."""
         if query.pause is not None:
             await asyncio.sleep(query.pause / 1000)
         # A client that reconnects continues after the event it has.
         start = 0 if last_event_id is None else int(last_event_id) + 1
         for n in range(start, query.count):
-            if last_event_id is None and n == query.failAt:
-                raise RuntimeError("backend went away")
-            if n == query.badAt:
+            if last_event_id is None and n == query.fail_at:
+                message = "backend went away"
+                raise BackendError(message)
+            if n == query.bad_at:
                 # Built unchecked: an event its model rejects.
                 yield api.TicksListTickEvent(
                     data=api.TicksListTickData.model_construct(n="not a number")
@@ -144,10 +145,8 @@ class Notes:
             yield api.TicksListTickEvent(data=api.TicksListTickData(n=n), id=str(n))
         yield api.TicksListDoneEvent(data=api.TicksListDoneData(total=query.count))
 
-    async def edges_create(
-        self, body: api.EdgesCreateBody
-    ) -> api.EdgesCreateResponse | Response:
-        # Which fields arrived; `maybe` and `count` given back.
+    async def edges_create(self, body: api.EdgesCreateBody) -> api.EdgesCreateResult:
+        """Say which members arrived; give `maybe` and `count` back."""
         answer: dict[str, Any] = {"received": sorted(body.model_fields_set)}
         if "maybe" in body.model_fields_set:
             answer["maybe"] = body.maybe

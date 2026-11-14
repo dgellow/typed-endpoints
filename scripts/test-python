@@ -22,6 +22,12 @@ require_pinned deno
 cd "$project"
 uv sync --frozen --quiet
 
+# The generated modules and the code written against them read as Python
+# does: formatted as ruff formats, and nothing for ruff to say with every
+# rule on (pyproject.toml lists the few that are off, and why).
+uv run --frozen ruff format --check --quiet
+uv run --frozen ruff check --quiet
+
 # The generated module and the hand-written handlers, in strict mode.
 uv run --frozen pyright
 

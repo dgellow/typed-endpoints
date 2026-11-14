@@ -970,6 +970,7 @@ typed-endpoints -r routes/api -o server/api_generated.py --format fastapi
 The module holds:
 
 - a Pydantic model for every request part, response and declared error body
+- a type for what each handler returns (`NotesRetrieveResult`)
 - `Handlers`, a protocol with one method per operation, typed by those models
 - `create_router(handlers)`, a FastAPI `APIRouter` that validates each request,
   calls the handler and checks what it returns
@@ -981,17 +982,13 @@ never overwrites it, and a type checker reports a handler that no longer fits
 the routes:
 
 ```python
-from typing import Literal
-
-from fastapi.responses import Response
-
 import api_generated as api
 
 
 class Notes:
     async def notes_retrieve(
         self, params: api.NotesRetrieveParams
-    ) -> api.NotesRetrieveResponse | api.Fail[Literal[404], api.NotFound] | Response:
+    ) -> api.NotesRetrieveResult:
         note = store.get(params.id)
         if note is None:
             return api.Fail(404, api.NotFound(error="not_found", id=params.id))
@@ -1005,8 +1002,35 @@ app = api.create_app(Notes())
 
 A handler returns the response value, a `Fail` with a status the operation
 declares, or a `Response`, which is sent as it is: the same three as in
-TypeScript. The handler of a server-sent event stream is an async generator of
-typed events:
+TypeScript. `NotesRetrieveResult` is that union:
+`Note | Fail[Literal[404], NotFound] | Response`.
+
+The module is written as Python is written. `ruff format` leaves it alone and
+`ruff check` with every rule selected has nothing to report (ruff 0.17.5; four
+rules are off, and six more for the tests, each with its reason in
+`e2e_tests/python/pyproject.toml`):
+
+```python
+class Note(_ClosedJson):
+    """A note as the server shows it."""
+
+    title: str = Field(min_length=1, max_length=40)
+    tags: list[Annotated[str, Field(min_length=1)]] = Field(max_length=4)
+    pinned: bool | None = None
+    id: str
+    likes: SafeInt
+```
+
+- What a member has to satisfy is in its `Field(...)`
+- What the models have in common (strict, closed, how names are written on the
+  wire) is in four base classes, defined once
+- An attribute is in snake case. A name that is something else on the wire has
+  an alias; when most names are camel case, the models share Pydantic's
+  `to_camel` and only the exceptions say theirs
+- A long pattern (a UUID, a date-time) is a constant with a name
+- Every class has a docstring: the description of its schema, or the operations
+  that use it and as what The handler of a server-sent event stream is an async
+  generator of typed events:
 
 ```python
 async def ticks_list(
@@ -1034,7 +1058,7 @@ What is kept the same on both sides:
 | An optional field that was not set                  | absent from the response                               | absent (`exclude_unset`), never `null`                                                                                                                                           |
 | What a handler returns or yields                    | parsed by the schema before it is sent                 | validated again as plain data, also when it is a model instance: Pydantic trusts an instance, and one built with `model_construct()` or changed afterwards may not fit its model |
 | A request that fails validation                     | 400 `{ error, in, issues: [{ path, message, code }] }` | the same shape, same `in` and `path`                                                                                                                                             |
-| A field name Python cannot use (`from`, `data-id`)  | as written                                             | a Python attribute (`from_`) with the wire name as alias                                                                                                                         |
+| A field name that is not a Python attribute name    | as written (`from`, `data-id`, `createdAt`)            | a snake-case attribute (`from_`, `data_id`, `created_at`) with the wire name as alias                                                                                            |
 | The same object in two operations                   | one type                                               | one class, with a name per operation                                                                                                                                             |
 
 The description FastAPI serves of the application (`/openapi.json`, `/docs`)
@@ -1057,11 +1081,14 @@ What differs, and what does not cross:
   parameter given twice takes the last value; a value that fits no member of a
   union is reported once per member. The conformance suite asserts each of
   these, so the list stays true
-- A type that refers to itself and is not an object (a JSON value) is a `type`
-  statement, which needs Python 3.12
+- The modules need Python 3.12: generic classes and `type` statements are
+  written as that version writes them
+- A request that names a member by its Python attribute (`created_at`) is
+  accepted where the wire name is `createdAt`: models can be built by attribute
+  name, and Pydantic does not tell the two uses apart
 - Not generated yet: request-dependent responses (`projection()`,
-  `selection()`), protocols, and event streams in the Python client (listed in a
-  comment in its module)
+  `selection()`), protocols, and event streams in the Python client (listed in
+  its module's docstring)
 
 **A Python client.** `generatePythonClient()` (`--format python-client`) writes
 a module with the same models and two classes, `Client` and `AsyncClient`
@@ -1100,14 +1127,15 @@ method, path template, declared error statuses, pagination metadata and a JSON
 Schema (draft 2020-12) for each part. Request parts are the input side of the
 Zod schema, responses the output side.
 
-How it is checked (`./scripts/test-python`, through `uv`): the generated modules
-and a hand-written implementation of `Handlers` pass pyright in strict mode; the
-application runs under uvicorn; and the tests that hold for the fixture's
-TypeScript server hold for it, using the TypeScript client generated from the
-same routes: CRUD, declared errors as values, cursor pagination, validation
-failures, a DELETE body, a catch-all path, a recursive schema, event streams
-(frames, failure and resume, keep-alive), and the lens laws of
-`checkResourceLaws()`.
+How it is checked (`./scripts/test-python`, through `uv`): the generated
+modules, a hand-written implementation of `Handlers` and the tests are formatted
+as `ruff format` formats and pass `ruff check` with every rule selected; they
+pass pyright in strict mode; the application runs under uvicorn; and the tests
+that hold for the fixture's TypeScript server hold for it, using the TypeScript
+client generated from the same routes: CRUD, declared errors as values, cursor
+pagination, validation failures, a DELETE body, a catch-all path, a recursive
+schema, event streams (frames, failure and resume, keep-alive), and the lens
+laws of `checkResourceLaws()`.
 
 ### Other Languages: Rust and axum
 

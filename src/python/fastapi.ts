@@ -21,8 +21,20 @@
  * @module
  */
 
-import type { Contract, ContractOperation } from "../contract/index.ts";
-import { pascalCase, PythonModels, snakeCase } from "./models.ts";
+import type {
+  Contract,
+  ContractOperation,
+  JsonSchema,
+} from "../contract/index.ts";
+import {
+  assignment,
+  docstring,
+  fit,
+  imports,
+  type ImportTable,
+  signature,
+} from "./format.ts";
+import { argumentName, pascalCase, PythonModels, snakeCase } from "./models.ts";
 
 /** What the generated module needs to be told. */
 export interface FastApiOptions {
@@ -30,31 +42,41 @@ export interface FastApiOptions {
   readonly source?: string;
 }
 
-/** Fixed part of the module: imports and the helpers the routes share. */
-const PRELUDE = `
-import asyncio
-import json
-import logging
-from collections.abc import AsyncIterator, Awaitable
-from dataclasses import dataclass
-from typing import Annotated, Any, Generic, Literal, Protocol, TypeVar, cast
+/** What the module may import: the names its source uses are imported. */
+const IMPORTS: readonly ImportTable[] = [
+  [
+    ["asyncio", []],
+    ["json", []],
+    ["logging", []],
+    ["collections.abc", ["AsyncIterator", "Awaitable"]],
+    ["dataclasses", ["dataclass"]],
+    ["typing", ["Annotated", "Any", "Literal", "Protocol", "cast"]],
+  ],
+  [
+    ["fastapi", ["APIRouter", "Body", "FastAPI", "Path", "Query", "Request"]],
+    ["fastapi.exceptions", ["RequestValidationError"]],
+    ["fastapi.responses", ["JSONResponse", "Response", "StreamingResponse"]],
+    [
+      "pydantic",
+      ["BaseModel", "ConfigDict", "Field", "TypeAdapter", "ValidationError"],
+    ],
+    ["pydantic.alias_generators", ["to_camel"]],
+  ],
+];
 
-from fastapi import APIRouter, Body, FastAPI, Query, Request
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
-
-logger = logging.getLogger("typed_endpoints")
-
-StatusT = TypeVar("StatusT", bound=int)
-BodyT = TypeVar("BodyT")
-
+/** `SafeInt`, written when a model uses it. */
+const SAFE_INT = `
 # An integer JavaScript represents exactly: what Zod's int() accepts.
 SafeInt = Annotated[int, Field(ge=-9007199254740991, le=9007199254740991)]
+`.trim();
+
+/** Fixed part of the module: what the models and the handlers share. */
+const PRELUDE = `
+logger = logging.getLogger("typed_endpoints")
 
 
 @dataclass(frozen=True)
-class Fail(Generic[StatusT, BodyT]):
+class Fail[StatusT: int, BodyT]:
     """An error response the operation declares: its status and its body."""
 
     status: StatusT
@@ -77,7 +99,7 @@ class InvalidRequest(BaseModel):
         validation_alias="in", serialization_alias="in"
     )
     issues: list[InvalidRequestIssue]
-`.trimStart();
+`.trim();
 
 /** Fixed part of the module: what runs around every handler. */
 const RUNTIME = `
@@ -89,6 +111,16 @@ _PREFIX = {
 }
 
 
+class UndeclaredEventError(ValueError):
+    """A handler yielded an event its stream does not declare."""
+
+    def __init__(self, name: object) -> None:
+        """Name the event."""
+        super().__init__(
+            f"the handler yielded an event the stream does not declare: {name!r}"
+        )
+
+
 def _describe(issue: dict[str, Any]) -> str:
     path: list[Any] = issue["path"]
     message: str = issue["message"]
@@ -97,7 +129,7 @@ def _describe(issue: dict[str, Any]) -> str:
 
 
 def _invalid_request(errors: list[dict[str, Any]]) -> JSONResponse:
-    """A 400 in the shape the TypeScript server answers with."""
+    """Answer with a 400 in the shape the TypeScript server uses."""
     if any(error.get("type") == "json_invalid" for error in errors):
         return JSONResponse(
             {"error": "Invalid JSON body", "in": "json", "issues": []},
@@ -121,8 +153,10 @@ def _invalid_request(errors: list[dict[str, Any]]) -> JSONResponse:
     )
 
 
-def _parse(model: type[_ModelT], values: dict[str, Any], part: str) -> _ModelT:
-    """Path parameters as their model; a failure is a request error."""
+def _parse[ModelT: BaseModel](
+    model: type[ModelT], values: dict[str, Any], part: str
+) -> ModelT:
+    """Read path parameters as their model; a failure is a request error."""
     try:
         return model.model_validate(values)
     except ValidationError as error:
@@ -135,8 +169,8 @@ def _internal_error() -> JSONResponse:
     return JSONResponse({"error": "Internal Server Error"}, status_code=500)
 
 
-def _dump(adapter: TypeAdapter[Any], value: Any) -> Any:
-    """A value as JSON, after its model checked it.
+def _dump(adapter: TypeAdapter[Any], value: object) -> object:
+    """Write a value as JSON, after its model checked it.
 
     Pydantic does not validate a model instance again, so one that was
     built unchecked or changed after it was built would be sent as it is.
@@ -154,9 +188,33 @@ def _dump(adapter: TypeAdapter[Any], value: Any) -> Any:
     )
 
 
+def _failure(
+    where: str, failure: Fail[int, object], errors: dict[int, TypeAdapter[Any]]
+) -> Response:
+    """Turn a failure a handler returned into the response of its status."""
+    declared = errors.get(failure.status)
+    if declared is None:
+        logger.error(
+            "%s: the handler failed with status %s, which the operation "
+            "does not declare",
+            where,
+            failure.status,
+        )
+        return _internal_error()
+    try:
+        return JSONResponse(_dump(declared, failure.body), status_code=failure.status)
+    except ValidationError:
+        logger.exception(
+            "%s: the body of the %s failure does not match its schema",
+            where,
+            failure.status,
+        )
+        return _internal_error()
+
+
 async def _respond(
     where: str,
-    pending: Awaitable[Any],
+    pending: Awaitable[object],
     response: TypeAdapter[Any] | None,
     errors: dict[int, TypeAdapter[Any]],
 ) -> Response:
@@ -164,52 +222,25 @@ async def _respond(
     result = await pending
     if isinstance(result, Response):
         return result
-
     if isinstance(result, Fail):
-        failure = cast("Fail[int, Any]", result)
-        declared = errors.get(failure.status)
-        if declared is None:
-            logger.error(
-                "%s: the handler failed with status %s, which the operation "
-                "does not declare",
-                where,
-                failure.status,
-            )
-            return _internal_error()
-        try:
-            return JSONResponse(
-                _dump(declared, failure.body), status_code=failure.status
-            )
-        except ValidationError as error:
-            logger.error(
-                "%s: the body of the %s failure does not match its schema: %s",
-                where,
-                failure.status,
-                error,
-            )
-            return _internal_error()
-
+        return _failure(where, cast("Fail[int, object]", result), errors)
     if response is None:
-        if result is None:
-            return Response(status_code=204)
-        return JSONResponse(result)
+        return Response(status_code=204) if result is None else JSONResponse(result)
     try:
         return JSONResponse(_dump(response, result))
-    except ValidationError as error:
-        logger.error(
-            "%s: the returned value does not match the response schema: %s",
-            where,
-            error,
+    except ValidationError:
+        logger.exception(
+            "%s: the returned value does not match the response schema", where
         )
         return _internal_error()
 
 
-def _frame(event: Any, events: dict[str, TypeAdapter[Any]]) -> str:
-    """One event in text/event-stream framing, after its model checked it."""
+def _frame(event: object, events: dict[str, TypeAdapter[Any]]) -> str:
+    """Write one event in text/event-stream framing, after its model checked it."""
     name = getattr(event, "event", None)
     data = events.get(name) if isinstance(name, str) else None
     if data is None:
-        raise ValueError(f"the handler yielded an event the stream does not declare: {name!r}")
+        raise UndeclaredEventError(name)
     lines = [f"event: {name}"]
     # An empty id is meaningful: it resets the client's last event id.
     identifier = getattr(event, "id", None)
@@ -219,7 +250,9 @@ def _frame(event: Any, events: dict[str, TypeAdapter[Any]]) -> str:
     if retry is not None:
         lines.append(f"retry: {int(retry)}")
     payload = json.dumps(
-        _dump(data, event.data), separators=(",", ":"), ensure_ascii=False
+        _dump(data, getattr(event, "data", None)),
+        separators=(",", ":"),
+        ensure_ascii=False,
     )
     lines.append(f"data: {payload}")
     return "\\n".join(lines) + "\\n\\n"
@@ -227,11 +260,11 @@ def _frame(event: Any, events: dict[str, TypeAdapter[Any]]) -> str:
 
 async def _frames(
     where: str,
-    source: AsyncIterator[Any],
+    source: AsyncIterator[object],
     events: dict[str, TypeAdapter[Any]],
     keep_alive: float | None,
 ) -> AsyncIterator[str]:
-    pending: asyncio.Future[Any] | None = None
+    pending: asyncio.Future[object] | None = None
     try:
         while True:
             if pending is None:
@@ -247,11 +280,11 @@ async def _frames(
             except StopAsyncIteration:
                 return
             yield _frame(event, events)
-    except Exception as error:
+    except Exception:
         # A stream has no status once it has begun. The comment tells a
         # client that the stream ended because the handler failed, or
         # yielded an event its model rejects; the event is never sent.
-        logger.error("%s: SSE stream error: %s", where, error)
+        logger.exception("%s: SSE stream error", where)
         yield ": error\\n\\n"
     finally:
         if pending is not None:
@@ -260,11 +293,11 @@ async def _frames(
 
 def _stream(
     where: str,
-    source: AsyncIterator[Any],
+    source: AsyncIterator[object],
     events: dict[str, TypeAdapter[Any]],
     keep_alive: float | None,
 ) -> StreamingResponse:
-    """The events a handler yields as a text/event-stream response."""
+    """Send the events a handler yields as a text/event-stream response."""
     return StreamingResponse(
         _frames(where, source, events, keep_alive),
         media_type="text/event-stream",
@@ -273,12 +306,14 @@ def _stream(
 
 
 def install_error_handlers(app: FastAPI) -> None:
-    """Answer a request that fails validation with a 400 that names the part
-    that failed and each issue."""
+    """Answer a request that fails validation with a 400.
+
+    The 400 names the part that failed and each issue.
+    """
 
     async def invalid_request(_request: Request, error: Exception) -> Response:
-        assert isinstance(error, RequestValidationError)
-        return _invalid_request(list(error.errors()))
+        failed = cast("RequestValidationError", error)
+        return _invalid_request(list(failed.errors()))
 
     app.add_exception_handler(RequestValidationError, invalid_request)
 
@@ -296,20 +331,22 @@ def install_error_handlers(app: FastAPI) -> None:
                         cast("dict[str, Any]", responses).pop("422", None)
         return schema
 
-    setattr(app, "openapi", openapi)
+    app.openapi = openapi
 
 
 def create_app(handlers: Handlers) -> FastAPI:
-    """An application that serves the operations with the given handlers."""
+    """Make an application that serves the operations with the given handlers."""
     app = FastAPI()
     install_error_handlers(app)
     app.include_router(create_router(handlers))
     return app
-`.trimStart();
+`.trim();
 
 /** One operation, with the Python names the module gives its parts. */
 interface Rendered {
   readonly operation: ContractOperation;
+  /** `GET /notes/{id}`. */
+  readonly label: string;
   /** Name of the handler method and of the route function. */
   readonly method: string;
   readonly params?: string;
@@ -318,6 +355,8 @@ interface Rendered {
   readonly response?: string;
   /** Declared error bodies by status: their type expressions. */
   readonly errors: ReadonlyMap<string, string>;
+  /** What the handler returns: the name of that type. */
+  readonly result: string;
   /** For an event stream: the type of its events. */
   readonly stream?: {
     /** Name of the union of the event classes. */
@@ -334,6 +373,12 @@ function fastApiPath(path: string): string {
   return path.replace(/\{\+(\w+)\}/g, "{$1:path}");
 }
 
+/** A banner between the parts of the module. */
+function banner(title: string): string[] {
+  const rule = `# ${"=".repeat(77)}`;
+  return [rule, `# ${title}`, rule, "", ""];
+}
+
 /**
  * Render a contract as the source of a Python module.
  *
@@ -348,9 +393,23 @@ export function renderFastApi(
   const rendered: Rendered[] = [];
   /** The event classes of the streams: defined after the models. */
   const eventClasses: string[] = [];
+  /** What each handler returns: defined after the models. */
+  const results: string[] = [];
 
   for (const operation of contract.operations) {
     const base = pascalCase(operation.operationId);
+    const label = `${operation.method} ${operation.path}`;
+    const part = (
+      suffix: string,
+      role: string,
+      schema: JsonSchema | undefined,
+      strict: boolean,
+    ): string | undefined => {
+      if (!schema) return undefined;
+      const type = models.define(`${base}${suffix}`, schema, strict);
+      models.describe(type, role, label);
+      return type;
+    };
 
     // An event stream: one class per event, typed by the event's data.
     let stream: Rendered["stream"];
@@ -358,30 +417,37 @@ export function renderFastApi(
       const classes: string[] = [];
       const dataTypes = new Map<string, string>();
       for (const [name, schema] of Object.entries(operation.events)) {
-        const data = models.define(
-          `${base}${pascalCase(name)}Data`,
+        const data = part(
+          `${pascalCase(name)}Data`,
+          `data of the event \`${name}\``,
           schema,
           true,
-        );
+        )!;
         dataTypes.set(name, data);
         const className = `${base}${pascalCase(name)}Event`;
         classes.push(className);
         eventClasses.push(
-          `class ${className}(BaseModel):`,
-          `    """The event \`${name}\` of ${operation.method} ${operation.path}."""`,
+          `class ${className}(${models.base(true)}):`,
+          ...docstring(4, `The event \`${name}\` of \`${label}\`.`),
           "",
-          "    model_config = ConfigDict(strict=True)",
-          `    data: ${data}`,
-          `    event: Literal[${JSON.stringify(name)}] = ${
-            JSON.stringify(name)
-          }`,
+          ...assignment(4, "data", data, undefined),
+          ...assignment(
+            4,
+            "event",
+            `Literal[${JSON.stringify(name)}]`,
+            JSON.stringify(name),
+          ),
           "    id: str | None = None",
           "    retry: int | None = None",
           "",
           "",
         );
       }
-      eventClasses.push(`${base}Event = ${classes.join(" | ")}`, "", "");
+      eventClasses.push(
+        ...assignment(0, `type ${base}Event`, undefined, classes.join(" | ")),
+        "",
+        "",
+      );
       stream = {
         events: `${base}Event`,
         data: dataTypes,
@@ -391,7 +457,7 @@ export function renderFastApi(
     }
 
     // Path parameters without a schema are strings.
-    const params = operation.params ??
+    const paramsSchema = operation.params ??
       (operation.pathParams.length > 0
         ? {
           type: "object",
@@ -402,98 +468,131 @@ export function renderFastApi(
         }
         : undefined);
 
+    // Path and query values arrive as text and are coerced; a body keeps
+    // its JSON types, as Zod requires.
+    const params = part("Params", "path parameters", paramsSchema, false);
+    const query = part("Query", "query", operation.query, false);
+    const body = part("Body", "body", operation.body, true);
+    const response = part("Response", "response", operation.response, true);
+    const errors = new Map(
+      Object.entries(operation.errors ?? {}).map(([status, schema]) => [
+        status,
+        part(`Error${status}`, `${status} body`, schema, true)!,
+      ]),
+    );
+
+    // What a handler returns has a name: its annotation stays short.
+    const result = `${base}Result`;
+    if (!stream) {
+      results.push(
+        ...assignment(
+          0,
+          `type ${result}`,
+          undefined,
+          [
+            response ?? "None",
+            ...[...errors].map(([status, type]) =>
+              `Fail[Literal[${status}], ${type}]`
+            ),
+            "Response",
+          ].join(" | "),
+        ),
+      );
+    }
+
     rendered.push({
       operation,
+      label,
       method: snakeCase(operation.operationId),
-      // Path and query values arrive as text and are coerced; a body
-      // keeps its JSON types, as Zod requires.
-      ...(params && {
-        params: models.define(`${base}Params`, params, false),
-      }),
-      ...(operation.query && {
-        query: models.define(`${base}Query`, operation.query, false),
-      }),
-      ...(operation.body && {
-        body: models.define(`${base}Body`, operation.body, true),
-      }),
-      ...(operation.response && {
-        response: models.define(`${base}Response`, operation.response, true),
-      }),
-      errors: new Map(
-        Object.entries(operation.errors ?? {}).map(([status, schema]) => [
-          status,
-          models.define(`${base}Error${status}`, schema, true),
-        ]),
-      ),
+      ...(params && { params }),
+      ...(query && { query }),
+      ...(body && { body }),
+      ...(response && { response }),
+      errors,
+      result,
       ...(stream && { stream }),
     });
   }
 
-  const lines: string[] = [
-    `"""API models, handlers and router${
-      options.source ? ` for ${options.source}` : ""
-    }.`,
-    "",
-    "Generated by typed-endpoints. Do not edit: implement \\`Handlers\\` in a",
-    "module of your own and pass it to \\`create_app()\\` or \\`create_router()\\`.",
-    ...(models.usesTypeStatement
-      ? [
-        "",
-        "Needs Python 3.12: a type that refers to itself is a \\`type\\` statement.",
-      ]
-      : []),
-    '"""',
-    "",
+  const body: string[] = [
     PRELUDE,
     "",
-    '_ModelT = TypeVar("_ModelT", bound=BaseModel)',
     "",
-    "",
-    "# " + "=".repeat(77),
-    "# Models",
-    "# " + "=".repeat(77),
-    "",
-    "",
+    ...banner("Models"),
     ...models.render(),
     ...eventClasses,
-    "# " + "=".repeat(77),
-    "# Handlers",
-    "# " + "=".repeat(77),
+    ...banner("Handlers"),
+    "# What a handler returns: the response, a failure the operation declares,",
+    "# or a response written by hand, which is sent as it is.",
+    ...results,
     "",
     "",
     "class Handlers(Protocol):",
-    '    """One method per operation. A method returns the response value, a',
-    "    `Fail` with a status the operation declares, or a `Response`, which is",
-    "    sent as it is. The method of an event stream is an async iterator of",
-    '    its events."""',
+    '    """The operations of the API, one method each.',
+    "",
+    "    A method returns the response value, a `Fail` with a status the",
+    "    operation declares, or a `Response`, which is sent as it is. The method",
+    "    of an event stream is an async iterator of its events.",
+    '    """',
   ];
 
   for (const item of rendered) {
-    lines.push("", ...handlerSignature(item));
+    body.push("", ...handlerSignature(item));
   }
-  if (rendered.length === 0) lines.push("", "    pass");
 
-  lines.push(
-    "",
-    "",
-    "# " + "=".repeat(77),
-    "# Router",
-    "# " + "=".repeat(77),
-    "",
-    "",
-  );
-  for (const item of rendered) lines.push(...adapters(item));
-  lines.push(
+  body.push("", "", ...banner("Router"));
+  for (const item of rendered) body.push(...adapters(item));
+  // A function per operation adds its route: one function with every
+  // route in it grows with the API.
+  for (const item of rendered) {
+    body.push(
+      "",
+      "",
+      ...signature(
+        0,
+        `def _add_${item.method}`,
+        ["router: APIRouter", "handlers: Handlers"],
+        "None",
+      ),
+      ...route(item),
+    );
+  }
+  body.push(
     "",
     "",
     "def create_router(handlers: Handlers) -> APIRouter:",
-    '    """The operations as routes that call the given handlers."""',
+    '    """Make the operations routes that call the given handlers."""',
     "    router = APIRouter()",
+    ...rendered.map((item) => `    _add_${item.method}(router, handlers)`),
+    "    return router",
+    "",
+    "",
+    RUNTIME,
   );
-  for (const item of rendered) lines.push("", ...route(item));
-  lines.push("", "    return router", "", "", RUNTIME);
 
-  return lines.join("\n").replaceAll("\\`", "`");
+  const source = body.join("\n");
+  const lines: string[] = [
+    ...docstring(
+      0,
+      [
+        `API models, handlers and router${
+          options.source ? ` for ${options.source}` : ""
+        }.`,
+        "",
+        "Generated by typed-endpoints. Do not edit: implement `Handlers` in a " +
+        "module of your own and pass it to `create_app()` or `create_router()`.",
+        "",
+        "Needs Python 3.12.",
+      ].join("\n"),
+    ),
+    "",
+    ...imports(source, IMPORTS),
+    "",
+    ...(models.usesSafeInt ? [SAFE_INT, ""] : []),
+    source,
+    "",
+  ];
+  return lines.join("\n");
 }
 
 /** The arguments a handler takes, in a fixed order. */
@@ -511,34 +610,36 @@ function handlerSignature(item: Rendered): string[] {
     // Not `async def`: an async generator function, called, is the
     // iterator.
     return [
-      `    def ${item.method}(`,
-      "        self,",
-      ...handlerArguments(item).map((argument) => `        ${argument},`),
-      "        last_event_id: str | None,",
-      `    ) -> AsyncIterator[${item.stream.events}]:`,
-      `        """${operation.method} ${operation.path}: a stream of events.`,
-      "",
-      "        `last_event_id` is the id of the last event a client that",
-      '        reconnects received; None on a first connection."""',
+      ...signature(
+        4,
+        `def ${item.method}`,
+        ["self", ...handlerArguments(item), "last_event_id: str | None"],
+        `AsyncIterator[${item.stream.events}]`,
+      ),
+      ...docstring(
+        8,
+        [
+          `Answer \`${item.label}\` with a stream of events.`,
+          "",
+          "`last_event_id` is the id of the last event a client that " +
+          "reconnects received; None on a first connection.",
+        ].join("\n"),
+      ),
       "        ...",
     ];
   }
-  const returns = [
-    item.response ?? "None",
-    ...[...item.errors].map(([status, type]) =>
-      `Fail[Literal[${status}], ${type}]`
-    ),
-    "Response",
-  ];
-  const summary = operation.summary ?? operation.description;
+  const summary = (operation.summary ?? operation.description)?.trim();
   return [
-    `    async def ${item.method}(`,
-    "        self,",
-    ...handlerArguments(item).map((argument) => `        ${argument},`),
-    `    ) -> ${returns.join(" | ")}:`,
-    `        """${operation.method} ${operation.path}${
-      summary ? `: ${summary.replaceAll('"""', "'''")}` : ""
-    }"""`,
+    ...signature(
+      4,
+      `async def ${item.method}`,
+      ["self", ...handlerArguments(item)],
+      item.result,
+    ),
+    ...docstring(
+      8,
+      `Answer \`${item.label}\`.${summary ? `\n\n${summary}` : ""}`,
+    ),
     "        ...",
   ];
 }
@@ -547,23 +648,36 @@ function handlerSignature(item: Rendered): string[] {
 function adapters(item: Rendered): string[] {
   const name = item.method.toUpperCase();
   if (item.stream) {
-    return [
-      `_${name}_EVENTS: dict[str, TypeAdapter[Any]] = {${
+    return assignment(
+      0,
+      `_${name}_EVENTS`,
+      "dict[str, TypeAdapter[Any]]",
+      `{${
         [...item.stream.data].map(([event, type]) =>
           `${JSON.stringify(event)}: TypeAdapter(${type})`
         ).join(", ")
       }}`,
-    ];
+    );
   }
   return [
     ...(item.response
-      ? [`_${name}_RESPONSE: TypeAdapter[Any] = TypeAdapter(${item.response})`]
+      ? assignment(
+        0,
+        `_${name}_RESPONSE`,
+        "TypeAdapter[Any]",
+        `TypeAdapter(${item.response})`,
+      )
       : []),
-    `_${name}_ERRORS: dict[int, TypeAdapter[Any]] = {${
-      [...item.errors].map(([status, type]) =>
-        `${status}: TypeAdapter(${type})`
-      ).join(", ")
-    }}`,
+    ...assignment(
+      0,
+      `_${name}_ERRORS`,
+      "dict[int, TypeAdapter[Any]]",
+      `{${
+        [...item.errors].map(([status, type]) =>
+          `${status}: TypeAdapter(${type})`
+        ).join(", ")
+      }}`,
+    ),
   ];
 }
 
@@ -577,13 +691,22 @@ function route(item: Rendered): string[] {
   const before: string[] = [];
   if (item.params) {
     for (const { name: param } of operation.pathParams) {
-      taken.push(`${snakeCase(param)}: str`);
+      const argument = argumentName(param);
+      // An argument that cannot have the parameter's name says which
+      // parameter it is.
+      taken.push(
+        argument === param
+          ? `${argument}: str`
+          : `${argument}: Annotated[str, Path(alias=${JSON.stringify(param)})]`,
+      );
     }
     const values = operation.pathParams
-      .map(({ name: param }) => `${JSON.stringify(param)}: ${snakeCase(param)}`)
+      .map(({ name: param }) =>
+        `${JSON.stringify(param)}: ${argumentName(param)}`
+      )
       .join(", ");
     before.push(
-      `        params = _parse(${item.params}, {${values}}, "path")`,
+      ...fit(8, "params = ", `_parse(${item.params}, {${values}}, "path")`),
     );
     passed.push("params=params");
   }
@@ -606,55 +729,53 @@ function route(item: Rendered): string[] {
     ),
   ];
 
-  const tags = operation.tags && operation.tags.length > 0
-    ? `, tags=${JSON.stringify(operation.tags)}`
-    : "";
-  const summary = operation.summary
-    ? `, summary=${JSON.stringify(operation.summary)}`
-    : "";
+  const options = [
+    JSON.stringify(fastApiPath(operation.path)),
+    `operation_id=${JSON.stringify(operation.operationId)}`,
+    item.stream ? "response_class=StreamingResponse" : "response_model=None",
+    ...(operation.summary
+      ? [`summary=${JSON.stringify(operation.summary)}`]
+      : []),
+    ...(operation.tags && operation.tags.length > 0
+      ? [`tags=${JSON.stringify(operation.tags).replaceAll('","', '", "')}`]
+      : []),
+    ...(item.stream
+      ? (taken.length > 0 ? ['responses={400: {"model": InvalidRequest}}'] : [])
+      : [`responses={${documented.join(", ")}}`]),
+  ];
+  const where = JSON.stringify(item.label);
 
   if (item.stream) {
-    const invalid = taken.length > 0
-      ? ', responses={400: {"model": InvalidRequest}}'
-      : "";
     return [
-      `    @router.${decorator}(`,
-      `        ${JSON.stringify(fastApiPath(operation.path))},`,
-      `        operation_id=${
-        JSON.stringify(operation.operationId)
-      }, response_class=StreamingResponse${summary}${tags}${invalid},`,
-      "    )",
-      `    async def ${item.method}(${
-        ["request: Request", ...taken].join(", ")
-      }) -> Response:`,
+      ...fit(4, "@", `router.${decorator}(${options.join(", ")})`),
+      ...signature(
+        4,
+        `async def ${item.method}`,
+        ["request: Request", ...taken],
+        "Response",
+      ),
       ...before,
-      "        return _stream(",
-      `            ${JSON.stringify(`${operation.method} ${operation.path}`)},`,
-      `            handlers.${item.method}(${
-        [...passed, 'last_event_id=request.headers.get("Last-Event-ID")']
-          .join(", ")
-      }),`,
-      `            _${name}_EVENTS,`,
-      `            ${item.stream.keepAlive ?? "None"},`,
-      "        )",
+      ...fit(
+        8,
+        "return ",
+        `_stream(${where}, handlers.${item.method}(${
+          [...passed, 'last_event_id=request.headers.get("Last-Event-ID")']
+            .join(", ")
+        }), _${name}_EVENTS, ${item.stream.keepAlive ?? "None"})`,
+      ),
     ];
   }
 
   return [
-    `    @router.${decorator}(`,
-    `        ${JSON.stringify(fastApiPath(operation.path))},`,
-    `        operation_id=${
-      JSON.stringify(operation.operationId)
-    }, response_model=None${summary}${tags},`,
-    `        responses={${documented.join(", ")}},`,
-    "    )",
-    `    async def ${item.method}(${taken.join(", ")}) -> Response:`,
+    ...fit(4, "@", `router.${decorator}(${options.join(", ")})`),
+    ...signature(4, `async def ${item.method}`, taken, "Response"),
     ...before,
-    "        return await _respond(",
-    `            ${JSON.stringify(`${operation.method} ${operation.path}`)},`,
-    `            handlers.${item.method}(${passed.join(", ")}),`,
-    `            ${item.response ? `_${name}_RESPONSE` : "None"},`,
-    `            _${name}_ERRORS,`,
-    "        )",
+    ...fit(
+      8,
+      "return ",
+      `await _respond(${where}, handlers.${item.method}(${
+        passed.join(", ")
+      }), ${item.response ? `_${name}_RESPONSE` : "None"}, _${name}_ERRORS)`,
+    ),
   ];
 }

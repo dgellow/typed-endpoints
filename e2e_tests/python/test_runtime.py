@@ -15,17 +15,18 @@ from fastapi.responses import Response
 from pydantic import TypeAdapter
 
 import api_generated as api
+import app
 
 NOTE: TypeAdapter[Any] = TypeAdapter(api.Note)
 ERRORS: dict[int, TypeAdapter[Any]] = {404: TypeAdapter(api.NotFound)}
 
 
-async def _value(value: Any) -> Any:
+async def _value(value: object) -> object:
     return value
 
 
 def respond(
-    value: Any,
+    value: object,
     response: TypeAdapter[Any] | None = NOTE,
     errors: dict[int, TypeAdapter[Any]] = ERRORS,
 ) -> tuple[int, Any]:
@@ -48,9 +49,7 @@ class Respond(unittest.TestCase):
         note = {"id": "1", "likes": 0, "title": "t", "tags": ["a"]}
         self.assertEqual(respond(note), (200, note))
         # A model instance is sent without the fields that were not set.
-        self.assertEqual(
-            respond(api.Note.model_validate(note)), (200, note)
-        )
+        self.assertEqual(respond(api.Note.model_validate(note)), (200, note))
 
     def test_a_value_the_model_rejects_is_a_500(self) -> None:
         rejected: list[Any] = [
@@ -60,16 +59,12 @@ class Respond(unittest.TestCase):
             None,
         ]
         for wrong in rejected:
-            self.assertEqual(
-                respond(wrong), (500, {"error": "Internal Server Error"})
-            )
+            self.assertEqual(respond(wrong), (500, {"error": "Internal Server Error"}))
 
     def test_a_model_instance_is_checked_again(self) -> None:
         # Pydantic trusts an instance. One built unchecked, or changed
         # after it was built, is not what its model describes.
-        unchecked = api.Note.model_construct(
-            id="1", likes=0, title="", tags=[]
-        )
+        unchecked = api.Note.model_construct(id="1", likes=0, title="", tags=[])
         self.assertEqual(respond(unchecked), (500, {"error": "Internal Server Error"}))
 
         changed = api.Note(id="1", likes=0, title="t", tags=[])
@@ -113,11 +108,9 @@ class Description(unittest.TestCase):
     """What FastAPI's own OpenAPI document says about the application."""
 
     def setUp(self) -> None:
-        import app
-
         self.paths: dict[str, Any] = app.app.openapi()["paths"]
 
-    def schema(self, path: str, method: str, status: str) -> Any:
+    def schema(self, path: str, method: str, status: str) -> dict[str, Any]:
         response = self.paths[path][method]["responses"][status]
         return response["content"]["application/json"]["schema"]
 

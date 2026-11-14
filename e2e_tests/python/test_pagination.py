@@ -7,22 +7,28 @@ carries, which is the rule of the TypeScript client (`nextPage()` in
 """
 
 import unittest
-from typing import Any
+from typing import Any, ClassVar
 
 import client_generated as api
 
 
 def step(
     meta: dict[str, Any],
-    page: Any,
+    page: object,
     query: dict[str, Any] | None = None,
     page_size: int = 2,
-) -> Any:
+) -> object:
+    """Ask the generated client where the page after `page` is."""
     return api._next_page("list", meta, page, query or {}, page_size)  # pyright: ignore[reportPrivateUsage]
 
 
 class Cursor(unittest.TestCase):
-    META = {"style": "cursor", "items": "items", "cursor": "next", "cursorParam": "after"}
+    META: ClassVar[dict[str, Any]] = {
+        "style": "cursor",
+        "items": "items",
+        "cursor": "next",
+        "cursorParam": "after",
+    }
 
     def test_the_cursor_of_the_page_is_asked_for_next(self) -> None:
         self.assertEqual(
@@ -31,7 +37,11 @@ class Cursor(unittest.TestCase):
         )
 
     def test_no_cursor_is_the_end(self) -> None:
-        for page in ({"items": [1]}, {"items": [1], "next": None}, {"items": [1], "next": ""}):
+        for page in (
+            {"items": [1]},
+            {"items": [1], "next": None},
+            {"items": [1], "next": ""},
+        ):
             self.assertIsNone(step(self.META, page))
 
     def test_the_cursor_that_was_asked_for_is_refused(self) -> None:
@@ -47,7 +57,7 @@ class Cursor(unittest.TestCase):
 
 
 class CursorId(unittest.TestCase):
-    META = {
+    META: ClassVar[dict[str, Any]] = {
         "style": "cursorId",
         "items": "items",
         "cursorIdParam": "after",
@@ -75,7 +85,7 @@ class CursorId(unittest.TestCase):
 
 
 class Offset(unittest.TestCase):
-    META = {
+    META: ClassVar[dict[str, Any]] = {
         "style": "offset",
         "items": "items",
         "total": "total",
@@ -98,7 +108,7 @@ class Offset(unittest.TestCase):
 
 
 class Page(unittest.TestCase):
-    META = {
+    META: ClassVar[dict[str, Any]] = {
         "style": "page",
         "items": "items",
         "total": "total",
@@ -129,7 +139,11 @@ class Page(unittest.TestCase):
 
 
 class Url(unittest.TestCase):
-    META = {"style": "url", "items": "items", "nextUrl": "links.next"}
+    META: ClassVar[dict[str, Any]] = {
+        "style": "url",
+        "items": "items",
+        "nextUrl": "links.next",
+    }
 
     def test_the_url_of_the_page(self) -> None:
         self.assertEqual(
