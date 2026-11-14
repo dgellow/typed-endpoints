@@ -32,14 +32,16 @@ export interface FastApiOptions {
 
 /** Fixed part of the module: imports and the helpers the routes share. */
 const PRELUDE = `
+import asyncio
+import json
 import logging
-from collections.abc import Awaitable
+from collections.abc import AsyncIterator, Awaitable
 from dataclasses import dataclass
 from typing import Annotated, Any, Generic, Literal, Protocol, TypeVar, cast
 
 from fastapi import APIRouter, Body, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 logger = logging.getLogger("typed_endpoints")
@@ -134,9 +136,18 @@ def _internal_error() -> JSONResponse:
 
 
 def _dump(adapter: TypeAdapter[Any], value: Any) -> Any:
-    # Fields that were not set stay absent: absent and null are different.
+    """A value as JSON, after its model checked it.
+
+    Pydantic does not validate a model instance again, so one that was
+    built unchecked or changed after it was built would be sent as it is.
+    The value is taken apart first and validated as plain data. Fields
+    that were not set stay absent: absent and null are different.
+    """
+    plain = adapter.dump_python(
+        value, by_alias=True, exclude_unset=True, warnings=False
+    )
     return adapter.dump_python(
-        adapter.validate_python(value),
+        adapter.validate_python(plain),
         mode="json",
         by_alias=True,
         exclude_unset=True,
@@ -193,6 +204,74 @@ async def _respond(
         return _internal_error()
 
 
+def _frame(event: Any, events: dict[str, TypeAdapter[Any]]) -> str:
+    """One event in text/event-stream framing, after its model checked it."""
+    name = getattr(event, "event", None)
+    data = events.get(name) if isinstance(name, str) else None
+    if data is None:
+        raise ValueError(f"the handler yielded an event the stream does not declare: {name!r}")
+    lines = [f"event: {name}"]
+    # An empty id is meaningful: it resets the client's last event id.
+    identifier = getattr(event, "id", None)
+    if identifier is not None:
+        lines.append(f"id: {identifier}")
+    retry = getattr(event, "retry", None)
+    if retry is not None:
+        lines.append(f"retry: {int(retry)}")
+    payload = json.dumps(
+        _dump(data, event.data), separators=(",", ":"), ensure_ascii=False
+    )
+    lines.append(f"data: {payload}")
+    return "\\n".join(lines) + "\\n\\n"
+
+
+async def _frames(
+    where: str,
+    source: AsyncIterator[Any],
+    events: dict[str, TypeAdapter[Any]],
+    keep_alive: float | None,
+) -> AsyncIterator[str]:
+    pending: asyncio.Future[Any] | None = None
+    try:
+        while True:
+            if pending is None:
+                pending = asyncio.ensure_future(anext(source))
+            done, _ = await asyncio.wait({pending}, timeout=keep_alive)
+            if not done:
+                # A comment: ignored by clients, seen by intermediaries.
+                yield ": keep-alive\\n\\n"
+                continue
+            finished, pending = pending, None
+            try:
+                event = finished.result()
+            except StopAsyncIteration:
+                return
+            yield _frame(event, events)
+    except Exception as error:
+        # A stream has no status once it has begun. The comment tells a
+        # client that the stream ended because the handler failed, or
+        # yielded an event its model rejects; the event is never sent.
+        logger.error("%s: SSE stream error: %s", where, error)
+        yield ": error\\n\\n"
+    finally:
+        if pending is not None:
+            pending.cancel()
+
+
+def _stream(
+    where: str,
+    source: AsyncIterator[Any],
+    events: dict[str, TypeAdapter[Any]],
+    keep_alive: float | None,
+) -> StreamingResponse:
+    """The events a handler yields as a text/event-stream response."""
+    return StreamingResponse(
+        _frames(where, source, events, keep_alive),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 def install_error_handlers(app: FastAPI) -> None:
     """Answer a request that fails validation with a 400 that names the part
     that failed and each issue."""
@@ -239,6 +318,15 @@ interface Rendered {
   readonly response?: string;
   /** Declared error bodies by status: their type expressions. */
   readonly errors: ReadonlyMap<string, string>;
+  /** For an event stream: the type of its events. */
+  readonly stream?: {
+    /** Name of the union of the event classes. */
+    readonly events: string;
+    /** The type of each event's data, by event name. */
+    readonly data: ReadonlyMap<string, string>;
+    /** Seconds of silence before a keep-alive comment. */
+    readonly keepAlive?: number;
+  };
 }
 
 /** `/files/{+path}` as FastAPI writes it: `/files/{path:path}`. */
@@ -249,8 +337,8 @@ function fastApiPath(path: string): string {
 /**
  * Render a contract as the source of a Python module.
  *
- * Operations that stream server-sent events are listed in a comment and
- * left out: the module has no handler for them yet.
+ * An operation that streams server-sent events has a handler that is an
+ * async iterator of typed events.
  */
 export function renderFastApi(
   contract: Contract,
@@ -258,14 +346,49 @@ export function renderFastApi(
 ): string {
   const models = new PythonModels();
   const rendered: Rendered[] = [];
-  const skipped: ContractOperation[] = [];
+  /** The event classes of the streams: defined after the models. */
+  const eventClasses: string[] = [];
 
   for (const operation of contract.operations) {
-    if (operation.events) {
-      skipped.push(operation);
-      continue;
-    }
     const base = pascalCase(operation.operationId);
+
+    // An event stream: one class per event, typed by the event's data.
+    let stream: Rendered["stream"];
+    if (operation.events) {
+      const classes: string[] = [];
+      const dataTypes = new Map<string, string>();
+      for (const [name, schema] of Object.entries(operation.events)) {
+        const data = models.define(
+          `${base}${pascalCase(name)}Data`,
+          schema,
+          true,
+        );
+        dataTypes.set(name, data);
+        const className = `${base}${pascalCase(name)}Event`;
+        classes.push(className);
+        eventClasses.push(
+          `class ${className}(BaseModel):`,
+          `    """The event \`${name}\` of ${operation.method} ${operation.path}."""`,
+          "",
+          "    model_config = ConfigDict(strict=True)",
+          `    data: ${data}`,
+          `    event: Literal[${JSON.stringify(name)}] = ${
+            JSON.stringify(name)
+          }`,
+          "    id: str | None = None",
+          "    retry: int | None = None",
+          "",
+          "",
+        );
+      }
+      eventClasses.push(`${base}Event = ${classes.join(" | ")}`, "", "");
+      stream = {
+        events: `${base}Event`,
+        data: dataTypes,
+        ...(operation.keepAlive !== undefined &&
+          { keepAlive: operation.keepAlive / 1000 }),
+      };
+    }
 
     // Path parameters without a schema are strings.
     const params = operation.params ??
@@ -302,6 +425,7 @@ export function renderFastApi(
           models.define(`${base}Error${status}`, schema, true),
         ]),
       ),
+      ...(stream && { stream }),
     });
   }
 
@@ -325,6 +449,7 @@ export function renderFastApi(
     "",
     "",
     ...models.render(),
+    ...eventClasses,
     "# " + "=".repeat(77),
     "# Handlers",
     "# " + "=".repeat(77),
@@ -333,20 +458,14 @@ export function renderFastApi(
     "class Handlers(Protocol):",
     '    """One method per operation. A method returns the response value, a',
     "    `Fail` with a status the operation declares, or a `Response`, which is",
-    '    sent as it is."""',
+    "    sent as it is. The method of an event stream is an async iterator of",
+    '    its events."""',
   ];
 
   for (const item of rendered) {
     lines.push("", ...handlerSignature(item));
   }
   if (rendered.length === 0) lines.push("", "    pass");
-
-  if (skipped.length > 0) {
-    lines.push("", "", "# Not generated: server-sent event streams.");
-    for (const operation of skipped) {
-      lines.push(`#   ${operation.method} ${operation.path}`);
-    }
-  }
 
   lines.push(
     "",
@@ -382,6 +501,22 @@ function handlerArguments(item: Rendered): string[] {
 
 function handlerSignature(item: Rendered): string[] {
   const { operation } = item;
+  if (item.stream) {
+    // Not `async def`: an async generator function, called, is the
+    // iterator.
+    return [
+      `    def ${item.method}(`,
+      "        self,",
+      ...handlerArguments(item).map((argument) => `        ${argument},`),
+      "        last_event_id: str | None,",
+      `    ) -> AsyncIterator[${item.stream.events}]:`,
+      `        """${operation.method} ${operation.path}: a stream of events.`,
+      "",
+      "        `last_event_id` is the id of the last event a client that",
+      '        reconnects received; None on a first connection."""',
+      "        ...",
+    ];
+  }
   const returns = [
     item.response ?? "None",
     ...[...item.errors].map(([status, type]) =>
@@ -405,6 +540,15 @@ function handlerSignature(item: Rendered): string[] {
 /** Module-level adapters: what checks and writes each response. */
 function adapters(item: Rendered): string[] {
   const name = item.method.toUpperCase();
+  if (item.stream) {
+    return [
+      `_${name}_EVENTS: dict[str, TypeAdapter[Any]] = {${
+        [...item.stream.data].map(([event, type]) =>
+          `${JSON.stringify(event)}: TypeAdapter(${type})`
+        ).join(", ")
+      }}`,
+    ];
+  }
   return [
     ...(item.response
       ? [`_${name}_RESPONSE: TypeAdapter[Any] = TypeAdapter(${item.response})`]
@@ -462,6 +606,33 @@ function route(item: Rendered): string[] {
   const summary = operation.summary
     ? `, summary=${JSON.stringify(operation.summary)}`
     : "";
+
+  if (item.stream) {
+    const invalid = taken.length > 0
+      ? ', responses={400: {"model": InvalidRequest}}'
+      : "";
+    return [
+      `    @router.${decorator}(`,
+      `        ${JSON.stringify(fastApiPath(operation.path))},`,
+      `        operation_id=${
+        JSON.stringify(operation.operationId)
+      }, response_class=StreamingResponse${summary}${tags}${invalid},`,
+      "    )",
+      `    async def ${item.method}(${
+        ["request: Request", ...taken].join(", ")
+      }) -> Response:`,
+      ...before,
+      "        return _stream(",
+      `            ${JSON.stringify(`${operation.method} ${operation.path}`)},`,
+      `            handlers.${item.method}(${
+        [...passed, 'last_event_id=request.headers.get("Last-Event-ID")']
+          .join(", ")
+      }),`,
+      `            _${name}_EVENTS,`,
+      `            ${item.stream.keepAlive ?? "None"},`,
+      "        )",
+    ];
+  }
 
   return [
     `    @router.${decorator}(`,

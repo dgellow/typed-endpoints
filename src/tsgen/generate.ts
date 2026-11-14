@@ -143,6 +143,8 @@ export interface EndpointType {
   readonly summary?: string;
   readonly description?: string;
   readonly tags?: readonly string[];
+  /** For an event stream: milliseconds of silence before a keep-alive. */
+  readonly keepAlive?: number;
 }
 
 function describe(endpoint: EndpointType): string {
@@ -223,6 +225,7 @@ function buildEndpoints(extraction: Extraction): EndpointType[] {
         summary: def.summary,
         description: def.description,
         tags: def.tags,
+        keepAlive: def.keepAlive,
       });
     }
   }

@@ -59,6 +59,16 @@ export interface Api {
       response: { area: number; kind: "circle" | "rect"; from: string; meta: { "data-id": string; class?: string | undefined; }; unit: "mm" | "cm"; note: string | null; };
     };
   };
+  ticks: {
+    subscribe: {
+      path: "/api/ticks";
+      query: { count?: number | undefined; failAt?: number | undefined; badAt?: number | undefined; pause?: number | undefined; };
+      events: {
+        tick: { n: number; };
+        done: { total: number; };
+      };
+    };
+  };
   trees: {
     create: {
       path: "/api/trees";
@@ -77,5 +87,6 @@ export const routes = {
   "notes.update": { method: "PUT", path: "/api/notes/{id}" },
   "notes.delete": { method: "DELETE", path: "/api/notes/{id}", body: true, errors: [404] },
   "shapes.create": { method: "POST", path: "/api/shapes" },
+  "ticks.subscribe": { method: "GET", path: "/api/ticks" },
   "trees.create": { method: "POST", path: "/api/trees" },
 } as const;

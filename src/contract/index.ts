@@ -64,6 +64,12 @@ export interface ContractOperation {
   readonly errors?: Readonly<Record<string, JsonSchema>>;
   /** For a server-sent event stream: the schema of each event's data. */
   readonly events?: Readonly<Record<string, JsonSchema>>;
+  /**
+   * For an event stream: after this many milliseconds without an event,
+   * the server writes a comment so that intermediaries keep the
+   * connection open.
+   */
+  readonly keepAlive?: number;
   /** How the list this operation returns is paginated. */
   readonly pagination?: AnyPaginationMeta;
   /** One-line summary. */
@@ -133,6 +139,8 @@ export async function generateContract(
       ...(schemas.response && { response: schemas.response }),
       ...(schemas.errors && { errors: schemas.errors }),
       ...(schemas.events && { events: schemas.events }),
+      ...(endpoint.keepAlive !== undefined &&
+        { keepAlive: endpoint.keepAlive }),
       ...(endpoint.pagination && { pagination: endpoint.pagination }),
       ...(endpoint.summary && { summary: endpoint.summary }),
       ...(endpoint.description && { description: endpoint.description }),
