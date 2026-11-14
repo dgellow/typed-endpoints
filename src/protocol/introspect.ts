@@ -7,35 +7,7 @@
  * @module
  */
 
-type Def = Record<string, unknown>;
-
-function defOf(schema: unknown): Def {
-  const zod = (schema as { _zod?: { def?: Def } } | undefined)?._zod;
-  return zod?.def ?? {};
-}
-
-/** Wrapper schema types that carry the described type in `innerType`. */
-const WRAPPERS = new Set([
-  "optional",
-  "nullable",
-  "default",
-  "prefault",
-  "catch",
-  "readonly",
-  "nonoptional",
-]);
-
-/** Remove wrappers. `side` picks which end of a pipe describes the value. */
-function unwrap(schema: unknown, side: "input" | "output"): unknown {
-  let current = schema;
-  while (true) {
-    const def = defOf(current);
-    if (WRAPPERS.has(def.type as string)) current = def.innerType;
-    else if (def.type === "pipe") current = side === "input" ? def.in : def.out;
-    else if (def.type === "lazy") current = (def.getter as () => unknown)();
-    else return current;
-  }
-}
+import { unwrapSchema, zodDef, zodType } from "../core/zod_internals.ts";
 
 /**
  * - `"found"`: the schema describes a value at the path
@@ -62,10 +34,10 @@ export function lookupPath(
   path: readonly string[],
   side: "input" | "output",
 ): PathLookup {
-  const current = unwrap(schema, side);
+  const current = unwrapSchema(schema, side);
   if (path.length === 0) return "found";
 
-  const def = defOf(current);
+  const def = zodDef(current);
   const [head, ...rest] = path;
 
   switch (def.type) {
@@ -75,7 +47,7 @@ export function lookupPath(
         return lookupPath(shape[head], rest, side);
       }
       // Keys outside the shape are allowed when there is a catchall.
-      const catchall = def.catchall ? defOf(def.catchall).type : "never";
+      const catchall = def.catchall ? zodType(def.catchall) : "never";
       return catchall === "never" ? "missing" : "unknown";
     }
     case "union":
