@@ -39,7 +39,7 @@ import type {
 /** Handler object with __apiDef metadata (from createApiHandlers) */
 export interface HandlerWithApiDef {
   // deno-lint-ignore no-explicit-any
-  __apiDef: Record<string, any>;
+  readonly __apiDef: Record<string, any>;
 }
 
 // =============================================================================
@@ -98,11 +98,11 @@ export type EndpointResponseSchema<D> = [SchemaAt<D, "response">] extends
 /** Options for fromEndpoint */
 export interface FromEndpointOptions<TName extends string = string> {
   /** Step name */
-  name: TName;
+  readonly name: TName;
   /** Override operationId (defaults to endpoint's operationId or name) */
-  operationId?: string;
+  readonly operationId?: string;
   /** Step description */
-  description?: string;
+  readonly description?: string;
 }
 
 /** Options for fromEndpointDependent */
@@ -114,15 +114,15 @@ export interface FromEndpointDependentOptions<
   TRequest extends z.ZodType = z.ZodType,
 > {
   /** Step name */
-  name: TName;
+  readonly name: TName;
   /** Override operationId (defaults to endpoint's operationId or name) */
-  operationId?: string;
+  readonly operationId?: string;
   /** Step description */
-  description?: string;
+  readonly description?: string;
   /** Name of the step this depends on */
-  dependsOn: TDependsOn;
+  readonly dependsOn: TDependsOn;
   /** Request schema derived from previous step's response */
-  request: (prev: TPrevResponse) => TRequest;
+  readonly request: (prev: TPrevResponse) => TRequest;
 }
 
 /** Options for fromEndpointMapped */
@@ -132,15 +132,15 @@ export interface FromEndpointMappedOptions<
   TMapping extends Record<string, FieldMapping> = Record<string, FieldMapping>,
 > {
   /** Step name */
-  name: TName;
+  readonly name: TName;
   /** Override operationId (defaults to endpoint's operationId or name) */
-  operationId?: string;
+  readonly operationId?: string;
   /** Step description */
-  description?: string;
+  readonly description?: string;
   /** Name of the step this depends on */
-  dependsOn: TDependsOn;
+  readonly dependsOn: TDependsOn;
   /** Declarative field-to-step mappings */
-  requestMapping: TMapping;
+  readonly requestMapping: TMapping;
 }
 
 // =============================================================================
@@ -149,12 +149,12 @@ export interface FromEndpointMappedOptions<
 
 /** Generic method definition shape */
 interface MethodDefLike {
-  body?: z.ZodType;
-  query?: z.ZodType;
-  params?: z.ZodType;
-  response?: z.ZodType;
-  operationId?: string;
-  description?: string;
+  readonly body?: z.ZodType;
+  readonly query?: z.ZodType;
+  readonly params?: z.ZodType;
+  readonly response?: z.ZodType;
+  readonly operationId?: string;
+  readonly description?: string;
 }
 
 /** The endpoint schemas that make up a step request, with where each goes. */

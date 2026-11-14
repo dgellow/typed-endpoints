@@ -23,15 +23,15 @@ export interface HttpExecutorConfig<
   TRoutes extends Record<string, RouteConfig>,
 > {
   /** Base URL for all API requests */
-  baseUrl: string;
+  readonly baseUrl: string;
   /** Generated route metadata mapping operationId -> route info */
-  routes: TRoutes;
+  readonly routes: TRoutes;
   /** Default headers to include with every request */
-  headers?: Record<string, string>;
+  readonly headers?: Record<string, string>;
   /** Custom fetch implementation (defaults to global fetch) */
-  fetch?: typeof fetch;
+  readonly fetch?: typeof fetch;
   /** Auth token propagation from previous step responses */
-  auth?: {
+  readonly auth?: {
     /** Step name to extract token from */
     fromStep: string;
     /** Path to token in response (e.g., "accessToken" or "data.token") */

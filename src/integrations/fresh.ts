@@ -39,7 +39,7 @@ export interface FreshApiMethodDef<
   TResponseSchema extends z.ZodType | undefined = z.ZodType | undefined,
 > extends
   ApiMethodDef<TBodySchema, TQuerySchema, TParamsSchema, TResponseSchema> {
-  handler: (
+  readonly handler: (
     ctx: Context<TState>,
     validated: ValidatedRequest<
       TBodySchema extends z.ZodType ? z.infer<TBodySchema> : unknown,
@@ -94,7 +94,7 @@ export interface FreshSseMethodDef<
   TParamsSchema extends z.ZodType | undefined = undefined,
   TEvents extends SseEventDef = SseEventDef,
 > extends SseMethodDef<TQuerySchema, TParamsSchema, TEvents> {
-  handler: (
+  readonly handler: (
     ctx: Context<TState>,
     validated: {
       query: TQuerySchema extends z.ZodType ? z.infer<TQuerySchema> : unknown;

@@ -79,46 +79,46 @@ export type PaginationStyle =
 
 /** Base pagination metadata attached to endpoints */
 export interface PaginationMeta {
-  style: PaginationStyle;
-  items: string;
-  limitParam?: string;
+  readonly style: PaginationStyle;
+  readonly items: string;
+  readonly limitParam?: string;
 }
 
 /** Cursor-based pagination metadata */
 export interface CursorPaginationMeta extends PaginationMeta {
-  style: "cursor";
-  cursor: string;
-  cursorParam: string;
+  readonly style: "cursor";
+  readonly cursor: string;
+  readonly cursorParam: string;
 }
 
 /** Cursor ID pagination (last item ID becomes cursor) */
 export interface CursorIdPaginationMeta extends PaginationMeta {
-  style: "cursorId";
-  cursorIdParam: string;
-  idField: string;
+  readonly style: "cursorId";
+  readonly cursorIdParam: string;
+  readonly idField: string;
 }
 
 /** Offset-based pagination metadata */
 export interface OffsetPaginationMeta extends PaginationMeta {
-  style: "offset";
-  total: string;
-  offsetParam: string;
+  readonly style: "offset";
+  readonly total: string;
+  readonly offsetParam: string;
 }
 
 /** Page number pagination metadata */
 export interface PagePaginationMeta extends PaginationMeta {
-  style: "page";
-  total?: string;
-  totalPages?: string;
-  pageParam: string;
-  perPageParam?: string;
+  readonly style: "page";
+  readonly total?: string;
+  readonly totalPages?: string;
+  readonly pageParam: string;
+  readonly perPageParam?: string;
 }
 
 /** URL-based pagination (like GitHub API) */
 export interface UrlPaginationMeta extends PaginationMeta {
-  style: "url";
-  nextUrl: string;
-  prevUrl?: string;
+  readonly style: "url";
+  readonly nextUrl: string;
+  readonly prevUrl?: string;
 }
 
 /** Union of all pagination metadata types */
@@ -132,61 +132,61 @@ export type AnyPaginationMeta =
 /** Field names for cursor pagination */
 export interface CursorPaginationNames {
   /** Response field containing items array (default: "items") */
-  items?: string;
+  readonly items?: string;
   /** Response field containing next cursor (default: "cursor") */
-  cursor?: string;
+  readonly cursor?: string;
   /** Query param for cursor (default: "cursor") */
-  cursorParam?: string;
+  readonly cursorParam?: string;
   /** Query param for limit (default: "limit") */
-  limitParam?: string;
+  readonly limitParam?: string;
 }
 
 /** Field names for cursor ID pagination */
 export interface CursorIdPaginationNames {
   /** Response field containing items array (default: "items") */
-  items?: string;
+  readonly items?: string;
   /** Query param for cursor ID (default: "after") */
-  cursorIdParam?: string;
+  readonly cursorIdParam?: string;
   /** Field on item used as cursor ID (default: "id") */
-  idField?: string;
+  readonly idField?: string;
   /** Query param for limit (default: "limit") */
-  limitParam?: string;
+  readonly limitParam?: string;
 }
 
 /** Field names for offset pagination */
 export interface OffsetPaginationNames {
   /** Response field containing items array (default: "items") */
-  items?: string;
+  readonly items?: string;
   /** Response field containing total count (default: "total") */
-  total?: string;
+  readonly total?: string;
   /** Query param for offset (default: "offset") */
-  offsetParam?: string;
+  readonly offsetParam?: string;
   /** Query param for limit (default: "limit") */
-  limitParam?: string;
+  readonly limitParam?: string;
 }
 
 /** Field names for page pagination */
 export interface PagePaginationNames {
   /** Response field containing items array (default: "items") */
-  items?: string;
+  readonly items?: string;
   /** Response field containing total count */
-  total?: string;
+  readonly total?: string;
   /** Response field containing total pages */
-  totalPages?: string;
+  readonly totalPages?: string;
   /** Query param for page number (default: "page") */
-  pageParam?: string;
+  readonly pageParam?: string;
   /** Query param for per page (default: "perPage") */
-  perPageParam?: string;
+  readonly perPageParam?: string;
 }
 
 /** Field names for URL pagination */
 export interface UrlPaginationNames {
   /** Response field containing items array (default: "items") */
-  items?: string;
+  readonly items?: string;
   /** Response field containing next URL (default: "next") */
-  nextUrl?: string;
+  readonly nextUrl?: string;
   /** Response field containing previous URL (default: "prev") */
-  prevUrl?: string;
+  readonly prevUrl?: string;
 }
 
 /** Configuration for cursor pagination */
@@ -196,17 +196,17 @@ export interface CursorPaginationConfig<
   TExtraResponse extends MutableZodShape | undefined = undefined,
 > {
   /** Schema for each item in the paginated list */
-  item: TItem;
+  readonly item: TItem;
   /** Custom field names (all have sensible defaults) */
-  names?: CursorPaginationNames;
+  readonly names?: CursorPaginationNames;
   /** Additional query parameters */
-  extraQuery?: TExtraQuery;
+  readonly extraQuery?: TExtraQuery;
   /** Additional response fields */
-  extraResponse?: TExtraResponse;
+  readonly extraResponse?: TExtraResponse;
   /** Default limit value (default: 20) */
-  defaultLimit?: number;
+  readonly defaultLimit?: number;
   /** Maximum limit value (default: 100) */
-  maxLimit?: number;
+  readonly maxLimit?: number;
 }
 
 /** Configuration for cursor ID pagination */
@@ -216,17 +216,17 @@ export interface CursorIdPaginationConfig<
   TExtraResponse extends MutableZodShape | undefined = undefined,
 > {
   /** Schema for each item in the paginated list */
-  item: TItem;
+  readonly item: TItem;
   /** Custom field names (all have sensible defaults) */
-  names?: CursorIdPaginationNames;
+  readonly names?: CursorIdPaginationNames;
   /** Additional query parameters */
-  extraQuery?: TExtraQuery;
+  readonly extraQuery?: TExtraQuery;
   /** Additional response fields */
-  extraResponse?: TExtraResponse;
+  readonly extraResponse?: TExtraResponse;
   /** Default limit value (default: 20) */
-  defaultLimit?: number;
+  readonly defaultLimit?: number;
   /** Maximum limit value (default: 100) */
-  maxLimit?: number;
+  readonly maxLimit?: number;
 }
 
 /** Configuration for offset pagination */
@@ -236,17 +236,17 @@ export interface OffsetPaginationConfig<
   TExtraResponse extends MutableZodShape | undefined = undefined,
 > {
   /** Schema for each item in the paginated list */
-  item: TItem;
+  readonly item: TItem;
   /** Custom field names (all have sensible defaults) */
-  names?: OffsetPaginationNames;
+  readonly names?: OffsetPaginationNames;
   /** Additional query parameters */
-  extraQuery?: TExtraQuery;
+  readonly extraQuery?: TExtraQuery;
   /** Additional response fields */
-  extraResponse?: TExtraResponse;
+  readonly extraResponse?: TExtraResponse;
   /** Default limit value (default: 20) */
-  defaultLimit?: number;
+  readonly defaultLimit?: number;
   /** Maximum limit value (default: 100) */
-  maxLimit?: number;
+  readonly maxLimit?: number;
 }
 
 /** Configuration for page pagination */
@@ -256,17 +256,17 @@ export interface PagePaginationConfig<
   TExtraResponse extends MutableZodShape | undefined = undefined,
 > {
   /** Schema for each item in the paginated list */
-  item: TItem;
+  readonly item: TItem;
   /** Custom field names (all have sensible defaults) */
-  names?: PagePaginationNames;
+  readonly names?: PagePaginationNames;
   /** Additional query parameters */
-  extraQuery?: TExtraQuery;
+  readonly extraQuery?: TExtraQuery;
   /** Additional response fields */
-  extraResponse?: TExtraResponse;
+  readonly extraResponse?: TExtraResponse;
   /** Default per page value (default: 20) */
-  defaultPerPage?: number;
+  readonly defaultPerPage?: number;
   /** Maximum per page value (default: 100) */
-  maxPerPage?: number;
+  readonly maxPerPage?: number;
 }
 
 /** Configuration for URL pagination */
@@ -275,11 +275,11 @@ export interface UrlPaginationConfig<
   TExtraResponse extends MutableZodShape | undefined = undefined,
 > {
   /** Schema for each item in the paginated list */
-  item: TItem;
+  readonly item: TItem;
   /** Custom field names (all have sensible defaults) */
-  names?: UrlPaginationNames;
+  readonly names?: UrlPaginationNames;
   /** Additional response fields */
-  extraResponse?: TExtraResponse;
+  readonly extraResponse?: TExtraResponse;
 }
 
 /** Result of a pagination helper - spread into endpoint() */
@@ -288,7 +288,7 @@ export interface PaginatedEndpointDef<
   TResponse extends z.ZodType,
   TMeta extends AnyPaginationMeta,
 > {
-  query: TQuery;
-  response: TResponse;
-  __pagination: TMeta;
+  readonly query: TQuery;
+  readonly response: TResponse;
+  readonly __pagination: TMeta;
 }

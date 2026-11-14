@@ -30,10 +30,10 @@ export type ResourceMethod =
 
 /** Definition for a single method */
 export interface MethodDef {
-  params?: Record<string, string>;
-  query?: Record<string, unknown>;
-  body?: unknown;
-  response?: unknown;
+  readonly params?: Record<string, string>;
+  readonly query?: Record<string, unknown>;
+  readonly body?: unknown;
+  readonly response?: unknown;
 }
 
 /** A resource can have methods and/or nested resources */
@@ -50,8 +50,8 @@ export type ApiSchema = Record<string, any>;
 
 /** Options that can be passed to any method */
 export interface RequestOptions {
-  query?: Record<string, unknown>;
-  signal?: AbortSignal;
+  readonly query?: Record<string, unknown>;
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -106,34 +106,34 @@ export type DeleteMethod<M extends MethodDef> = (
 
 /** SSE events definition for generated types */
 export interface SseEventsDef {
-  [eventName: string]: unknown;
+  readonly [eventName: string]: unknown;
 }
 
 /** SSE method definition in generated Api interface */
 export interface SseMethodDef {
-  params?: Record<string, string>;
-  query?: Record<string, unknown>;
-  events: SseEventsDef;
+  readonly params?: Record<string, string>;
+  readonly query?: Record<string, unknown>;
+  readonly events: SseEventsDef;
 }
 
 /** Options for SSE subscription */
 export interface SubscribeOptions {
-  query?: Record<string, unknown>;
-  signal?: AbortSignal;
+  readonly query?: Record<string, unknown>;
+  readonly signal?: AbortSignal;
   /**
    * Reconnect after a network failure or a 5xx response. Default: true.
    *
    * Not retried: 4xx responses and events whose data is not valid JSON.
    * A stream that the server closes normally ends the iteration.
    */
-  reconnect?: boolean;
+  readonly reconnect?: boolean;
   /**
    * Reconnect delay in ms, multiplied by the attempt number. Default: 1000.
    * A `retry` field sent by the server replaces it.
    */
-  reconnectDelay?: number;
+  readonly reconnectDelay?: number;
   /** Max reconnect attempts. Default: 5 */
-  maxReconnectAttempts?: number;
+  readonly maxReconnectAttempts?: number;
 }
 
 /** Typed SSE event from subscription */
