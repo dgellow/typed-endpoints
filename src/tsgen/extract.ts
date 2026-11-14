@@ -31,6 +31,11 @@ export interface ExtractedMethod {
   readonly params?: string;
   /** Response body, output side, as JSON carries it. */
   readonly response?: string;
+  /**
+   * The response body with its request-dependent places written as
+   * `Dependent<...>`. Present only when the response has such places.
+   */
+  readonly dependentResponse?: string;
   /** SSE events by name, output side, as JSON carries them. */
   readonly events?: Readonly<Record<string, string>>;
   /** Pagination metadata set by the pagination helpers. */
@@ -48,6 +53,13 @@ export interface Extraction {
   readonly routes: readonly ExtractedRoute[];
   /** Named types referenced by the type texts: `[name, type text]`. */
   readonly declarations: readonly (readonly [string, string])[];
+  /** Helper types the `dependentResponse` texts refer to. */
+  readonly helpers: readonly string[];
+  /**
+   * Names in `declarations` that only `dependentResponse` texts refer to.
+   * Output that does not use those texts leaves them out.
+   */
+  readonly dependentOnly: readonly string[];
 }
 
 interface MethodDefLike {
@@ -74,6 +86,7 @@ export async function extractRoutes(
   sources: readonly RouteSource[],
 ): Promise<Extraction> {
   const declarations = new TypeDeclarations();
+  const dependentOnly: string[] = [];
   const routes: ExtractedRoute[] = [];
 
   for (const source of sources) {
@@ -110,6 +123,43 @@ export async function extractRoutes(
         }
       };
 
+      // A second rendering of the response that keeps the dependency on
+      // the request. It differs from the first only when the response has
+      // dependent places, which is when it names a helper type.
+      let dependentResponse: string | undefined;
+      if (def.response) {
+        const scratch = new TypeDeclarations();
+        try {
+          zodToTypeString(def.response, {
+            io: "output",
+            wire: "json",
+            declarations: scratch,
+            dependent: "families",
+          });
+        } catch {
+          // Reported by the plain rendering below.
+        }
+        if (scratch.helpers.size > 0) {
+          const known = new Set(declarations.entries().map(([name]) => name));
+          try {
+            dependentResponse = zodToTypeString(def.response, {
+              io: "output",
+              wire: "json",
+              declarations,
+              dependent: "families",
+            });
+            for (const [name] of declarations.entries()) {
+              if (!known.has(name)) dependentOnly.push(name);
+            }
+          } catch (cause) {
+            throw new Error(
+              `${method} ${source.filePath}, response: ${message(cause)}`,
+              { cause },
+            );
+          }
+        }
+      }
+
       methods[method] = {
         ...(def.body && { body: render("body", def.body, "input", "json") }),
         ...(def.query && { query: render("query", def.query, "input") }),
@@ -117,6 +167,7 @@ export async function extractRoutes(
         ...(def.response && {
           response: render("response", def.response, "output", "json"),
         }),
+        ...(dependentResponse !== undefined && { dependentResponse }),
         ...(def.events && {
           events: Object.fromEntries(
             Object.entries(def.events).map(([name, schema]) => [
@@ -135,5 +186,10 @@ export async function extractRoutes(
     routes.push({ filePath: source.filePath, methods });
   }
 
-  return { routes, declarations: declarations.entries() };
+  return {
+    routes,
+    declarations: declarations.entries(),
+    helpers: [...declarations.helpers].sort(),
+    dependentOnly,
+  };
 }

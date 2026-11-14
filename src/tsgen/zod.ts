@@ -16,6 +16,10 @@ import {
   zodInternals,
   zodType,
 } from "../core/zod_internals.ts";
+import {
+  type DependentDescriptor,
+  dependentDescriptor,
+} from "../core/dependent_types.ts";
 
 // =============================================================================
 // Options
@@ -46,6 +50,16 @@ export interface TypeStringOptions {
    * cannot be written as one inline type.
    */
   readonly declarations?: TypeDeclarations;
+  /**
+   * How to describe a schema whose type depends on the request
+   * (`projection()`, `expansion()`). Default: `"fallback"`.
+   *
+   * - `"fallback"`: the type that holds for every request.
+   * - `"families"`: `Dependent<Family, Fallback>`, to be applied to the
+   *   request with `Resolve`. The helper types used are recorded in
+   *   `declarations.helpers`; the output has to import them.
+   */
+  readonly dependent?: "fallback" | "families";
 }
 
 /**
@@ -57,6 +71,12 @@ export class TypeDeclarations {
   readonly #names = new Map<unknown, Map<string, string>>();
   readonly #texts = new Map<string, string>();
   readonly #used = new Set<string>();
+  /**
+   * Helper types the converted text refers to (`Dependent`, `Projection`,
+   * ...). A file that contains the text imports them from the client entry
+   * point of this package.
+   */
+  readonly helpers: Set<string> = new Set<string>();
 
   /** Name already given to this schema in this mode, if any. */
   nameOf(schema: unknown, mode: string): string | undefined {
@@ -101,12 +121,16 @@ type Prec = (typeof Prec)[keyof typeof Prec];
 interface Node {
   readonly text: string;
   readonly prec: Prec;
+  /** The members of a union node, each already parenthesised as needed. */
+  readonly members?: readonly string[];
 }
 
 interface State {
   readonly io: "input" | "output";
   readonly wire: "json" | undefined;
   readonly mode: string;
+  /** Describe dependent places as families, not by their fallback. */
+  readonly families: boolean;
   readonly declarations: TypeDeclarations;
   /** Object and lazy schemas currently being converted (cycle detection). */
   readonly active: Set<unknown>;
@@ -145,11 +169,20 @@ function templateText(text: string): string {
 }
 
 function unionOf(nodes: Node[]): Node {
-  if (nodes.length === 1) return nodes[0];
-  return {
-    text: nodes.map((n) => wrap(n, Prec.Union)).join(" | "),
-    prec: Prec.Union,
-  };
+  // Flattened and without repeats: `.optional()` on an optional schema
+  // would otherwise read `T | undefined | undefined`.
+  const members = [
+    ...new Set(
+      nodes.flatMap((n) => n.members ?? [wrap(n, Prec.Union)]),
+    ),
+  ];
+  if (members.length === 1) {
+    return nodes.find((n) =>
+      !n.members && wrap(n, Prec.Union) === members[0]
+    ) ??
+      atom(members[0]);
+  }
+  return { text: members.join(" | "), prec: Prec.Union, members };
 }
 
 function description(schema: unknown): string | undefined {
@@ -180,6 +213,45 @@ function notJson(what: string, state: State): never {
 // =============================================================================
 
 function convert(schema: unknown, state: State): Node {
+  if (state.families) {
+    const dependent = dependentDescriptor(schema);
+    if (dependent) return convertDependent(schema, dependent, state);
+  }
+  return convertPlain(schema, state);
+}
+
+/** `Dependent<Family<Base, "param", ...>, Fallback>` for a dependent place. */
+function convertDependent(
+  schema: unknown,
+  dependent: DependentDescriptor,
+  state: State,
+): Node {
+  const base = convert(dependent.base, state).text;
+  const param = JSON.stringify(dependent.param);
+  const fallback = convertPlain(schema, state).text;
+
+  let family: string;
+  if (dependent.kind === "projection") {
+    state.declarations.helpers.add("Projection");
+    family = `Projection<${base}, ${param}>`;
+  } else {
+    state.declarations.helpers.add("Expansion");
+    const relations = Object.entries(dependent.relations ?? {}).map(
+      ([name, relation]) => {
+        state.path.push(name);
+        const text = convert(relation, state).text;
+        state.path.pop();
+        return `${propertyKey(name)}: ${text};`;
+      },
+    );
+    family = `Expansion<${base}, ${param}, { ${relations.join(" ")} }>`;
+  }
+
+  state.declarations.helpers.add("Dependent");
+  return atom(`Dependent<${family}, ${fallback}>`);
+}
+
+function convertPlain(schema: unknown, state: State): Node {
   const type = getType(schema);
   // Objects (getter recursion) and lazy schemas are where a cycle closes.
   if (type !== "object" && type !== "lazy") return convertInner(schema, state);
@@ -458,10 +530,12 @@ export function zodToTypeString(
 ): string {
   const io = options.io ?? "output";
   const declarations = options.declarations ?? new TypeDeclarations();
+  const families = options.dependent === "families";
   const state: State = {
     io,
     wire: options.wire,
-    mode: `${io}:${options.wire ?? ""}`,
+    mode: `${io}:${options.wire ?? ""}${families ? ":families" : ""}`,
+    families,
     declarations,
     active: new Set(),
     path: [],

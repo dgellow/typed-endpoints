@@ -38,6 +38,11 @@ export interface MethodDef {
   readonly body?: unknown;
   /** Response body type. */
   readonly response?: unknown;
+  /**
+   * Set by the type generator when `response` contains `Dependent` places:
+   * the response type of a call is computed from its options.
+   */
+  readonly dependent?: true;
 }
 
 /** A resource can have methods and/or nested resources */
@@ -47,6 +52,8 @@ export type ResourceDef = Record<string, any>;
 /** The full API schema - any object mapping resource names to definitions */
 // deno-lint-ignore no-explicit-any
 export type ApiSchema = Record<string, any>;
+
+import type { ReadonlyDeep, Resolve } from "../core/dependent_types.ts";
 
 // =============================================================================
 // Client method signatures
@@ -75,36 +82,50 @@ export type OptionsArg<M> = M extends { query: infer Q }
   : [options: MethodOptions<M>]
   : [options?: RequestOptions];
 
+/**
+ * The trailing options argument of a method whose response type depends
+ * on it: the options are captured as the type `O`.
+ */
+export type CapturedOptionsArg<M, O> = M extends { query: infer Q }
+  ? Record<never, never> extends Q ? [options?: O]
+  : [options: O]
+  : [options?: O];
+
+/**
+ * A client method with leading arguments `TLead`.
+ *
+ * For an endpoint marked `dependent`, the method is generic in its options
+ * and the response type is computed from them: `Resolve` applies the
+ * families in the response type to the type of the options the call
+ * passes. The options are captured with `const`, so a list written in the
+ * call is a tuple whose members are known, and a list computed elsewhere
+ * is an array whose members are not. Any other endpoint has the fixed
+ * response type.
+ */
+export type Method<M extends MethodDef, TLead extends unknown[]> = M extends
+  { dependent: true } ? <const O extends ReadonlyDeep<MethodOptions<M>>>(
+    ...args: [...TLead, ...CapturedOptionsArg<M, O>]
+  ) => Promise<Resolve<M["response"], O>>
+  : (...args: [...TLead, ...OptionsArg<M>]) => Promise<M["response"]>;
+
 /** List method - no required params, returns array */
-export type ListMethod<M extends MethodDef> = (
-  ...args: OptionsArg<M>
-) => Promise<M["response"]>;
+export type ListMethod<M extends MethodDef> = Method<M, []>;
 
 /** Retrieve method - requires id param */
-export type RetrieveMethod<M extends MethodDef> = (
-  id: string,
-  ...args: OptionsArg<M>
-) => Promise<M["response"]>;
+export type RetrieveMethod<M extends MethodDef> = Method<M, [id: string]>;
 
 /** Create method - requires body */
 export type CreateMethod<M extends MethodDef> = M["body"] extends undefined
-  ? (...args: OptionsArg<M>) => Promise<M["response"]>
-  : (body: M["body"], ...args: OptionsArg<M>) => Promise<M["response"]>;
+  ? Method<M, []>
+  : Method<M, [body: M["body"]]>;
 
 /** Update method - requires id and body */
 export type UpdateMethod<M extends MethodDef> = M["body"] extends undefined
-  ? (id: string, ...args: OptionsArg<M>) => Promise<M["response"]>
-  : (
-    id: string,
-    body: M["body"],
-    ...args: OptionsArg<M>
-  ) => Promise<M["response"]>;
+  ? Method<M, [id: string]>
+  : Method<M, [id: string, body: M["body"]]>;
 
 /** Delete method - requires id */
-export type DeleteMethod<M extends MethodDef> = (
-  id: string,
-  ...args: OptionsArg<M>
-) => Promise<M["response"]>;
+export type DeleteMethod<M extends MethodDef> = Method<M, [id: string]>;
 
 // =============================================================================
 // SSE Types

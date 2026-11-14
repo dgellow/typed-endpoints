@@ -36,11 +36,29 @@ import type {
 import { createSseParser } from "./sse.ts";
 
 export type {
+  Apply,
+  CertainNames,
+  Dependent,
+  Expansion,
+  Flatten,
+  IsUnion,
+  PossibleNames,
+  Projection,
+  QueryList,
+  ReadonlyDeep,
+  Resolve,
+  ResolveIn,
+  ResponseFamily,
+} from "../core/dependent_types.ts";
+
+export type {
   ApiSchema,
+  CapturedOptionsArg,
   CreateMethod,
   DeleteMethod,
   Empty,
   ListMethod,
+  Method,
   MethodDef,
   MethodOptions,
   OptionsArg,

@@ -39,6 +39,13 @@ export interface TypeGenOptions {
    * - "routes": Runtime route metadata for use with createHttpExecutor()
    */
   readonly format?: "types" | "client" | "routes";
+  /**
+   * Module the generated client types import their helper types from.
+   * Only used by the "client" format, and only when an endpoint's response
+   * type depends on the request (`projection()`, `expansion()`).
+   * Defaults to "@dgellow/typed-endpoints/client".
+   */
+  readonly clientImport?: string;
 }
 
 // =============================================================================
@@ -104,6 +111,8 @@ interface EndpointType {
   readonly query?: string;
   readonly params?: string;
   readonly response?: string;
+  /** The response with request-dependent places as `Dependent<...>`. */
+  readonly dependentResponse?: string;
   readonly events?: Readonly<Record<string, string>>;
   readonly pagination?: AnyPaginationMeta;
   readonly operationId?: string;
@@ -167,6 +176,7 @@ function buildEndpoints(extraction: Extraction): EndpointType[] {
         query: def.query,
         params: def.params,
         response: def.response,
+        dependentResponse: def.dependentResponse,
         events: def.events,
         pagination: def.pagination as AnyPaginationMeta | undefined,
         operationId: def.operationId,
@@ -210,17 +220,29 @@ export async function generateTypes(
 
   const endpoints = buildEndpoints(extraction);
 
+  // Named types that only the request-dependent response texts use
+  // belong to the client format alone.
+  const dependentOnly = new Set(extraction.dependentOnly);
+  const plainDeclarations = extraction.declarations.filter(([name]) =>
+    !dependentOnly.has(name)
+  );
+
   const format = options.format ?? "types";
   let content: string;
   switch (format) {
     case "client":
-      content = generateClientFormat(endpoints, extraction.declarations);
+      content = generateClientFormat(
+        endpoints,
+        extraction.declarations,
+        extraction.helpers,
+        options.clientImport ?? "@dgellow/typed-endpoints/client",
+      );
       break;
     case "routes":
       content = generateRoutesFormat(endpoints);
       break;
     default:
-      content = generateTypesFormat(endpoints, extraction.declarations);
+      content = generateTypesFormat(endpoints, plainDeclarations);
   }
 
   if (output) {
@@ -411,6 +433,8 @@ function renderPagination(meta: AnyPaginationMeta, indent: string): string[] {
 function generateClientFormat(
   endpoints: EndpointType[],
   declarations: Extraction["declarations"],
+  helpers: readonly string[],
+  clientImport: string,
 ): string {
   // Each endpoint becomes `<segments>.<method>` in the interface.
   const placed = endpoints.map((endpoint) => {
@@ -461,6 +485,15 @@ function generateClientFormat(
     "// Auto-generated API types for use with createClient()",
     "// Do not edit manually",
     "",
+    // Types that compute a response type from the arguments of a call.
+    ...(helpers.length > 0
+      ? [
+        `import type { ${helpers.join(", ")} } from ${
+          JSON.stringify(clientImport)
+        };`,
+        "",
+      ]
+      : []),
     ...renderDeclarations(declarations),
     "export interface Api {",
   ];
@@ -479,7 +512,11 @@ function generateClientFormat(
       if (endpoint.request) {
         lines.push(`${indent}  body: ${endpoint.request};`);
       }
-      if (endpoint.response) {
+      if (endpoint.dependentResponse) {
+        // The client applies the families in this type to each call.
+        lines.push(`${indent}  response: ${endpoint.dependentResponse};`);
+        lines.push(`${indent}  dependent: true;`);
+      } else if (endpoint.response) {
         lines.push(`${indent}  response: ${endpoint.response};`);
       }
       if (endpoint.events) {

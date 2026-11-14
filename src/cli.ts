@@ -16,6 +16,8 @@ Options:
   -c, --config <file>   Path to deno.json (auto-detected if not provided)
   -f, --format <fmt>    Output format: types, client, routes, or protocol (default: types)
   -p, --protocol <file> Protocol module path (required when --format protocol)
+  --client-import <mod> Module the client format imports its helper types from
+                        (default: @dgellow/typed-endpoints/client)
   -h, --help            Show this help message
 
 Formats:
@@ -48,7 +50,7 @@ async function findDenoConfig(): Promise<string | undefined> {
 
 async function main() {
   const args = parseArgs(Deno.args, {
-    string: ["output", "config", "format", "protocol"],
+    string: ["output", "config", "format", "protocol", "client-import"],
     boolean: ["help"],
     collect: ["routes"],
     alias: {
@@ -132,6 +134,7 @@ async function main() {
       output: args.output,
       config,
       format,
+      clientImport: args["client-import"],
     });
     console.log(`Generated ${format ?? "types"} written to ${args.output}`);
   } catch (error) {
