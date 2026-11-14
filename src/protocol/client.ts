@@ -21,6 +21,7 @@ import type {
   Protocol,
   StepResponse,
 } from "./types.ts";
+import { validateProtocol } from "./dsl.ts";
 import {
   deriveSchemaWithLiterals,
   getNestedValue,
@@ -192,7 +193,7 @@ export class ProtocolSession<
     } else if (step.__kind === "mapped_step") {
       // Mapped step - derive schema with literal replacements
       const mappedStep = step as MappedStep;
-      // Build literal overrides from mappings, validating sources exist
+      // Collect the values the mapped fields must carry.
       const overrides: Record<string, unknown> = {};
       for (
         const [field, mapping] of Object.entries(mappedStep.requestMapping)
@@ -206,11 +207,18 @@ export class ProtocolSession<
             `Cannot execute "${stepName}": mapping source "${mapping.step}" for field "${field}" not satisfied`,
           );
         }
-        overrides[field] = getNestedValue(sourceResponse, mapping.path);
+        const value = getNestedValue(sourceResponse, mapping.path);
+        if (value === undefined) {
+          // Without this check the field would be required to be undefined,
+          // and a request that leaves it out would pass.
+          throw new Error(
+            `Cannot execute "${stepName}": field "${field}" is mapped from "${mapping.step}.${mapping.path}", which the response of "${mapping.step}" does not contain`,
+          );
+        }
+        overrides[field] = value;
       }
       requestSchema = deriveSchemaWithLiterals(
-        // deno-lint-ignore no-explicit-any
-        mappedStep.requestSchema as z.ZodObject<any>,
+        mappedStep.requestSchema,
         overrides,
       );
     } else {
@@ -323,6 +331,19 @@ export function createSession<TSteps extends Record<string, AnyStep>>(
   protocol: Protocol<string, TSteps>,
   executor: StepExecutor,
 ): ProtocolSession<TSteps, never> {
+  // A malformed protocol would otherwise fail at some later step, or not
+  // enforce what its definition says.
+  const validation = validateProtocol(
+    protocol as unknown as Parameters<typeof validateProtocol>[0],
+  );
+  if (!validation.valid) {
+    throw new Error(
+      `Invalid protocol "${protocol.name}":\n${
+        validation.errors.map((e) => `  ${e}`).join("\n")
+      }`,
+    );
+  }
+
   return new ProtocolSession<TSteps, never>(
     protocol as {
       readonly __kind: "protocol";

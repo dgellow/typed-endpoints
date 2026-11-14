@@ -27,6 +27,7 @@ import type {
 } from "./types.ts";
 import type { FieldMapping } from "./mapping.ts";
 import { isFieldMapping } from "./mapping.ts";
+import { lookupPath } from "./introspect.ts";
 
 // =============================================================================
 // Step Builders
@@ -142,6 +143,24 @@ export function dependentStep<
   };
 }
 
+/** Keys of every member of a union. */
+type KeysOfUnion<T> = T extends unknown ? keyof T : never;
+
+/**
+ * A mapping whose keys are all fields of the request schema.
+ *
+ * A key that is not a field maps to `never`, which makes the entry a compile
+ * error. When the request type is not known statically the mapping is
+ * accepted as written; `validateProtocol` still checks it.
+ */
+type MappingForRequest<TMapping, TRequest extends z.ZodType> = unknown extends
+  z.input<TRequest> ? TMapping
+  : {
+    readonly [K in keyof TMapping]: K extends KeysOfUnion<z.input<TRequest>>
+      ? TMapping[K]
+      : never;
+  };
+
 /**
  * Configuration for a mapped step.
  */
@@ -195,7 +214,11 @@ export function mappedStep<
   TDependsOn extends string,
   const TMapping extends Record<string, FieldMapping>,
 >(
-  config: MappedStepConfig<TName, TRequest, TResponse, TDependsOn, TMapping>,
+  config:
+    & MappedStepConfig<TName, TRequest, TResponse, TDependsOn, TMapping>
+    & {
+      readonly requestMapping: NoInfer<MappingForRequest<TMapping, TRequest>>;
+    },
 ): MappedStep<TName, TRequest, TResponse, TDependsOn, TMapping> {
   return {
     __kind: "mapped_step",
@@ -342,6 +365,22 @@ export function parallel<TSteps extends readonly AnyStep[]>(
 // =============================================================================
 
 /**
+ * Steps whose `name` equals the key they are registered under.
+ *
+ * The session, the executor and the generators identify a step by its key;
+ * a different `name` would silently be ignored. A literal name that differs
+ * from the key is a compile error. Names typed as plain `string` and
+ * composition nodes (which have no name) are accepted.
+ */
+type NamedByKey<TSteps> = {
+  readonly [K in keyof TSteps]: TSteps[K] extends { readonly name: infer N }
+    ? string extends N ? TSteps[K]
+    : K extends N ? TSteps[K]
+    : TSteps[K] & { readonly name: K }
+    : TSteps[K];
+};
+
+/**
  * Configuration for a protocol.
  */
 export interface ProtocolConfig<
@@ -377,7 +416,11 @@ export function protocol<
   TName extends string,
   // Use minimal constraint to preserve literal types - const ensures no widening
   const TSteps extends Record<string, { readonly __kind: string }>,
->(config: ProtocolConfig<TName, TSteps>): Protocol<TName, TSteps> {
+>(
+  config: ProtocolConfig<TName, TSteps> & {
+    readonly steps: NoInfer<NamedByKey<TSteps>>;
+  },
+): Protocol<TName, TSteps> {
   return {
     __kind: "protocol",
     name: config.name,
@@ -479,6 +522,12 @@ export function topologicalSort<T extends ProtocolLike>(proto: T): string[] {
 // Validation Helpers
 // =============================================================================
 
+/** Whether a protocol element is a step (not a composition node). */
+function isStepKind(element: AnyStep | AnyComposition): element is AnyStep {
+  return element.__kind === "step" || element.__kind === "dependent_step" ||
+    element.__kind === "mapped_step";
+}
+
 /**
  * Validate that a protocol is well-formed.
  */
@@ -502,23 +551,57 @@ export function validateProtocol<T extends ProtocolLike>(proto: T): {
     }
   }
 
-  // Check dependencies exist
+  // The initial step must be executable in a fresh session
+  const initialStep = proto.steps[proto.initial];
+  if (initialStep && isStepKind(initialStep)) {
+    const deps = getStepDependencies(initialStep);
+    if (deps.length > 0) {
+      errors.push(
+        `Initial step "${String(proto.initial)}" depends on ${
+          deps.map((d) => `"${d}"`).join(", ")
+        }; it can never run first`,
+      );
+    }
+  }
+
   for (const [name, step] of Object.entries(proto.steps)) {
-    const anyStep = step as AnyStep;
-    if (anyStep.__kind === "dependent_step") {
-      if (!(anyStep.dependsOn in proto.steps)) {
+    if (!isStepKind(step)) continue;
+
+    // Steps are identified by their key
+    if (step.name !== name) {
+      errors.push(
+        `Step "${name}" has name "${step.name}"; the name must equal its key`,
+      );
+    }
+
+    // Check dependencies exist
+    for (const dep of getStepDependencies(step)) {
+      if (!(dep in proto.steps)) {
+        errors.push(`Step "${name}" depends on "${dep}" which doesn't exist`);
+      }
+    }
+
+    if (step.__kind !== "mapped_step") continue;
+
+    // Check each mapping against the two schemas it connects
+    for (const [field, mapping] of Object.entries(step.requestMapping)) {
+      if (!isFieldMapping(mapping)) continue;
+
+      if (lookupPath(step.requestSchema, [field], "input") === "missing") {
         errors.push(
-          `Step "${name}" depends on "${anyStep.dependsOn}" which doesn't exist`,
+          `Step "${name}" maps field "${field}", which is not in its request schema`,
         );
       }
-    } else if (anyStep.__kind === "mapped_step") {
-      const deps = getStepDependencies(anyStep);
-      for (const dep of deps) {
-        if (!(dep in proto.steps)) {
-          errors.push(
-            `Step "${name}" depends on "${dep}" which doesn't exist`,
-          );
-        }
+
+      const source = proto.steps[mapping.step];
+      if (
+        source && isStepKind(source) &&
+        lookupPath(source.response, mapping.path.split("."), "output") ===
+          "missing"
+      ) {
+        errors.push(
+          `Step "${name}" maps field "${field}" from "${mapping.step}.${mapping.path}", which is not in the response schema of "${mapping.step}"`,
+        );
       }
     }
   }
