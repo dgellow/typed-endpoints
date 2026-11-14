@@ -158,6 +158,10 @@ class Description(unittest.TestCase):
             ["200", "400", "409", "415"],
         )
 
+    def test_an_event_stream_says_what_it_sends(self) -> None:
+        stream = self.paths["/api/ticks"]["get"]["responses"]["200"]
+        self.assertEqual(list(stream["content"]), ["text/event-stream"])
+
     def test_no_operation_documents_a_422(self) -> None:
         for path in self.paths.values():
             for operation in path.values():
