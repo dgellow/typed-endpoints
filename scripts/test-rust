@@ -35,7 +35,7 @@ fi
 # its pedantic lints included.
 cargo fmt --check
 for edition in 2021 2024; do
-  rustfmt --check --edition "$edition" src/api_generated.rs
+  rustfmt --check --edition "$edition" src/api_generated.rs src/client_generated.rs
 done
 cargo clippy --locked --quiet --all-targets -- -D warnings -W clippy::pedantic
 # What only Rust can ask of the module: its unit tests.
@@ -43,13 +43,16 @@ cargo test --locked --quiet
 cargo build --locked --quiet
 
 log="$(mktemp)"
+tslog="$(mktemp)"
 "$project/target/debug/typed-endpoints-rust-e2e" >"$log" 2>&1 &
 server=$!
-# Stops the server and waits for it: it is not left when the script returns.
+tsserver=""
+# Stops the servers and waits for them: none is left when the script
+# returns.
 stop() {
-  kill "$server" 2>/dev/null || true
-  wait "$server" 2>/dev/null || true
-  rm -f "$log"
+  kill "$server" $tsserver 2>/dev/null || true
+  wait "$server" $tsserver 2>/dev/null || true
+  rm -f "$log" "$tslog"
 }
 trap stop EXIT
 
@@ -76,6 +79,32 @@ cd "$root"
 status=0
 AXUM_URL="$url" deno test --allow-read --allow-net --allow-env=AXUM_URL \
   e2e_tests/rust/against_axum.ts "$@" || status=$?
+
+# The generated client against the server it was generated beside, and
+# against the fixture's TypeScript handlers.
+if [ "$status" -eq 0 ] && [ "$#" -eq 0 ]; then
+  (cd "$root" && exec deno run --allow-read --allow-net e2e_tests/conformance/serve_typescript.ts) >"$tslog" 2>&1 &
+  tsserver=$!
+  tsurl=""
+  for _ in $(seq 1 300); do
+    tsurl="$(grep -m1 '^http://' "$tslog" || true)"
+    if [ -n "$tsurl" ] || ! kill -0 "$tsserver" 2>/dev/null; then
+      break
+    fi
+    sleep 0.1
+  done
+  if [ -z "$tsurl" ]; then
+    echo "error: the TypeScript server did not say where it listens:" >&2
+    cat "$tslog" >&2
+    exit 1
+  fi
+  cd "$project"
+  echo "rust client -> typescript handlers ($tsurl)"
+  API_URL="$tsurl" cargo test --locked --quiet --test client -- --ignored || status=$?
+  echo "rust client -> generated axum server ($url)"
+  API_URL="$url" cargo test --locked --quiet --test client -- --ignored || status=$?
+  cd "$root"
+fi
 
 # A 500 says nothing to the client, so it has to be in the log: the suite
 # makes one handler fail, and the server reports it with its cause.

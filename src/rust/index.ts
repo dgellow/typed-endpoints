@@ -19,9 +19,12 @@ import { writeFile } from "node:fs/promises";
 import { generateContract } from "../contract/index.ts";
 import type { RouteOptions } from "../tsgen/generate.ts";
 import { renderAxum } from "./axum.ts";
+import { renderRustClient } from "./client.ts";
 
 export { renderAxum } from "./axum.ts";
 export type { AxumOptions } from "./axum.ts";
+export { renderRustClient } from "./client.ts";
+export type { RustClientOptions } from "./client.ts";
 export { constantCase, identifier, RustModels, snakeCase } from "./models.ts";
 export { RustContract, rustString } from "./contract.ts";
 
@@ -49,6 +52,36 @@ export async function generateAxum(
     convention: options.convention,
   });
   const source = renderAxum(contract, {
+    source: (options.routesDirs ?? ["routes/api"]).join(", "),
+  });
+  if (options.output) await writeFile(options.output, source);
+  return source;
+}
+
+/** Options of `generateRustClient()`. */
+export interface GenerateRustClientOptions extends RouteOptions {
+  /** File to write the Rust module to. */
+  readonly output?: string;
+}
+
+/**
+ * Generate a Rust module with serde types and a client for the routes of
+ * a directory.
+ *
+ * The module needs these crates: `reqwest`, `serde` (with `derive`) and
+ * `serde_json`.
+ *
+ * @returns The source of the module.
+ */
+export async function generateRustClient(
+  options: GenerateRustClientOptions = {},
+): Promise<string> {
+  const contract = await generateContract({
+    routesDirs: options.routesDirs,
+    config: options.config,
+    convention: options.convention,
+  });
+  const source = renderRustClient(contract, {
     source: (options.routesDirs ?? ["routes/api"]).join(", "),
   });
   if (options.output) await writeFile(options.output, source);

@@ -17,7 +17,7 @@
 import { assertEquals } from "@std/assert";
 import { fileRouter } from "@/integrations/fetch.ts";
 import { generateFastApi, generatePythonClient } from "@/python/index.ts";
-import { generateAxum } from "@/rust/index.ts";
+import { generateAxum, generateRustClient } from "@/rust/index.ts";
 import { generateTypes } from "@/tsgen/mod.ts";
 
 import {
@@ -30,12 +30,14 @@ const ROUTES = "e2e_tests/fixtures/conformance/routes";
 const GENERATED_PYTHON = "e2e_tests/python/api_generated.py";
 const GENERATED_PYTHON_CLIENT = "e2e_tests/python/client_generated.py";
 const GENERATED_RUST = "e2e_tests/rust/src/api_generated.rs";
+const GENERATED_RUST_CLIENT = "e2e_tests/rust/src/client_generated.rs";
 const GENERATED_CLIENT = "e2e_tests/fixtures/conformance/api.generated.ts";
 
 Deno.test("conformance: the checked-in generated files are what the generators produce", async () => {
   const python = await generateFastApi({ routesDirs: [ROUTES] });
   const pythonClient = await generatePythonClient({ routesDirs: [ROUTES] });
   const rust = await generateAxum({ routesDirs: [ROUTES] });
+  const rustClient = await generateRustClient({ routesDirs: [ROUTES] });
   const client = await generateTypes({
     routesDirs: [ROUTES],
     format: "client",
@@ -46,6 +48,7 @@ Deno.test("conformance: the checked-in generated files are what the generators p
     await Deno.writeTextFile(GENERATED_PYTHON, python);
     await Deno.writeTextFile(GENERATED_PYTHON_CLIENT, pythonClient);
     await Deno.writeTextFile(GENERATED_RUST, rust);
+    await Deno.writeTextFile(GENERATED_RUST_CLIENT, rustClient);
     await Deno.writeTextFile(GENERATED_CLIENT, client);
   }
   assertEquals(
@@ -62,6 +65,11 @@ Deno.test("conformance: the checked-in generated files are what the generators p
     await Deno.readTextFile(GENERATED_RUST),
     rust,
     `${GENERATED_RUST} is stale; run ./scripts/test --update`,
+  );
+  assertEquals(
+    await Deno.readTextFile(GENERATED_RUST_CLIENT),
+    rustClient,
+    `${GENERATED_RUST_CLIENT} is stale; run ./scripts/test --update`,
   );
   assertEquals(
     await Deno.readTextFile(GENERATED_CLIENT),

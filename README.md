@@ -1268,6 +1268,45 @@ records what the TypeScript handlers answer). Compared as JSON values:
 As text the axum answers differ from the TypeScript ones in 25 of the 27: the
 members of an object are written in alphabetical order.
 
+**A Rust client.** `generateRustClient()` (`--format rust-client`) writes a
+module with the same types and a `Client` (reqwest), with an async method per
+operation:
+
+```rust
+use my_crate::api_client as api;
+
+let client = api::Client::new("http://localhost:8000");
+
+let note = client.notes_retrieve("n1").await?;
+
+match client.notes_retrieve("n1").await {
+    Ok(note) => { /* ... */ }
+    Err(api::NotesRetrieveError::NotFound(body)) => { /* the declared 404 */ }
+    Err(api::NotesRetrieveError::Other(error)) => { /* anything else */ }
+}
+
+let query = api::NotesListQuery { tag: Some(vec!["urgent".into()]), ..Default::default() };
+let mut items = client.notes_list_items(&query);
+while let Some(note) = items.next().await? {
+    // every item, page after page
+}
+```
+
+| TypeScript client                          | Rust client                                                                                                                        |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `notes.retrieve(id)`                       | `notes_retrieve(id)`: `Result<Note, NotesRetrieveError>`                                                                           |
+| `notes.retrieve.result(id)`                | the same call: a declared error is a variant of the operation's error type (`NotFound(NotFound)`), anything else is `Other(Error)` |
+| `notes.list.pages()`, `notes.list.items()` | `notes_list_pages()`, `notes_list_items()`: `next().await` gives the next page or item, by the endpoint's pagination style         |
+| a `TypeError` for an id that is `..`       | `Error::Request`, before a request is sent                                                                                         |
+
+The module needs `reqwest` 0.12, `serde` and `serde_json`; it uses none of
+reqwest's optional features, so the TLS stack is the application's choice. It
+carries unit tests for what the fixture cannot reach (the five pagination
+styles, a next page on another origin, path segments), which run with the
+`cargo test` of the crate it is in. `./scripts/test-rust` runs the client
+against the fixture's TypeScript handlers and against the generated axum server,
+and holds it to the same rustfmt and clippy checks as the server module.
+
 What does not cross, or not yet:
 
 - A handler gets the path parameters, the query and the body, and nothing else
@@ -1289,7 +1328,8 @@ What does not cross, or not yet:
 - An integer whose author wrote the bound of a safe integer again
   (`z.int().max(Number.MAX_SAFE_INTEGER)`) is refused with one issue where Zod
   reports two: the contract has one bound
-- Not generated yet: a client, request-dependent responses, protocols
+- Not generated yet: request-dependent responses, protocols, and event streams
+  in the client
 
 How it is checked (`./scripts/test-rust`, with the pinned toolchain): the
 generated module and a hand-written implementation of `Handlers` are formatted
@@ -1528,7 +1568,8 @@ Options:
   -r, --routes <dir>    Routes directory, repeatable (default: routes/api)
   -o, --output <file>   Output file path (required)
   -f, --format <fmt>    Output format: types, client, routes, protocol, contract,
-                        fastapi, python-client or axum (default: types)
+                        fastapi, python-client, axum or rust-client
+                        (default: types)
   --convention <name>   Route file layout: fresh, next, sveltekit, astro, or nitro
                         (default: fresh; also the layout for Bun, Hono and fetch)
   -p, --protocol <file> Protocol module path (required when --format protocol)
@@ -1547,6 +1588,7 @@ Formats:
              FastAPI router
   python-client - A Python module: Pydantic models and an httpx client
   axum     - A Rust module: serde types, a Handlers trait and an axum router
+  rust-client - A Rust module: serde types and a reqwest client
 ```
 
 ## Architecture

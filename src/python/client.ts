@@ -22,10 +22,11 @@
  * @module
  */
 
-import type {
-  Contract,
-  ContractOperation,
-  JsonSchema,
+import {
+  type Contract,
+  type ContractOperation,
+  itemsSchema,
+  type JsonSchema,
 } from "../contract/index.ts";
 import {
   assignment,
@@ -334,33 +335,6 @@ interface Rendered {
   readonly result?: string;
   /** Type of one item of a paginated list. */
   readonly item?: string;
-}
-
-/** The schema of the items of a paginated response, at a dotted path. */
-function itemsSchema(
-  response: JsonSchema,
-  path: string,
-): JsonSchema | undefined {
-  const defs = (response.$defs ?? {}) as Record<string, JsonSchema>;
-  const resolve = (schema: JsonSchema | undefined): JsonSchema | undefined => {
-    if (schema && typeof schema.$ref === "string") {
-      return schema.$ref === "#"
-        ? response
-        : defs[schema.$ref.replace(/^#\/\$defs\//, "")];
-    }
-    return schema;
-  };
-
-  let current = resolve(response);
-  for (const key of path.split(".")) {
-    const properties = current?.properties as
-      | Record<string, JsonSchema>
-      | undefined;
-    current = resolve(properties?.[key]);
-  }
-  const items = current?.items;
-  if (!items || typeof items !== "object") return undefined;
-  return { ...(items as JsonSchema), $defs: defs };
 }
 
 /** A banner between the parts of the module. */

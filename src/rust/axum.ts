@@ -51,7 +51,7 @@ export interface AxumOptions {
 }
 
 /** The constants `http::StatusCode` has, by status. */
-const STATUS_NAMES: Readonly<Record<string, string>> = {
+export const STATUS_NAMES: Readonly<Record<string, string>> = {
   300: "MULTIPLE_CHOICES",
   301: "MOVED_PERMANENTLY",
   302: "FOUND",
