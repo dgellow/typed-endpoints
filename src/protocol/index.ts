@@ -74,6 +74,8 @@ export type {
   ProtocolMorphism,
   ProtocolState,
   Repeat,
+  RequestLocation,
+  RequestLocations,
   Sequence,
   SequenceState,
   Step,
@@ -106,8 +108,12 @@ export {
 // DSL config types
 export type {
   DependentStepConfig,
+  KeysOfUnion,
   MappedStepConfig,
+  MappingForRequest,
+  NamedByKey,
   ProtocolConfig,
+  ProtocolLike,
   StepConfig,
 } from "./dsl.ts";
 
@@ -155,8 +161,11 @@ export {
 // Client types
 export type {
   AvailableSteps,
+  DependencyOf,
   ExecuteResult,
   ExecutionContext,
+  IsIndependent,
+  MappingSources,
   MockResponses,
   SessionState,
   StepExecutor,
@@ -205,8 +214,16 @@ export {
 
 // Composition types
 export type {
+  EndpointRequestSchema,
+  EndpointResponseSchema,
   FromEndpointDependentOptions,
   FromEndpointMappedOptions,
   FromEndpointOptions,
   HandlerWithApiDef,
+  MergedRequest,
+  MethodsOf,
+  Override,
+  PartType,
+  SchemaAt,
+  Simplify,
 } from "./compose.ts";

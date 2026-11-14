@@ -222,9 +222,14 @@ export const oauth2AuthCodeProtocol = protocol({
 // Type Exports
 // =============================================================================
 
+/** Type of the OAuth 2.0 authorization code protocol. */
 export type OAuth2Protocol = typeof oauth2AuthCodeProtocol;
 
+/** Request of the `authorize` step. */
 export type AuthorizeRequest = z.infer<typeof AuthorizeRequestSchema>;
+/** Response of the `authorize` step: success or error variant. */
 export type AuthorizeResponse = z.infer<typeof AuthorizeResponseSchema>;
+/** A successful token response. */
 export type TokenResponse = z.infer<typeof TokenResponseSchema>;
+/** Response of the `exchange` step: success or error variant. */
 export type ExchangeResponse = z.infer<typeof ExchangeResponseSchema>;

@@ -27,21 +27,33 @@ interface MethodDefWithPagination extends
 
 extendZodWithOpenApi(z);
 
+/** The `info` object of the generated spec. */
 export interface OpenApiInfo {
+  /** API title. Default: `"API"`. */
   readonly title?: string;
+  /** API version. Default: `"1.0.0"`. */
   readonly version?: string;
+  /** API description. */
   readonly description?: string;
 }
 
+/** An entry of the `servers` list of the generated spec. */
 export interface OpenApiServer {
+  /** Server URL. */
   readonly url: string;
+  /** Server description. */
   readonly description?: string;
+  /** Specification extensions (`x-...`), copied as given. */
   readonly [key: `x-${string}`]: unknown;
 }
 
+/** Options of `generateOpenApiSpec()`. */
 export interface GeneratorOptions {
+  /** Directory that holds the route files. Default: `"routes/api"`. */
   readonly routesDir?: string;
+  /** Contents of the `info` object. */
   readonly info?: OpenApiInfo;
+  /** Contents of the `servers` list. Left out of the spec when empty. */
   readonly servers?: OpenApiServer[];
   /**
    * Fail when a route cannot be described. Default: false.
@@ -54,7 +66,9 @@ export interface GeneratorOptions {
   readonly strict?: boolean;
 }
 
+/** What the generator reads from a route module: `handler.__apiDef`. */
 export interface RouteModule {
+  /** Handlers created by `createApiHandlers()`, which attaches `__apiDef`. */
   readonly handler?: { __apiDef?: ApiDef };
 }
 

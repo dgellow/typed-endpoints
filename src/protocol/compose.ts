@@ -39,6 +39,7 @@ import type {
 
 /** Handler object with __apiDef metadata (from createApiHandlers) */
 export interface HandlerWithApiDef {
+  /** Method definitions attached by `createApiHandlers()`. */
   // deno-lint-ignore no-explicit-any
   readonly __apiDef: Record<string, any>;
 }
@@ -53,20 +54,24 @@ export type MethodsOf<H extends HandlerWithApiDef> =
   & HttpMethod;
 
 /** The schema type at `D[K]`, or `never` when the definition has none. */
-type SchemaAt<D, K extends string> = K extends keyof D
+export type SchemaAt<D, K extends string> = K extends keyof D
   ? Extract<D[K], z.ZodType>
   : never;
 
 /** `B` wins over `A` for keys both have, as `Object.assign` does. */
-type Override<A, B> = Omit<A, keyof B> & B;
+export type Override<A, B> = Omit<A, keyof B> & B;
 
-type Simplify<T> = { [K in keyof T]: T[K] } & unknown;
+/** Flattens an intersection into one object type, for readable hovers. */
+export type Simplify<T> = { [K in keyof T]: T[K] } & unknown;
 
 /** Input or output type of one request part; `{}` when it is not defined. */
-type PartType<D, K extends string, TSide extends "input" | "output"> =
-  [SchemaAt<D, K>] extends [never] ? Record<never, never>
-    : TSide extends "input" ? z.input<SchemaAt<D, K>>
-    : z.output<SchemaAt<D, K>>;
+export type PartType<
+  D,
+  K extends string,
+  TSide extends "input" | "output",
+> = [SchemaAt<D, K>] extends [never] ? Record<never, never>
+  : TSide extends "input" ? z.input<SchemaAt<D, K>>
+  : z.output<SchemaAt<D, K>>;
 
 /**
  * The flat request of a step made from an endpoint: body, query and params
@@ -75,7 +80,7 @@ type PartType<D, K extends string, TSide extends "input" | "output"> =
  * When a part's type is not known statically (a handler typed as the wide
  * `ApiDef`), the result is `unknown`.
  */
-type MergedRequest<D, TSide extends "input" | "output"> = unknown extends
+export type MergedRequest<D, TSide extends "input" | "output"> = unknown extends
   PartType<D, "body", TSide> ? unknown
   : unknown extends PartType<D, "query", TSide> ? unknown
   : unknown extends PartType<D, "params", TSide> ? unknown

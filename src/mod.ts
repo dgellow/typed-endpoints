@@ -6,6 +6,9 @@ export type {
   InferBody,
   InferParams,
   InferQuery,
+  SseEvent,
+  SseEventDef,
+  SseMethodDef,
   ValidatedRequest,
 } from "./core/types.ts";
 
@@ -68,6 +71,7 @@ export {
   type CursorPaginationConfig,
   type CursorPaginationMeta,
   type CursorPaginationNames,
+  type MutableZodShape,
   offset,
   type OffsetPaginationConfig,
   type OffsetPaginationMeta,

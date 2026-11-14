@@ -37,18 +37,28 @@ import { createSseParser } from "./sse.ts";
 
 export type {
   ApiSchema,
+  CreateMethod,
+  DeleteMethod,
+  Empty,
+  ListMethod,
   MethodDef,
+  MethodOptions,
+  OptionsArg,
   RequestOptions,
+  ResourceClient,
   ResourceDef,
   ResourceMethod,
+  RetrieveMethod,
   SseEventsDef,
   SseMethodDef,
   SubscribeMethod,
   SubscribeOptions,
   TypedClient,
   TypedSseEvent,
+  UpdateMethod,
 } from "./types.ts";
 
+/** Configuration of `createClient()`. */
 export interface ClientConfig {
   /** Base URL for all requests (e.g., "http://localhost:3000") */
   readonly baseUrl: string;
@@ -90,6 +100,13 @@ function buildQuery(query?: Record<string, unknown>): string {
  * reconnect: the server would send the same event again.
  */
 export class SseDataError extends Error {
+  /**
+   * Create the error.
+   *
+   * @param event Type of the event.
+   * @param data The `data` field as received.
+   * @param options Standard error options, e.g. `cause`.
+   */
   constructor(
     public readonly event: string,
     public readonly data: string,
@@ -243,6 +260,14 @@ async function* createSseSubscription<TEvents extends SseEventsDef>(
  * HTTP client error with status and response body.
  */
 export class ClientError extends Error {
+  /**
+   * Create the error.
+   *
+   * @param status HTTP status code.
+   * @param statusText HTTP status text.
+   * @param body Response body: parsed JSON when the response is JSON, text
+   *   otherwise.
+   */
   constructor(
     public readonly status: number,
     public readonly statusText: string,

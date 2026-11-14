@@ -41,7 +41,7 @@ import {
 // =============================================================================
 
 /** Check if step is independent (no dependencies) - checks __kind directly */
-type IsIndependent<T> = T extends { __kind: "step" } ? true
+export type IsIndependent<T> = T extends { __kind: "step" } ? true
   : T extends { __kind: "dependent_step" } ? false
   : T extends { __kind: "mapped_step" } ? false
   : false;
@@ -53,7 +53,7 @@ type IsIndependent<T> = T extends { __kind: "step" } ? true
  * step names are literal types. A mapping whose step names were widened to
  * `string` contributes nothing here; the runtime check still applies.
  */
-type MappingSources<T> = T extends { requestMapping: infer M } ? {
+export type MappingSources<T> = T extends { requestMapping: infer M } ? {
     [F in keyof M]: M[F] extends
       { __kind: "field_mapping"; step: infer S extends string }
       ? string extends S ? never : S
@@ -65,8 +65,8 @@ type MappingSources<T> = T extends { requestMapping: infer M } ? {
  * Every step that must have run before this one: `dependsOn`, plus for a
  * mapped step each step its `requestMapping` reads from.
  */
-type DependencyOf<T> = T extends { __kind: "dependent_step"; dependsOn: string }
-  ? T["dependsOn"]
+export type DependencyOf<T> = T extends
+  { __kind: "dependent_step"; dependsOn: string } ? T["dependsOn"]
   : T extends { __kind: "mapped_step"; dependsOn: string }
     ? T["dependsOn"] | MappingSources<T>
   : never;
@@ -111,14 +111,26 @@ function isNeverSchema(schema: z.ZodType): boolean {
 // Executor Interface
 // =============================================================================
 
+/**
+ * Performs a step: sends the request and returns the response. The
+ * session validates the request before the call and the response after it.
+ */
 export interface StepExecutor {
+  /**
+   * Execute `step` with a request that passed the step's request schema.
+   * The session parses the returned value with the step's response schema.
+   */
   // deno-lint-ignore no-explicit-any
   execute(step: string, request: unknown, ctx: ExecutionContext): Promise<any>;
 }
 
+/** What an executor is told about the session it runs in. */
 export interface ExecutionContext {
+  /** Name of the protocol. */
   readonly protocol: string;
+  /** Names of the steps executed so far, in order. */
   readonly history: string[];
+  /** Responses of the executed steps, by step name. */
   readonly responses: Record<string, unknown>;
 }
 
@@ -147,7 +159,12 @@ export interface ExecuteResult<
   TSteps extends Record<string, AnyStep>,
   TNewDone extends keyof TSteps,
 > {
+  /** The parsed response of the step. */
   readonly response: TResponse;
+  /**
+   * The session to continue with: it records the step as done. The session
+   * `execute()` was called on is unchanged.
+   */
   readonly session: ProtocolSession<TSteps, TNewDone>;
 }
 
@@ -167,8 +184,17 @@ export class ProtocolSession<
   TSteps extends Record<string, AnyStep>,
   TDone extends keyof TSteps = never,
 > {
+  /** Runtime tag of session objects. */
   readonly __tag = "ProtocolSession" as const;
 
+  /**
+   * Use `createSession()`, which validates the protocol first.
+   *
+   * @param protocol The protocol definition.
+   * @param executor Performs the steps.
+   * @param responses Responses of the steps executed so far.
+   * @param history Names of the steps executed so far, in order.
+   */
   constructor(
     readonly protocol: {
       readonly __kind: "protocol";
@@ -417,6 +443,11 @@ export type MockResponses<TSteps extends Record<string, AnyStep>> = {
     | ((req: any) => StepResponse<TSteps[K]>);
 };
 
+/**
+ * Create an executor that answers each step from `responses`: a fixed
+ * value, or a function of the request. Executing a step that has no entry
+ * throws.
+ */
 export function createMockExecutor<TSteps extends Record<string, AnyStep>>(
   _protocol: Protocol<string, TSteps>,
   responses: MockResponses<TSteps>,

@@ -15,7 +15,9 @@ import { getNestedValue } from "./mapping.ts";
 
 /** Route configuration - matches output from tsgen --format routes */
 export interface RouteConfig {
+  /** HTTP method. */
   readonly method: string;
+  /** Path template with `{param}` placeholders, e.g. `/api/users/{id}`. */
   readonly path: string;
 }
 
@@ -48,11 +50,19 @@ export interface HttpExecutorConfig<
 // HTTP Error
 // =============================================================================
 
+/** A step's HTTP request was answered with a status outside 200-299. */
 export class HttpError extends Error {
+  /**
+   * Create the error.
+   *
+   * @param status HTTP status code.
+   * @param statusText HTTP status text.
+   * @param body Response body as text.
+   */
   constructor(
-    public status: number,
-    public statusText: string,
-    public body: string,
+    public readonly status: number,
+    public readonly statusText: string,
+    public readonly body: string,
   ) {
     super(`HTTP ${status}: ${statusText}`);
     this.name = "HttpError";
