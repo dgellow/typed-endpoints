@@ -163,14 +163,18 @@ export type SelectIssues<
 /**
  * Why select string `S` does not fit `T`, as a `SelectError`; `never` when
  * it fits, or when `S` is not a literal and nothing can be said.
+ *
+ * A union of literals is checked member by member: the result is the
+ * problems of the members that have one.
  */
-export type SelectProblem<T, S extends string> = [S] extends [never] ? never
-  : string extends S ? never
+export type SelectProblem<T, S extends string> = S extends string
+  ? string extends S ? never
   : ParseSelect<S> extends infer TParsed
     ? TParsed extends readonly SelectNode[]
       ? [SelectIssues<T, TParsed>] extends [never] ? never
       : SelectError<SelectIssues<T, TParsed> & string>
     : TParsed
+  : never
   : never;
 
 /** `T` with every property optional, at every depth. */

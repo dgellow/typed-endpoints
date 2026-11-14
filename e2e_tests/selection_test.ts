@@ -236,6 +236,34 @@ Deno.test("selection: a string the types do not pin down may select anything", a
   }
 });
 
+Deno.test("selection: one of several literal strings gives one of several types", async () => {
+  const { client, close } = serve();
+  try {
+    const brief = Math.random() < 2;
+    const page = await client.posts.list({
+      query: { select: brief ? "id" : "title,author(name)" },
+    });
+
+    assertType<
+      Equal<
+        typeof page.data,
+        ({ id: string } | { title: string; author: { name: string } })[]
+      >
+    >();
+    assertEquals(page.data, [{ id: "p1" }, { id: "p2" }]);
+
+    const calls = () => {
+      client.posts.list({
+        // @ts-expect-error one of the two strings names an unknown field
+        query: { select: brief ? "id" : "nope" },
+      });
+    };
+    void calls;
+  } finally {
+    await close();
+  }
+});
+
 Deno.test("selection: a select string that does not fit is a compile error", () => {
   const { client, close } = serve();
   const calls = () => {
