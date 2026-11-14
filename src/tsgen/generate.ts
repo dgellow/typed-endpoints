@@ -1,16 +1,18 @@
-import { toFileUrl } from "@std/path";
-import type { AnyPaginationMeta } from "@/pagination/types.ts";
+import { writeFile } from "node:fs/promises";
+import { denoEval, isDeno } from "../core/runtime.ts";
+import type { AnyPaginationMeta } from "../pagination/types.ts";
 import {
   apiPathToTemplate,
   capitalize,
-  collectRouteFiles,
   deriveOperationId,
   endsWithParam,
   filePathToApiPath,
+  fileUrlOf,
   HTTP_METHODS,
   httpMethodToResourceMethod,
+  listRouteFiles,
   pathToResourceSegments,
-} from "@/core/routes.ts";
+} from "../core/routes.ts";
 import { pathToTypeName } from "./path.ts";
 import { isIdentifier } from "./zod.ts";
 import {
@@ -30,6 +32,9 @@ export interface TypeGenOptions {
    * Path to deno.json config file. When provided, route files are imported
    * in a subprocess that uses the config's import map. This is needed when
    * running the CLI as an external package.
+   *
+   * Deno only. Bun and Node resolve a route file's imports from the file
+   * itself, so the option has no effect there.
    */
   readonly config?: string;
   /**
@@ -78,17 +83,15 @@ async function extractWithConfig(
     }
   `;
 
-  const { code, stdout, stderr } = await new Deno.Command("deno", {
-    args: ["eval", "--config", configPath, script, JSON.stringify(sources)],
-    stdout: "piped",
-    stderr: "piped",
-  }).output();
+  const { code, stdout, stderr } = await denoEval(configPath, script, [
+    JSON.stringify(sources),
+  ]);
 
   if (code !== 0) {
-    throw new Error(new TextDecoder().decode(stderr).trim());
+    throw new Error(stderr.trim());
   }
 
-  const resultLine = new TextDecoder().decode(stdout).split("\n")
+  const resultLine = stdout.split("\n")
     .findLast((line) => line.startsWith(RESULT_MARKER));
   if (resultLine === undefined) {
     throw new Error("Route extraction subprocess produced no result");
@@ -197,24 +200,25 @@ export async function generateTypes(
 ): Promise<string> {
   const { routesDirs = ["routes/api"], output, config } = options;
 
-  const routeFiles: string[] = [];
-  for (const dir of routesDirs) {
-    for await (const entry of Deno.readDir(dir)) {
-      await collectRouteFiles(dir, entry, routeFiles);
-    }
-  }
+  const routeFiles = (await Promise.all(routesDirs.map(listRouteFiles)))
+    .flat();
 
-  // Without a config the modules are imported into this process. The query
-  // string makes each run import the current file, not a cached module.
-  const cacheBuster = config ? "" : `?t=${Date.now()}`;
+  // On Deno, a config means the route files resolve their imports through
+  // its import map, which takes a subprocess. Bun and Node resolve from the
+  // importing file, so there the modules are imported into this process.
+  const inSubprocess = config !== undefined && isDeno();
+
+  // The query string makes each in-process run import the current file,
+  // not a cached module.
+  const cacheBuster = inSubprocess ? "" : `?t=${Date.now()}`;
   const sources: RouteSource[] = await Promise.all(
     routeFiles.sort().map(async (filePath) => ({
       filePath,
-      url: toFileUrl(await Deno.realPath(filePath)).href + cacheBuster,
+      url: await fileUrlOf(filePath) + cacheBuster,
     })),
   );
 
-  const extraction = config
+  const extraction = inSubprocess
     ? await extractWithConfig(sources, config)
     : await extractRoutes(sources);
 
@@ -246,7 +250,7 @@ export async function generateTypes(
   }
 
   if (output) {
-    await Deno.writeTextFile(output, content);
+    await writeFile(output, content);
   }
 
   return content;

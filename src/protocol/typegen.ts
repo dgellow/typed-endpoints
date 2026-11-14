@@ -8,8 +8,9 @@
  * @module
  */
 
-import { toFileUrl } from "@std/path";
 import type { ZodType } from "zod";
+import { fileUrlOf } from "../core/routes.ts";
+import { denoEval, isDeno } from "../core/runtime.ts";
 import type { Protocol } from "./types.ts";
 import { isFieldMapping } from "./mapping.ts";
 import { topologicalSort } from "./dsl.ts";
@@ -311,12 +312,19 @@ export function generateProtocolTypes(proto: Protocol<string, any>): string {
   return lines.join("\n");
 }
 
+const NOT_A_PROTOCOL =
+  "Module must default-export or named-export 'protocol' a Protocol object";
+
 /**
- * Generate protocol types from a module path by spawning a subprocess.
+ * Generate protocol types from a module path.
  *
- * The subprocess imports the user's protocol module (resolving via their
- * import map) and runs `generateProtocolTypes` on it. The module must
- * default-export or named-export `protocol` a Protocol object.
+ * The module must default-export or named-export `protocol` a Protocol
+ * object.
+ *
+ * On Deno the module is imported in a subprocess, so that it resolves its
+ * imports through the import map of `config` (or of the `deno.json` found
+ * from the working directory). On Bun and Node, which resolve imports from
+ * the importing file, it is imported into this process.
  *
  * @param protocolModulePath Path to the protocol module file
  * @param config Optional path to deno.json config (for import map resolution)
@@ -326,35 +334,34 @@ export async function generateProtocolTypesFromModule(
   protocolModulePath: string,
   config?: string,
 ): Promise<string> {
-  const absolutePath = await Deno.realPath(protocolModulePath);
-  const protocolUrl = toFileUrl(absolutePath).href;
-  const typegenUrl = new URL("./typegen.ts", import.meta.url).href;
+  const protocolUrl = await fileUrlOf(protocolModulePath);
 
+  if (!isDeno()) {
+    const mod = await import(protocolUrl);
+    const proto = mod.default ?? mod.protocol;
+    if (!proto || proto.__kind !== "protocol") {
+      throw new Error(NOT_A_PROTOCOL);
+    }
+    return generateProtocolTypes(proto) + "\n";
+  }
+
+  const typegenUrl = new URL("./typegen.ts", import.meta.url).href;
   const script = `
     const { generateProtocolTypes } = await import("${typegenUrl}");
     const mod = await import(Deno.args[0]);
     const proto = mod.default ?? mod.protocol;
     if (!proto || proto.__kind !== "protocol") {
-      console.error("Module must default-export or named-export 'protocol' a Protocol object");
+      console.error(${JSON.stringify(NOT_A_PROTOCOL)});
       Deno.exit(1);
     }
     console.log(generateProtocolTypes(proto));
   `;
 
-  const args = ["eval"];
-  if (config) args.push("--config", config);
-  args.push(script, protocolUrl);
-
-  const cmd = new Deno.Command("deno", {
-    args,
-    stdout: "piped",
-    stderr: "piped",
-  });
-  const { code, stdout, stderr } = await cmd.output();
-
+  const { code, stdout, stderr } = await denoEval(config, script, [
+    protocolUrl,
+  ]);
   if (code !== 0) {
-    throw new Error(new TextDecoder().decode(stderr));
+    throw new Error(stderr);
   }
-
-  return new TextDecoder().decode(stdout);
+  return stdout;
 }

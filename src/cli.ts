@@ -1,6 +1,8 @@
 #!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-net --allow-env
 
-import { parseArgs } from "@std/cli/parse-args";
+import { stat, writeFile } from "node:fs/promises";
+import process from "node:process";
+import { parseArgs } from "node:util";
 import { generateTypes } from "./tsgen/mod.ts";
 import { generateProtocolTypesFromModule } from "./protocol/typegen.ts";
 
@@ -39,7 +41,7 @@ Examples:
 async function findDenoConfig(): Promise<string | undefined> {
   for (const name of ["deno.json", "deno.jsonc"]) {
     try {
-      await Deno.stat(name);
+      await stat(name);
       return name;
     } catch {
       // File doesn't exist, try next
@@ -48,36 +50,43 @@ async function findDenoConfig(): Promise<string | undefined> {
   return undefined;
 }
 
+/** Print the problem and the usage, then exit with a failure. */
+function fail(message: string): never {
+  console.error(`Error: ${message}\n`);
+  console.log(help);
+  process.exit(1);
+}
+
 async function main() {
-  const args = parseArgs(Deno.args, {
-    string: ["output", "config", "format", "protocol", "client-import"],
-    boolean: ["help"],
-    collect: ["routes"],
-    alias: {
-      r: "routes",
-      o: "output",
-      c: "config",
-      f: "format",
-      p: "protocol",
-      h: "help",
-    },
-    // A misspelled option would otherwise be dropped and the defaults used.
-    unknown: (arg) => {
-      console.error(`Error: Unknown argument "${arg}"\n`);
-      console.log(help);
-      Deno.exit(1);
-    },
-  });
+  // Strict parsing: a misspelled option or a stray argument would otherwise
+  // be dropped and the defaults used.
+  let args;
+  try {
+    args = parseArgs({
+      args: process.argv.slice(2),
+      options: {
+        routes: { type: "string", short: "r", multiple: true },
+        output: { type: "string", short: "o" },
+        config: { type: "string", short: "c" },
+        format: { type: "string", short: "f" },
+        protocol: { type: "string", short: "p" },
+        "client-import": { type: "string" },
+        help: { type: "boolean", short: "h" },
+      },
+      strict: true,
+      allowPositionals: false,
+    }).values;
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
 
   if (args.help) {
     console.log(help);
-    Deno.exit(0);
+    process.exit(0);
   }
 
   if (!args.output) {
-    console.error("Error: --output is required\n");
-    console.log(help);
-    Deno.exit(1);
+    fail("--output is required");
   }
 
   // Auto-detect deno.json if not provided
@@ -91,20 +100,14 @@ async function main() {
     | "protocol"
     | undefined;
   if (format && !["types", "client", "routes", "protocol"].includes(format)) {
-    console.error(
-      `Error: Invalid format "${format}". Must be: types, client, routes, or protocol\n`,
+    fail(
+      `Invalid format "${format}". Must be: types, client, routes, or protocol`,
     );
-    console.log(help);
-    Deno.exit(1);
   }
 
   if (format === "protocol") {
     if (!args.protocol) {
-      console.error(
-        "Error: --protocol is required when using --format protocol\n",
-      );
-      console.log(help);
-      Deno.exit(1);
+      fail("--protocol is required when using --format protocol");
     }
 
     try {
@@ -112,20 +115,20 @@ async function main() {
         args.protocol,
         config,
       );
-      await Deno.writeTextFile(args.output, output);
+      await writeFile(args.output, output);
       console.log(`Generated protocol types written to ${args.output}`);
     } catch (error) {
       console.error(
         "Error generating protocol types:",
         error instanceof Error ? error.message : error,
       );
-      Deno.exit(1);
+      process.exit(1);
     }
     return;
   }
 
   // Default to routes/api if no routes specified
-  const routes = (args.routes ?? []) as string[];
+  const routes = args.routes ?? [];
   const routesDirs = routes.length > 0 ? routes : ["routes/api"];
 
   try {
@@ -142,7 +145,7 @@ async function main() {
       "Error generating types:",
       error instanceof Error ? error.message : error,
     );
-    Deno.exit(1);
+    process.exit(1);
   }
 }
 
