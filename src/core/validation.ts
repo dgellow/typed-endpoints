@@ -83,7 +83,8 @@ function unwrapInput(schema: unknown): unknown {
 /** Whether the field may be left out (optional, or it has a default). */
 function acceptsMissing(schema: unknown): boolean {
   const zod = (schema as { _zod?: { optin?: string } } | undefined)?._zod;
-  return zod?.optin === "optional";
+  // Zod flags a default as "optional" or, in newer releases, "defaulted".
+  return zod?.optin === "optional" || zod?.optin === "defaulted";
 }
 
 /**
