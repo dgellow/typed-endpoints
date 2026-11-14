@@ -73,7 +73,7 @@ src/
 │   ├── extract.ts  # Route import + schema rendering (in-process and subprocess)
 │   └── generate.ts # types / client / routes output formats
 ├── contract/       # generateContract(): the routes as data, JSON Schema per part
-├── python/         # Pydantic models (models.ts) and a FastAPI module (fastapi.ts)
+├── python/         # Pydantic models (models.ts), a FastAPI module (fastapi.ts), an httpx client (client.ts)
 ├── cli.ts          # CLI entry point
 └── mod.ts          # Main module exports
 e2e_tests/          # End-to-end tests (protocol flows, Fresh server, CLI, Vite)
@@ -190,7 +190,10 @@ generated Python is established by running it: `e2e_tests/python/conformance.ts`
 is one test suite run against the fixture's TypeScript handlers
 (`e2e_tests/python_conformance_test.ts`) and against the generated FastAPI
 application (`./scripts/test-python`). A difference between the two servers is
-either fixed or listed in the README table.
+either fixed or listed in the README table. The generated Python client
+(`test_client.py`) is run against both servers as well; logic it carries that
+the fixture does not reach (pagination styles other than cursor) has Python unit
+tests (`test_pagination.py`).
 
 ## Key Concepts (Request-Dependent Responses)
 

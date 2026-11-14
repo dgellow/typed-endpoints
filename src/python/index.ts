@@ -18,8 +18,11 @@ import { writeFile } from "node:fs/promises";
 
 import { generateContract } from "../contract/index.ts";
 import type { RouteOptions } from "../tsgen/generate.ts";
+import { renderPythonClient } from "./client.ts";
 import { renderFastApi } from "./fastapi.ts";
 
+export { renderPythonClient } from "./client.ts";
+export type { PythonClientOptions } from "./client.ts";
 export { renderFastApi } from "./fastapi.ts";
 export type { FastApiOptions } from "./fastapi.ts";
 export {
@@ -50,6 +53,33 @@ export async function generateFastApi(
     convention: options.convention,
   });
   const source = renderFastApi(contract, {
+    source: (options.routesDirs ?? ["routes/api"]).join(", "),
+  });
+  if (options.output) await writeFile(options.output, source);
+  return source;
+}
+
+/** Options of `generatePythonClient()`. */
+export interface GeneratePythonClientOptions extends RouteOptions {
+  /** File to write the Python module to. */
+  readonly output?: string;
+}
+
+/**
+ * Generate a Python module with Pydantic models and an httpx client
+ * (`Client`, `AsyncClient`) for the routes of a directory.
+ *
+ * @returns The source of the module.
+ */
+export async function generatePythonClient(
+  options: GeneratePythonClientOptions = {},
+): Promise<string> {
+  const contract = await generateContract({
+    routesDirs: options.routesDirs,
+    config: options.config,
+    convention: options.convention,
+  });
+  const source = renderPythonClient(contract, {
     source: (options.routesDirs ?? ["routes/api"]).join(", "),
   });
   if (options.output) await writeFile(options.output, source);
