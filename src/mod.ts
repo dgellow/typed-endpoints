@@ -112,6 +112,22 @@ export {
   generateProtocolTypes,
   generateProtocolTypesFromModule,
 } from "./protocol/typegen.ts";
+export type {
+  AnyComposition,
+  AnyStep,
+  Branch,
+  Choice,
+  DependentStep,
+  MappedStep,
+  Parallel,
+  Protocol,
+  Repeat,
+  RequestLocation,
+  RequestLocations,
+  Sequence,
+  Step,
+} from "./protocol/types.ts";
+export type { FieldMapping } from "./protocol/mapping.ts";
 
 // Pagination helpers
 export {

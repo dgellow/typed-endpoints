@@ -65,6 +65,7 @@ export type {
   MethodOptions,
   NeedsOptions,
   OptionsArg,
+  ParamName,
   ParamsOption,
   ParentParams,
   PathOf,
