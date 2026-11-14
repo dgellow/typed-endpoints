@@ -26,7 +26,7 @@ import type {
 import { applyDependentResponse } from "./dependent.ts";
 import type { ReadonlyDeep } from "./dependent_types.ts";
 import { SSE_FAILURE_COMMENT } from "../client/sse.ts";
-import { validateRequest } from "./validation.ts";
+import { validateRequest, type ValidationError } from "./validation.ts";
 
 /** Property that marks a `Failure`, shared by every copy of this module. */
 const FAILURE: unique symbol = Symbol.for("typed-endpoints.failure") as never;
@@ -276,6 +276,24 @@ function jsonError(error: string, status: number): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+/**
+ * The answer to a request that failed validation: 400, or 415 for a body
+ * that is not JSON. The body names the part that failed and each issue.
+ */
+function invalidRequest(failure: ValidationError): Response {
+  return new Response(
+    JSON.stringify({
+      error: failure.error,
+      in: failure.type,
+      issues: failure.issues,
+    }),
+    {
+      status: failure.type === "content-type" ? 415 : 400,
+      headers: { "Content-Type": "application/json" },
+    },
+  );
 }
 
 /** One event in `text/event-stream` framing. */
@@ -550,9 +568,7 @@ export function buildHandlers<
           "GET",
         );
 
-        if (!result.success) {
-          return jsonError(result.error, 400);
-        }
+        if (!result.success) return invalidRequest(result);
 
         const abortController = new AbortController();
 
@@ -585,6 +601,8 @@ export function buildHandlers<
         const result = await validateRequest(
           {
             json: () => request.json(),
+            text: () => request.text(),
+            contentType: request.headers.get("Content-Type"),
             url: request.url,
             params: await paramsOf(context, rest),
           },
@@ -592,9 +610,7 @@ export function buildHandlers<
           method,
         );
 
-        if (!result.success) {
-          return jsonError(result.error, 400);
-        }
+        if (!result.success) return invalidRequest(result);
 
         const returned = await methodDef.handler(context, result.data);
         if (returned instanceof Response) return returned;

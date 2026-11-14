@@ -183,6 +183,8 @@ export type ClientRoutes = Readonly<
     {
       readonly method: string;
       readonly path: string;
+      /** `true` for a `delete` whose endpoint declares a request body. */
+      readonly body?: boolean;
       /** Statuses of the error responses the endpoint declares. */
       readonly errors?: readonly number[];
       readonly pagination?: RoutePagination;
@@ -311,7 +313,10 @@ const ID_METHODS: ReadonlySet<string> = new Set([
   "subscribe",
 ]);
 
-/** Methods whose argument after the id, if any, is the request body. */
+/**
+ * Methods whose argument after the id, if any, is the request body,
+ * unless the route table says otherwise (`body`).
+ */
 const BODY_METHODS: ReadonlySet<string> = new Set([
   "create",
   "update",
@@ -762,7 +767,8 @@ export function createClient<Api extends ApiSchema>(
       ? endsWithParameter(route.path)
       : methodName !== "subscribe" || typeof rest[0] === "string";
     const id = takesId ? rest.shift() as string : undefined;
-    const body = BODY_METHODS.has(methodName) ? rest.shift() : undefined;
+    const takesBody = route?.body ?? BODY_METHODS.has(methodName);
+    const body = takesBody ? rest.shift() : undefined;
     const options = (rest.shift() ?? {}) as RequestOptions & SubscribeOptions;
 
     if (route) {

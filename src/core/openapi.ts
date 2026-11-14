@@ -219,6 +219,29 @@ export async function generateOpenApiSpec(
   });
 }
 
+/** Body of the 400 answer to a request that failed validation. */
+const InvalidRequest = z.object({
+  error: z.string(),
+  in: z.enum(["body", "query", "params", "json"]),
+  issues: z.array(z.object({
+    path: z.array(z.union([z.string(), z.number()])),
+    message: z.string(),
+    code: z.string(),
+  })),
+});
+
+const invalidRequestSchemas = new WeakMap<OpenAPIRegistry, z.ZodType>();
+
+/** The `InvalidRequest` component, registered once per spec. */
+function invalidRequestSchema(registry: OpenAPIRegistry): z.ZodType {
+  let schema = invalidRequestSchemas.get(registry);
+  if (!schema) {
+    schema = registry.register("InvalidRequest", InvalidRequest);
+    invalidRequestSchemas.set(registry, schema);
+  }
+  return schema;
+}
+
 /** A public endpoint method that goes into the spec. */
 interface Operation {
   readonly filePath: string;
@@ -258,7 +281,9 @@ function registerEndpoint(
     request.query = def.query;
   }
 
-  if (def.body && ["POST", "PUT", "PATCH"].includes(method)) {
+  // A body is described for every method that declares one, as it is
+  // validated for every method that declares one.
+  if (def.body && method !== "GET" && method !== "HEAD") {
     let bodySchema = def.body;
     if (def.bodyName) {
       bodySchema = registry.register(def.bodyName, def.body);
@@ -324,6 +349,19 @@ function registerEndpoint(
   if (Object.keys(responses).length === 0) {
     responses["200"] = {
       description: "Success",
+    };
+  }
+
+  // What the handlers answer when a request fails validation, for every
+  // operation that validates something and does not declare its own 400.
+  const validates = def.query || def.params ||
+    (def.body && method !== "GET" && method !== "HEAD");
+  if (validates && !responses["400"]) {
+    responses["400"] = {
+      description: "The request failed validation",
+      content: {
+        "application/json": { schema: invalidRequestSchema(registry) },
+      },
     };
   }
 

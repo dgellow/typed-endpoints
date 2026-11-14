@@ -416,3 +416,134 @@ Deno.test("fail(): an async handler, and a Response next to it", async () => {
   assertEquals(missing.status, 404);
   assertEquals(await missing.json(), { error: "not_found", id: "2" });
 });
+
+// =============================================================================
+// A request that fails validation
+// =============================================================================
+
+Deno.test("a request that fails validation is a 400 that names the part and each issue", async () => {
+  let reached = false;
+  const { POST } = createApiHandlers({
+    POST: endpoint({
+      body: z.object({ name: z.string(), age: z.number().int() }),
+      query: z.object({ dryRun: z.enum(["true", "false"]).optional() }),
+      handler: () => {
+        reached = true;
+        return new Response(null, { status: 204 });
+      },
+    }),
+  });
+  const post = (body: string, query = "", headers?: HeadersInit) =>
+    POST(
+      new Request(`http://x/users${query}`, { method: "POST", body, headers }),
+    );
+
+  const invalid = await post(JSON.stringify({ name: 1, age: 1.5 }));
+  assertEquals(invalid.status, 400);
+  assertEquals(await invalid.json(), {
+    error:
+      "Validation error: name: Invalid input: expected string, received number, age: Invalid input: expected int, received number",
+    in: "body",
+    issues: [
+      {
+        path: ["name"],
+        message: "Invalid input: expected string, received number",
+        code: "invalid_type",
+      },
+      {
+        path: ["age"],
+        message: "Invalid input: expected int, received number",
+        code: "invalid_type",
+      },
+    ],
+  });
+
+  const query = await post(
+    JSON.stringify({ name: "Ada", age: 36 }),
+    "?dryRun=maybe",
+  );
+  assertEquals(query.status, 400);
+  const queryBody = await query.json();
+  assertEquals(queryBody.in, "query");
+  assertEquals(queryBody.issues.map((i: { path: unknown }) => i.path), [[
+    "dryRun",
+  ]]);
+
+  const malformed = await post("{name:");
+  assertEquals(malformed.status, 400);
+  assertEquals(await malformed.json(), {
+    error: "Invalid JSON body",
+    in: "json",
+    issues: [],
+  });
+
+  // A body that is not JSON and says so: 415, not "invalid JSON".
+  const form = await post("name=Ada&age=36", "", {
+    "Content-Type": "application/x-www-form-urlencoded",
+  });
+  assertEquals(form.status, 415);
+  assertEquals(await form.json(), {
+    error:
+      'Unsupported content type "application/x-www-form-urlencoded": the body has to be JSON',
+    in: "content-type",
+    issues: [],
+  });
+
+  assertEquals(reached, false);
+});
+
+Deno.test("a body declared on DELETE reaches the handler parsed, or is refused", async () => {
+  const seen: unknown[] = [];
+  const { DELETE } = createApiHandlers({
+    DELETE: endpoint({
+      body: z.object({ ids: z.array(z.string()).min(1) }),
+      response: z.object({ deleted: z.number() }),
+      handler: (_request, { body }) => {
+        seen.push(body);
+        return { deleted: body.ids.length };
+      },
+    }),
+  });
+  const send = (body?: unknown) =>
+    DELETE(
+      new Request("http://x/items", {
+        method: "DELETE",
+        ...(body !== undefined && { body: JSON.stringify(body) }),
+      }),
+    );
+
+  const deleted = await send({ ids: ["1", "2"] });
+  assertEquals(await deleted.json(), { deleted: 2 });
+  assertEquals(seen, [{ ids: ["1", "2"] }]);
+
+  // Before, the schema was not read for DELETE and the handler received
+  // `undefined` typed as the body.
+  assertEquals((await send({ ids: [] })).status, 400);
+  const missing = await send();
+  assertEquals(missing.status, 400);
+  assertEquals((await missing.json()).in, "body");
+  assertEquals(seen.length, 1);
+});
+
+Deno.test("a body schema that allows no body accepts a request without one", async () => {
+  const { DELETE } = createApiHandlers({
+    DELETE: endpoint({
+      body: z.object({ reason: z.string() }).optional(),
+      response: z.object({ reason: z.string() }),
+      handler: (_request, { body }) => ({ reason: body?.reason ?? "none" }),
+    }),
+  });
+
+  const bare = await DELETE(
+    new Request("http://x/items/1", { method: "DELETE" }),
+  );
+  assertEquals(await bare.json(), { reason: "none" });
+
+  const withReason = await DELETE(
+    new Request("http://x/items/1", {
+      method: "DELETE",
+      body: JSON.stringify({ reason: "spam" }),
+    }),
+  );
+  assertEquals(await withReason.json(), { reason: "spam" });
+});

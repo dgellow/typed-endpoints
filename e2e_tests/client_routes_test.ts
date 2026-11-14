@@ -196,6 +196,52 @@ Deno.test("PUT next to PATCH: replace and update", async () => {
   }
 });
 
+Deno.test("a DELETE with a declared body sends it, and the server validates it", async () => {
+  const { client, baseUrl, seen, close } = await serve();
+  try {
+    // The path does not end with a parameter: the body is the first
+    // argument, the parent's id goes in `params`.
+    const out = await client.users.tags.delete({ tags: ["a", "c"] }, {
+      params: { id: "42" },
+    });
+    assertType<Equal<typeof out, { remaining: string[] }>>();
+    assertEquals(out, { remaining: ["b"] });
+    assertEquals(seen.at(-1), "DELETE /api/users/42/tags");
+
+    // @ts-expect-error the body is required
+    void (() => client.users.tags.delete({ params: { id: "42" } }));
+    void (() => {
+      const params = { id: "42" };
+      // @ts-expect-error `tags` is a list of strings
+      client.users.tags.delete({ tags: "a" }, { params });
+    });
+
+    // A body the schema rejects is a 400 that names the field.
+    const error = await assertRejects(
+      () => client.users.tags.delete({ tags: [] }, { params: { id: "42" } }),
+      ClientError,
+    );
+    assertEquals(error.status, 400);
+    const body = error.body as {
+      in: string;
+      issues: { path: (string | number)[]; code: string }[];
+    };
+    assertEquals(body.in, "body");
+    assertEquals(body.issues.map((issue) => [issue.path, issue.code]), [
+      [["tags"], "too_small"],
+    ]);
+
+    // Sent without the client and without a body: refused as well.
+    const bare = await fetch(`${baseUrl}/api/users/42/tags`, {
+      method: "DELETE",
+    });
+    assertEquals(bare.status, 400);
+    assertEquals((await bare.json()).in, "body");
+  } finally {
+    await close();
+  }
+});
+
 Deno.test("a resource without an id takes none", async () => {
   const { client, seen, close } = await serve();
   try {

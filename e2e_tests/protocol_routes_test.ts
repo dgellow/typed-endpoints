@@ -22,6 +22,7 @@ import { handler as session } from "./fixtures/nested/routes/api/session.ts";
 import { handler as events } from "./fixtures/nested/routes/api/users/[id]/events.ts";
 import { handler as posts } from "./fixtures/nested/routes/api/users/[id]/posts.ts";
 import { handler as post } from "./fixtures/nested/routes/api/users/[id]/posts/[postId].ts";
+import { handler as tags } from "./fixtures/nested/routes/api/users/[id]/tags.ts";
 import { handler as health } from "./fixtures/nested/routes/health.ts";
 
 /** Every endpoint of the fixture, with the file-route form of its path. */
@@ -31,6 +32,7 @@ const ENDPOINTS: [HandlerWithApiDef, string][] = [
   [events, "/api/users/[id]/events"],
   [posts, "/api/users/[id]/posts"],
   [post, "/api/users/[id]/posts/[postId]"],
+  [tags, "/api/users/[id]/tags"],
   [health, "/health"],
 ];
 
