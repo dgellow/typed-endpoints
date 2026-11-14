@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { assertSnapshot } from "@std/testing/snapshot";
 import { openApiPlugin, protocolTypesPlugin } from "./vite.ts";
 
@@ -164,4 +164,32 @@ Deno.test("protocolTypesPlugin closeBundle does not throw on bad module", async 
 
   // Should not throw — errors are caught and logged
   await closeBundle();
+});
+
+// =============================================================================
+// failOnError
+// =============================================================================
+
+Deno.test("openApiPlugin closeBundle rejects on failure when failOnError is set", async () => {
+  const plugin = openApiPlugin({
+    routesDir: "nonexistent/directory",
+    outputPath: "/tmp/typed-endpoints-test-never-written.json",
+    failOnError: true,
+  });
+
+  // deno-lint-ignore no-explicit-any
+  const closeBundle = (plugin as any).closeBundle as () => Promise<void>;
+  await assertRejects(() => closeBundle());
+});
+
+Deno.test("protocolTypesPlugin closeBundle rejects on failure when failOnError is set", async () => {
+  const plugin = protocolTypesPlugin({
+    protocolModule: "nonexistent/protocol.ts",
+    outputPath: "/tmp/typed-endpoints-test-never-written.ts",
+    failOnError: true,
+  });
+
+  // deno-lint-ignore no-explicit-any
+  const closeBundle = (plugin as any).closeBundle as () => Promise<void>;
+  await assertRejects(() => closeBundle());
 });

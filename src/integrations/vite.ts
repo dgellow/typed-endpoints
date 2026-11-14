@@ -16,6 +16,12 @@ import { generateProtocolTypesFromModule } from "../protocol/typegen.ts";
 export interface OpenApiPluginOptions extends GeneratorOptions {
   /** Output path for the spec file. Default: static/openapi.json */
   outputPath?: string;
+  /**
+   * Fail the build when the spec cannot be generated. Default: false, which
+   * logs the error and lets the build finish without (or with a stale) spec.
+   * Enabling it also enables `strict`.
+   */
+  failOnError?: boolean;
 }
 
 export interface ProtocolTypesPluginOptions {
@@ -25,6 +31,11 @@ export interface ProtocolTypesPluginOptions {
   outputPath?: string;
   /** Path to deno.json config (for import map resolution) */
   config?: string;
+  /**
+   * Fail the build when the types cannot be generated. Default: false, which
+   * logs the error and lets the build finish without (or with stale) types.
+   */
+  failOnError?: boolean;
 }
 
 /**
@@ -33,8 +44,12 @@ export interface ProtocolTypesPluginOptions {
 export function protocolTypesPlugin(
   options: ProtocolTypesPluginOptions,
 ): Plugin {
-  const { protocolModule, outputPath = "src/protocol-types.ts", config } =
-    options;
+  const {
+    protocolModule,
+    outputPath = "src/protocol-types.ts",
+    config,
+    failOnError = false,
+  } = options;
 
   return {
     name: "typed-endpoints-protocol-types",
@@ -56,6 +71,7 @@ export function protocolTypesPlugin(
         await Deno.writeTextFile(outputPath, output);
         console.log(`\x1b[32m✓\x1b[0m Generated ${outputPath}`);
       } catch (error) {
+        if (failOnError) throw error;
         console.error(
           `\x1b[31m✗\x1b[0m Failed to generate protocol types:`,
           error,
@@ -70,7 +86,12 @@ export function protocolTypesPlugin(
  * Only includes routes with public: true.
  */
 export function openApiPlugin(options: OpenApiPluginOptions = {}): Plugin {
-  const { outputPath = "static/openapi.json", ...generatorOptions } = options;
+  const {
+    outputPath = "static/openapi.json",
+    failOnError = false,
+    ...generatorOptions
+  } = options;
+  if (failOnError) generatorOptions.strict ??= true;
 
   return {
     name: "typed-endpoints-openapi",
@@ -92,6 +113,7 @@ export function openApiPlugin(options: OpenApiPluginOptions = {}): Plugin {
         );
         console.log(`\x1b[32m✓\x1b[0m Generated ${outputPath}`);
       } catch (error) {
+        if (failOnError) throw error;
         console.error(
           `\x1b[31m✗\x1b[0m Failed to generate OpenAPI spec:`,
           error,

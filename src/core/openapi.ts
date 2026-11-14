@@ -7,6 +7,13 @@ import { toFileUrl } from "@std/path";
 import { z } from "zod";
 import type { ApiDef, ApiMethodDef, HttpMethod } from "./types.ts";
 import type { AnyPaginationMeta } from "../pagination/types.ts";
+import {
+  apiPathToTemplate,
+  collectRouteFiles,
+  deriveOperationId,
+  filePathToApiPath,
+  HTTP_METHODS,
+} from "./routes.ts";
 
 /** Extended method def that may include pagination metadata */
 interface MethodDefWithPagination extends
@@ -19,16 +26,6 @@ interface MethodDefWithPagination extends
 }
 
 extendZodWithOpenApi(z);
-
-const HTTP_METHODS: HttpMethod[] = [
-  "GET",
-  "POST",
-  "PUT",
-  "DELETE",
-  "PATCH",
-  "HEAD",
-  "OPTIONS",
-];
 
 export interface OpenApiInfo {
   title?: string;
@@ -46,6 +43,15 @@ export interface GeneratorOptions {
   routesDir?: string;
   info?: OpenApiInfo;
   servers?: OpenApiServer[];
+  /**
+   * Fail when a route cannot be described. Default: false.
+   *
+   * - `false`: a route file that cannot be imported is logged and left out
+   *   of the spec; operations whose derived `operationId` collides are
+   *   emitted without one.
+   * - `true`: both cases throw, with a message that lists every problem.
+   */
+  strict?: boolean;
 }
 
 export interface RouteModule {
@@ -55,28 +61,14 @@ export interface RouteModule {
 /**
  * Convert file-based route path to OpenAPI path format.
  * e.g. routes/api/users/[id].ts -> /api/users/{id}
- * Handles Windows backslashes and route groups like (auth).
+ *
+ * Everything up to and including the `routes` directory is dropped, so
+ * `./routes/...`, `src/routes/...` and absolute paths give the same result.
+ * Handles Windows backslashes and route groups like (auth). A catch-all
+ * `[...rest]` is described as the single parameter `{rest}`.
  */
 export function filePathToOpenApiPath(filePath: string): string {
-  // Normalize Windows backslashes to forward slashes
-  let path = filePath.replace(/\\/g, "/");
-
-  path = path
-    .replace(/^routes\//, "/")
-    .replace(/\.(ts|tsx)$/, "");
-
-  if (path.endsWith("/index")) {
-    path = path.slice(0, -6) || "/";
-  }
-
-  // Strip route groups like (auth), (admin), etc.
-  path = path.replace(/\/\([^)]+\)/g, "");
-
-  // Convert [param] to {param} and [...param] to {param}
-  path = path.replace(/\[\.\.\.(\w+)\]/g, "{$1}");
-  path = path.replace(/\[(\w+)\]/g, "{$1}");
-
-  return path;
+  return apiPathToTemplate(filePathToApiPath(filePath));
 }
 
 function extractPathParams(path: string): string[] {
@@ -96,6 +88,7 @@ export async function generateOpenApiSpec(
     routesDir = "routes/api",
     info = {},
     servers = [],
+    strict = false,
   } = options;
 
   const registry = new OpenAPIRegistry();
@@ -108,27 +101,69 @@ export async function generateOpenApiSpec(
   // Cache-bust timestamp for fresh imports during build
   const cacheBuster = `?t=${Date.now()}`;
 
+  const problems: string[] = [];
+  const operations: Operation[] = [];
+
   for (const filePath of routeFiles) {
+    let apiDef: ApiDef | undefined;
     try {
       const absolutePath = await Deno.realPath(filePath);
       const fileUrl = toFileUrl(absolutePath).href + cacheBuster;
-      const mod = (await import(fileUrl)) as RouteModule;
-
-      const apiDef = mod.handler?.__apiDef;
-      if (!apiDef) continue;
-
-      const openApiPath = filePathToOpenApiPath(filePath);
-      const pathParams = extractPathParams(openApiPath);
-
-      for (const method of HTTP_METHODS) {
-        const methodDef = apiDef[method];
-        if (!methodDef?.public) continue;
-
-        registerEndpoint(registry, openApiPath, method, methodDef, pathParams);
-      }
+      apiDef = ((await import(fileUrl)) as RouteModule).handler?.__apiDef;
     } catch (error) {
-      console.warn(`Failed to process route ${filePath}:`, error);
+      if (!strict) console.warn(`Failed to process route ${filePath}:`, error);
+      problems.push(
+        `${filePath}: ${error instanceof Error ? error.message : error}`,
+      );
+      continue;
     }
+    if (!apiDef) continue;
+
+    const apiPath = filePathToApiPath(filePath);
+    for (const method of HTTP_METHODS) {
+      const def = apiDef[method];
+      if (!def?.public) continue;
+      operations.push({
+        filePath,
+        path: apiPathToTemplate(apiPath),
+        method,
+        def,
+        operationId: def.operationId ?? deriveOperationId(apiPath, method),
+      });
+    }
+  }
+
+  // operationId must be unique within a spec.
+  const byId = Map.groupBy(operations, (op) => op.operationId);
+  for (const [id, group] of byId) {
+    if (group.length < 2) continue;
+    const where = group
+      .map((op) => `${op.method} ${op.path} (${op.filePath})`)
+      .join(" and ");
+    const problem =
+      `operationId "${id}" is used by ${where}; set a distinct \`operationId\` on one of them`;
+    if (!strict) {
+      console.warn(`${problem}. They are emitted without an operationId.`);
+    }
+    problems.push(problem);
+  }
+
+  if (strict && problems.length > 0) {
+    throw new Error(
+      `OpenAPI generation failed:\n${problems.map((p) => `  ${p}`).join("\n")}`,
+    );
+  }
+
+  for (const op of operations) {
+    const unique = byId.get(op.operationId)!.length === 1;
+    registerEndpoint(
+      registry,
+      op.path,
+      op.method,
+      op.def,
+      extractPathParams(op.path),
+      unique ? op.operationId : undefined,
+    );
   }
 
   const generator = new OpenApiGeneratorV31(registry.definitions);
@@ -143,57 +178,14 @@ export async function generateOpenApiSpec(
   });
 }
 
-/** Check if a file should be skipped (tests, private, dotfiles). */
-function shouldSkipFile(name: string): boolean {
-  return (
-    name.startsWith(".") ||
-    name.startsWith("_") ||
-    name.includes("_test.") ||
-    name.includes(".test.") ||
-    name.endsWith("_test.ts") ||
-    name.endsWith("_test.tsx")
-  );
-}
-
-async function collectRouteFiles(
-  baseDir: string,
-  entry: Deno.DirEntry,
-  files: string[],
-): Promise<void> {
-  // Skip hidden files and directories
-  if (entry.name.startsWith(".")) return;
-
-  const fullPath = `${baseDir}/${entry.name}`;
-
-  // Handle symlinks safely
-  if (entry.isSymlink) {
-    try {
-      const stat = await Deno.stat(fullPath);
-      if (stat.isDirectory) {
-        for await (const subEntry of Deno.readDir(fullPath)) {
-          await collectRouteFiles(fullPath, subEntry, files);
-        }
-      } else if (stat.isFile && /\.(ts|tsx)$/.test(entry.name)) {
-        if (!shouldSkipFile(entry.name)) {
-          files.push(fullPath);
-        }
-      }
-    } catch {
-      // Broken symlink, skip silently
-    }
-    return;
-  }
-
-  if (entry.isDirectory) {
-    for await (const subEntry of Deno.readDir(fullPath)) {
-      await collectRouteFiles(fullPath, subEntry, files);
-    }
-  } else if (entry.isFile && /\.(ts|tsx)$/.test(entry.name)) {
-    if (shouldSkipFile(entry.name)) {
-      return;
-    }
-    files.push(fullPath);
-  }
+/** A public endpoint method that goes into the spec. */
+interface Operation {
+  readonly filePath: string;
+  /** Path template, e.g. `/api/users/{id}`. */
+  readonly path: string;
+  readonly method: HttpMethod;
+  readonly def: MethodDefWithPagination;
+  readonly operationId: string;
 }
 
 function registerEndpoint(
@@ -202,6 +194,7 @@ function registerEndpoint(
   method: HttpMethod,
   def: MethodDefWithPagination,
   pathParams: string[],
+  operationId: string | undefined,
 ): void {
   const request: Record<string, unknown> = {};
 
@@ -295,6 +288,7 @@ function registerEndpoint(
   const pathDef: any = {
     method: method.toLowerCase() as Lowercase<HttpMethod>,
     path,
+    operationId,
     summary: def.summary,
     description: def.description,
     tags: def.tags,

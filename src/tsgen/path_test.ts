@@ -79,3 +79,7 @@ Deno.test("pathToTypeName handles nested params", () => {
 Deno.test("pathToTypeName handles kebab-case paths", () => {
   assertEquals(pathToTypeName("/api/send-digest"), "SendDigest");
 });
+
+Deno.test("pathToTypeName handles catch-all params", () => {
+  assertEquals(pathToTypeName("/api/files/[...path]"), "FilesByPath");
+});
