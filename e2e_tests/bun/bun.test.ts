@@ -12,6 +12,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  checkResourceLaws,
+  formatResourceLawsReport,
   generateOpenApiSpec,
   generateProtocolTypesFromModule,
   generateTypes,
@@ -45,6 +47,7 @@ describe("fileRoutes with Bun.serve", () => {
   test("file paths become Bun route patterns", async () => {
     expect(Object.keys(await fileRoutes(ROUTES)).sort()).toEqual([
       "/api/files/*",
+      "/api/notes/:id",
       "/api/ticks",
       "/api/users",
       "/api/users/:id",
@@ -157,6 +160,42 @@ describe("typed client against Bun.serve", () => {
   });
 });
 
+describe("resource laws against Bun.serve", () => {
+  test("a resource obeys the laws; a PUT that merges fails put-put", async () => {
+    const { handler } = await import("./routes/api/notes/[id].ts");
+
+    // PUT creates the note: the laws that begin with GET need it to exist.
+    const create = (id: string) =>
+      fetch(`${base}/api/notes/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "First", tags: ["a"] }),
+      });
+    expect((await create("1")).status).toBe(200);
+    expect((await create("merged")).status).toBe(200);
+
+    const report = await checkResourceLaws(handler, {
+      url: `${base}/api/notes/1`,
+    });
+    expect(report.ok, formatResourceLawsReport(report)).toBe(true);
+
+    const merged = await checkResourceLaws(handler, {
+      url: `${base}/api/notes/merged`,
+      runs: 40,
+    });
+    expect(merged.ok).toBe(false);
+    expect(
+      Object.entries(merged.laws)
+        .filter(([, law]) => law.held !== merged.runs)
+        .map(([name]) => name),
+    ).toEqual(["put-put"]);
+    const places = merged.laws["put-put"]!.violations.flatMap((violation) =>
+      violation.differences.map((difference) => difference.path)
+    );
+    expect([...new Set(places)]).toEqual(["pinned"]);
+  });
+});
+
 describe("generators under Bun", () => {
   test("types, client and routes formats", async () => {
     const types = await generateTypes({ routesDirs: [ROUTES] });
@@ -199,6 +238,7 @@ describe("generators under Bun", () => {
   test("OpenAPI spec", async () => {
     const spec = await generateOpenApiSpec({ routesDir: ROUTES, strict: true });
     expect(Object.keys(spec.paths ?? {}).sort()).toEqual([
+      "/api/notes/{id}",
       "/api/users",
       "/api/users/{id}",
     ]);

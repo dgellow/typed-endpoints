@@ -39,6 +39,8 @@ import {
   type PathSegment,
 } from "../core/file_routes.ts";
 
+import type { HttpMethod } from "../core/types.ts";
+
 export type { SseEvent, SseEventDef, SseMethodDef } from "../core/types.ts";
 export type {
   ApiDefOf,
@@ -77,13 +79,20 @@ export const sseEndpoint: FetchIntegration["sseEndpoint"] =
 export const createApiHandlers: FetchIntegration["createApiHandlers"] =
   integration.createApiHandlers;
 
-/** The handlers of one route, by HTTP method. */
-export type RouteHandlers = Readonly<
-  Record<
-    string,
-    (request: Request, params?: RouteParams) => Response | Promise<Response>
-  >
->;
+/** A handler of the router: the request and the path parameters. */
+export type RouteHandler = (
+  request: Request,
+  params?: RouteParams,
+) => Response | Promise<Response>;
+
+/**
+ * The handlers of one route, by HTTP method: what `createApiHandlers()`
+ * returns (which also carries the route's definition), or functions
+ * written by hand.
+ */
+export type RouteHandlers =
+  & { readonly [M in HttpMethod]?: RouteHandler }
+  & { readonly __apiDef?: unknown };
 
 /** Options of `createRouter()`. */
 export interface RouterOptions {
@@ -183,12 +192,15 @@ export function createRouter(
       const params = match(route.segments, parts);
       if (!params) continue;
 
-      const handler = route.handlers[request.method];
-      if (!handler) {
-        const allow = Object.keys(route.handlers).join(", ");
+      const handlers: Readonly<Record<string, unknown>> = route.handlers;
+      const handler = handlers[request.method];
+      if (typeof handler !== "function") {
+        const allow = Object.keys(handlers)
+          .filter((method) => typeof handlers[method] === "function")
+          .join(", ");
         return jsonError("Method not allowed", 405, { Allow: allow });
       }
-      return await handler(request, params);
+      return await (handler as RouteHandler)(request, params);
     }
 
     return options.notFound
