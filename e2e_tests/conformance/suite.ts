@@ -792,6 +792,14 @@ export function conformance(
       );
     }
 
+    // A number JSON does not have is not a number of a body: neither the
+    // words some parsers read, nor a literal too large to be one.
+    for (const number of ["-Infinity", "NaN", "1e999"]) {
+      const response = await send("POST", "/api/edges", `{"huge": ${number}}`);
+      assertEquals(response.status, 400, number);
+      await response.body?.cancel();
+    }
+
     // A multiple of 0.1, whatever binary floating point makes of it.
     await accepted({ step: 0.3 });
     await accepted({ step: 1.1 });

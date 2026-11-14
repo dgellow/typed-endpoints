@@ -87,6 +87,7 @@ class _Model(BaseModel):
 
     model_config = ConfigDict(
         alias_generator=to_camel,
+        allow_inf_nan=False,
         populate_by_name=True,
         regex_engine="python-re",
         use_attribute_docstrings=True,
