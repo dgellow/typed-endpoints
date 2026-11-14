@@ -151,7 +151,9 @@ function unionOf(nodes: Node[]): Node {
 function isOptionalKey(schema: unknown, state: State): boolean {
   const zod = internals(schema);
   const flag = state.io === "input" ? zod.optin : zod.optout;
-  if (flag !== undefined) return flag === "optional";
+  // "defaulted" is how newer Zod 4 releases flag a default on the input
+  // side; older ones use "optional" for it.
+  if (flag !== undefined) return flag === "optional" || flag === "defaulted";
   // Fallback for schemas that do not carry the flag.
   const type = getType(schema);
   if (type === "optional") return true;
@@ -272,11 +274,13 @@ function convertRecord(def: Def, state: State): Node {
   const value = convert(def.valueType, state).text;
   const record = `Record<${key}, ${value}>`;
 
-  // z.partialRecord() keeps an enum or literal key type but drops the list
-  // of required keys.
+  // z.partialRecord(): newer Zod 4 releases flag the record as partial;
+  // older ones keep an enum or literal key type but drop its list of
+  // required keys.
   const keyType = getType(def.keyType);
   const enumerable = keyType === "enum" || keyType === "literal";
-  const partial = enumerable && internals(def.keyType).values === undefined;
+  const partial = def.partial === true ||
+    (enumerable && internals(def.keyType).values === undefined);
   return atom(partial ? `Partial<${record}>` : record);
 }
 
