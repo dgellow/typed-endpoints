@@ -232,6 +232,10 @@ mod runtime {
         pub(super) constant: Option<Literal>,
         pub(super) options: Option<&'static [Literal]>,
         pub(super) any_of: Option<&'static [Schema]>,
+        /// The member that decides which alternative a value is: each
+        /// alternative is an object that requires it, with a text
+        /// constant of its own.
+        pub(super) tag: Option<&'static str>,
         pub(super) all_of: Option<&'static [Schema]>,
         pub(super) min_length: Option<u64>,
         pub(super) max_length: Option<u64>,
@@ -263,6 +267,7 @@ mod runtime {
             constant: None,
             options: None,
             any_of: None,
+            tag: None,
             all_of: None,
             min_length: None,
             max_length: None,
@@ -310,28 +315,6 @@ mod runtime {
                 // No type: anything, which a missing value is not.
                 None => "nonoptional",
             }
-        }
-
-        /// The member that tells the alternatives apart: each is an object
-        /// that requires it, with a text constant of its own.
-        fn discriminator(&self) -> Option<(&'static str, Vec<&'static str>)> {
-            let alternatives = self.any_of.filter(|alternatives| alternatives.len() > 1)?;
-            let first = alternatives[0].resolved().properties?;
-            first.iter().find_map(|(name, _)| {
-                let mut constants = Vec::with_capacity(alternatives.len());
-                for alternative in alternatives {
-                    let alternative = alternative.resolved();
-                    let constant = match alternative.property(name)?.constant? {
-                        Literal::Text(constant) if alternative.required.contains(name) => constant,
-                        _ => return None,
-                    };
-                    if constants.contains(&constant) {
-                        return None;
-                    }
-                    constants.push(constant);
-                }
-                Some((*name, constants))
-            })
         }
     }
 
@@ -678,10 +661,9 @@ mod runtime {
             }
 
             // A member that tells the alternatives apart decides which
-            // one the value is checked as.
-            let discriminator = schema.discriminator();
+            // one the value is checked as. The contract names it.
             let Some(value) = value else {
-                if discriminator.is_some() {
+                if schema.tag.is_some() {
                     self.issue(
                         "invalid_type",
                         "Invalid input: expected object, received undefined",
@@ -691,7 +673,7 @@ mod runtime {
                 }
                 return;
             };
-            if let Some((tag, constants)) = discriminator {
+            if let Some(tag) = schema.tag {
                 if !value.is_object() {
                     let actual = kind_of(value);
                     self.issue(
@@ -700,14 +682,24 @@ mod runtime {
                     );
                     return;
                 }
+                let constant = |alternative: &'static Schema| match alternative
+                    .resolved()
+                    .property(tag)?
+                    .constant?
+                {
+                    Literal::Text(constant) => Some(constant),
+                    _ => None,
+                };
                 let given = value.get(tag).and_then(Value::as_str);
-                let chosen = given
-                    .and_then(|given| constants.iter().position(|constant| *constant == given));
-                if let Some(index) = chosen {
-                    self.check(&alternatives[index], Some(value));
+                let chosen = alternatives
+                    .iter()
+                    .find(|alternative| given.is_some() && constant(alternative) == given);
+                if let Some(alternative) = chosen {
+                    self.check(alternative, Some(value));
                 } else {
-                    let listed: Vec<String> = constants
+                    let listed: Vec<String> = alternatives
                         .iter()
+                        .filter_map(constant)
                         .map(|constant| format!("'{constant}'"))
                         .collect();
                     let listed = listed.join(" | ");

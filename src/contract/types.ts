@@ -646,6 +646,26 @@ function itemName(list: string): string {
 }
 
 /**
+ * The member that decides which alternative of a union a value is, if one
+ * does: every alternative is an object that requires it, with a string
+ * constant of its own.
+ *
+ * A generator that turns the union into a tagged type and a checker that
+ * picks the alternative to check by that member have to agree on it, so
+ * both take it from here.
+ */
+export function discriminatorOf(
+  alternatives: readonly Readonly<Record<string, unknown>>[],
+  document: {
+    readonly root: Readonly<Record<string, unknown>>;
+    readonly defs: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
+  },
+): string | undefined {
+  const { tag, decides } = tagOf(alternatives, { ...document, rootName: "" });
+  return decides ? tag : undefined;
+}
+
+/**
  * The property that tells the object members of a union apart: each of
  * them requires it with a string constant, and no two constants are
  * equal. It `decides` the member when every member is an object.
