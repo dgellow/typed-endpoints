@@ -735,3 +735,127 @@ const _checkOnlyStartInitial: "start" extends MappedStepsInitial ? true
   : false = true;
 const _checkProcessNotInitial: "process" extends MappedStepsInitial ? true
   : false = false;
+
+// =============================================================================
+// Compile-time request and availability checks
+// =============================================================================
+//
+// Each `@ts-expect-error` below is a call the compiler must reject. If one of
+// them starts to compile, `deno check` fails with "unused directive".
+
+Deno.test("execute types the request of dependent and mapped steps", async () => {
+  const proto = protocol({
+    name: "TypedRequests",
+    initial: "start",
+    steps: {
+      start: step({
+        name: "start",
+        request: z.object({ user: z.string() }),
+        response: z.object({ code: z.string() }),
+      }),
+      viaFunction: dependentStep({
+        name: "viaFunction",
+        dependsOn: "start",
+        request: (prev: { code: string }) =>
+          z.object({ code: z.literal(prev.code), note: z.string().optional() }),
+        response: z.object({ ok: z.boolean() }),
+      }),
+      viaMapping: mappedStep({
+        name: "viaMapping",
+        dependsOn: "start",
+        requestMapping: { code: fromStep("start", "code") },
+        requestSchema: z.object({ code: z.string(), count: z.number() }),
+        response: z.object({ ok: z.boolean() }),
+      }),
+    },
+  });
+
+  const executor = createMockExecutor(proto, {
+    start: { code: "c-1" },
+    viaFunction: { ok: true },
+    viaMapping: { ok: true },
+  });
+  const { session } = await createSession(proto, executor).execute("start", {
+    user: "u",
+  });
+
+  // Valid requests compile and run.
+  await session.execute("viaFunction", { code: "c-1" });
+  await session.execute("viaFunction", { code: "c-1", note: "n" });
+  await session.execute("viaMapping", { code: "c-1", count: 1 });
+
+  // The shape is checked at compile time...
+  await assertRejects(() =>
+    // @ts-expect-error missing `code`
+    session.execute("viaFunction", { note: "n" })
+  );
+  // An unknown key is a compile error only: z.object() strips it at runtime.
+  // @ts-expect-error unknown key
+  await session.execute("viaFunction", { code: "c-1", extra: 1 });
+  await assertRejects(() =>
+    // @ts-expect-error `count` must be a number
+    session.execute("viaMapping", { code: "c-1", count: "1" })
+  );
+  await assertRejects(() =>
+    // @ts-expect-error not an object of the request shape
+    session.execute("viaMapping", { nope: 1 })
+  );
+
+  // ...the forwarded value only at runtime: this compiles and is rejected.
+  await assertRejects(
+    () => session.execute("viaMapping", { code: "other", count: 1 }),
+    Error,
+    'Invalid request for "viaMapping"',
+  );
+});
+
+Deno.test("a mapped step needs every step its mapping reads from", async () => {
+  const proto = protocol({
+    name: "MultiSource",
+    initial: "auth",
+    steps: {
+      auth: step({
+        name: "auth",
+        request: z.object({}),
+        response: z.object({ token: z.string() }),
+      }),
+      process: step({
+        name: "process",
+        request: z.object({}),
+        response: z.object({ id: z.string() }),
+      }),
+      finalize: mappedStep({
+        name: "finalize",
+        dependsOn: "process",
+        requestMapping: {
+          token: fromStep("auth", "token"),
+          sessionId: fromStep("process", "id"),
+        },
+        requestSchema: z.object({ token: z.string(), sessionId: z.string() }),
+        response: z.object({ ok: z.boolean() }),
+      }),
+    },
+  });
+
+  const executor = createMockExecutor(proto, {
+    auth: { token: "t" },
+    process: { id: "p" },
+    finalize: { ok: true },
+  });
+  const request = { token: "t", sessionId: "p" };
+
+  const { session: afterProcess } = await createSession(proto, executor)
+    .execute("process", {});
+
+  // `process` alone is not enough: the mapping also reads from `auth`.
+  await assertRejects(
+    // @ts-expect-error finalize is not available yet
+    () => afterProcess.execute("finalize", request),
+    Error,
+    'mapping source "auth"',
+  );
+
+  const { session: afterBoth } = await afterProcess.execute("auth", {});
+  const { response } = await afterBoth.execute("finalize", request);
+  assertEquals(response, { ok: true });
+});
