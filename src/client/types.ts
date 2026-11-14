@@ -106,9 +106,17 @@ export interface SseMethodDef {
 export interface SubscribeOptions {
   query?: Record<string, unknown>;
   signal?: AbortSignal;
-  /** Reconnect on error. Default: true */
+  /**
+   * Reconnect after a network failure or a 5xx response. Default: true.
+   *
+   * Not retried: 4xx responses and events whose data is not valid JSON.
+   * A stream that the server closes normally ends the iteration.
+   */
   reconnect?: boolean;
-  /** Reconnect delay in ms. Default: 1000 */
+  /**
+   * Reconnect delay in ms, multiplied by the attempt number. Default: 1000.
+   * A `retry` field sent by the server replaces it.
+   */
   reconnectDelay?: number;
   /** Max reconnect attempts. Default: 5 */
   maxReconnectAttempts?: number;
