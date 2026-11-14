@@ -72,6 +72,7 @@ export type {
   Parallel,
   Protocol,
   ProtocolMorphism,
+  ProtocolNode,
   ProtocolState,
   Repeat,
   RequestLocation,
@@ -208,6 +209,26 @@ export {
   UnknownStepError,
 } from "./errors.ts";
 export type { ValidationIssues } from "./errors.ts";
+
+// Plans: running compositions
+export { each, PlanError, runPlan } from "./plan.ts";
+export type {
+  Asked,
+  Asks,
+  AsksAll,
+  BranchMismatch,
+  BranchPlan,
+  EachPlan,
+  FirstOf,
+  IndexOf,
+  Narrowed,
+  OptionKey,
+  PlanOf,
+  RepeatPlan,
+  ResultOf,
+  RunPlanOptions,
+  SequencePlan,
+} from "./plan.ts";
 
 // OpenAPI extensions
 export {

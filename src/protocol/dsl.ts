@@ -21,6 +21,7 @@ import type {
   MappedStep,
   Parallel,
   Protocol,
+  ProtocolNode,
   Repeat,
   Sequence,
   Step,
@@ -334,7 +335,7 @@ export function mappedStep<
  * const flow = sequence(authorize, exchange, refresh);
  * ```
  */
-export function sequence<TSteps extends readonly AnyStep[]>(
+export function sequence<const TSteps extends readonly ProtocolNode[]>(
   ...steps: TSteps
 ): Sequence<TSteps> {
   return {
@@ -353,7 +354,7 @@ export function sequence<TSteps extends readonly AnyStep[]>(
  * const writes = repeat(writeStep, { min: 0, max: 100 });
  * ```
  */
-export function repeat<TStep extends AnyStep>(
+export function repeat<TStep extends ProtocolNode>(
   step: TStep,
   options?: { min?: number; max?: number },
 ): Repeat<TStep> {
@@ -373,7 +374,7 @@ export function repeat<TStep extends AnyStep>(
  * const oneOrMoreWrites = repeat1(writeStep);
  * ```
  */
-export function repeat1<TStep extends AnyStep>(
+export function repeat1<TStep extends ProtocolNode>(
   step: TStep,
   options?: { max?: number },
 ): Repeat<TStep> {
@@ -393,7 +394,7 @@ export function repeat1<TStep extends AnyStep>(
  * const result = choice(successStep, errorStep);
  * ```
  */
-export function choice<TSteps extends readonly AnyStep[]>(
+export function choice<const TSteps extends readonly ProtocolNode[]>(
   ...steps: TSteps
 ): Choice<TSteps> {
   return {
@@ -414,9 +415,9 @@ export function choice<TSteps extends readonly AnyStep[]>(
  * ```
  */
 export function branch<
-  TPredicate extends (prev: unknown) => boolean,
-  TThen extends AnyStep,
-  TElse extends AnyStep,
+  TPredicate extends (prev: never) => boolean,
+  TThen extends ProtocolNode,
+  TElse extends ProtocolNode,
 >(
   predicate: TPredicate,
   branches: { then: TThen; else: TElse },
@@ -439,7 +440,7 @@ export function branch<
  * const both = parallel(fetchUser, fetchPosts);
  * ```
  */
-export function parallel<TSteps extends readonly AnyStep[]>(
+export function parallel<const TSteps extends readonly ProtocolNode[]>(
   ...steps: TSteps
 ): Parallel<TSteps> {
   return {

@@ -121,6 +121,7 @@ export type {
   MappedStep,
   Parallel,
   Protocol,
+  ProtocolNode,
   Repeat,
   RequestLocation,
   RequestLocations,
