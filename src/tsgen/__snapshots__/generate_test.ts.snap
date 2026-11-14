@@ -5,8 +5,11 @@ snapshot[`generateTypes 1`] = `
 // Do not edit manually
 
 // GET /api/tasks/[id]/events
+export type TasksByIdEventsParams = { id: string; };
+export type TasksByIdEventsEvents = { progress: { percent: number; }; complete: { result: string; }; error: { message: string; }; };
 
 // GET /api/users
+export type UsersGetQuery = { cursor?: string | undefined; limit?: number | undefined; };
 export type UsersGetResponse = { data: { id: string; name: string; email: string; }[]; nextCursor?: string | undefined; };
 
 // POST /api/users
@@ -14,9 +17,11 @@ export type UsersPostRequest = { name: string; email: string; };
 export type UsersPostResponse = { id: string; name: string; email: string; };
 
 // GET /api/users/[id]
+export type UsersByIdGetParams = { id: string; };
 export type UsersByIdGetResponse = { id: string; name: string; email: string; };
 
 // DELETE /api/users/[id]
+export type UsersByIdDeleteParams = { id: string; };
 "
 `;
 
@@ -25,8 +30,11 @@ snapshot[`generateTypes with config uses subprocess import 1`] = `
 // Do not edit manually
 
 // GET /api/tasks/[id]/events
+export type TasksByIdEventsParams = { id: string; };
+export type TasksByIdEventsEvents = { progress: { percent: number; }; complete: { result: string; }; error: { message: string; }; };
 
 // GET /api/users
+export type UsersGetQuery = { cursor?: string | undefined; limit?: number | undefined; };
 export type UsersGetResponse = { data: { id: string; name: string; email: string; }[]; nextCursor?: string | undefined; };
 
 // POST /api/users
@@ -34,9 +42,11 @@ export type UsersPostRequest = { name: string; email: string; };
 export type UsersPostResponse = { id: string; name: string; email: string; };
 
 // GET /api/users/[id]
+export type UsersByIdGetParams = { id: string; };
 export type UsersByIdGetResponse = { id: string; name: string; email: string; };
 
 // DELETE /api/users/[id]
+export type UsersByIdDeleteParams = { id: string; };
 "
 `;
 
@@ -45,8 +55,11 @@ snapshot[`generateTypes with multiple directories 1`] = `
 // Do not edit manually
 
 // GET /api/tasks/[id]/events
+export type TasksByIdEventsParams = { id: string; };
+export type TasksByIdEventsEvents = { progress: { percent: number; }; complete: { result: string; }; error: { message: string; }; };
 
 // GET /api/users
+export type UsersGetQuery = { cursor?: string | undefined; limit?: number | undefined; };
 export type UsersGetResponse = { data: { id: string; name: string; email: string; }[]; nextCursor?: string | undefined; };
 
 // POST /api/users
@@ -54,9 +67,11 @@ export type UsersPostRequest = { name: string; email: string; };
 export type UsersPostResponse = { id: string; name: string; email: string; };
 
 // GET /api/users/[id]
+export type UsersByIdGetParams = { id: string; };
 export type UsersByIdGetResponse = { id: string; name: string; email: string; };
 
 // DELETE /api/users/[id]
+export type UsersByIdDeleteParams = { id: string; };
 
 // POST /webhooks/stripe
 export type WebhooksStripeRequest = { type: string; data: { id: string; }; };
@@ -82,6 +97,7 @@ export interface Api {
   };
   users: {
     list: {
+      query: { cursor?: string | undefined; limit?: number | undefined; };
       response: { data: { id: string; name: string; email: string; }[]; nextCursor?: string | undefined; };
       pagination: {
         style: "cursor";
@@ -110,5 +126,78 @@ export interface Api {
     };
   };
 }
+'
+`;
+
+snapshot[`generateTypes: recursive schema, input side, JSON wire form 1`] = `
+'// Auto-generated from API route Zod schemas
+// Do not edit manually
+
+// Named types
+export type Recursive = { /** Display name */ name: string; createdAt: string; "sort-key": number; children: Recursive[]; };
+
+// GET /api/categories
+export type CategoriesGetQuery = { depth?: number | undefined; tag?: string[] | undefined; };
+export type CategoriesGetResponse = Recursive[];
+
+// POST /api/categories
+export type CategoriesPostRequest = { name: string; kind?: "leaf" | "branch" | undefined; label?: "the \\\\"root\\\\"" | undefined; };
+export type CategoriesPostResponse = Recursive;
+
+// GET /api/users/[id]/posts/[postId]
+export type UsersByIdPostsByPostIdParams = { id: string; postId: string; };
+export type UsersByIdPostsByPostIdResponse = { id: string; };
+
+// GET /api/users/[id]/posts
+export type UsersByIdPostsParams = { id: string; };
+export type UsersByIdPostsResponse = { id: string; }[];
+'
+`;
+
+snapshot[`generateTypes: client format types the query and compiles 1`] = `
+'// Auto-generated API types for use with createClient()
+// Do not edit manually
+
+// Named types
+export type Recursive = { /** Display name */ name: string; createdAt: string; "sort-key": number; children: Recursive[]; };
+
+export interface Api {
+  categories: {
+    list: {
+      query: { depth?: number | undefined; tag?: string[] | undefined; };
+      response: Recursive[];
+    };
+    create: {
+      body: { name: string; kind?: "leaf" | "branch" | undefined; label?: "the \\\\"root\\\\"" | undefined; };
+      response: Recursive;
+    };
+  };
+  users: {
+    posts: {
+      retrieve: {
+        response: { id: string; };
+      };
+      list: {
+        response: { id: string; }[];
+      };
+    };
+  };
+}
+'
+`;
+
+snapshot[`generateTypes: a collection under a parameter is a list 1`] = `
+'// Auto-generated route metadata for use with createHttpExecutor()
+// Do not edit manually
+
+export const apiRoutes = {
+  categoriesList: { method: "GET", path: "/api/categories" },
+  categoriesCreate: { method: "POST", path: "/api/categories" },
+  usersPostsRetrieve: { method: "GET", path: "/api/users/{id}/posts/{postId}" },
+  usersPostsList: { method: "GET", path: "/api/users/{id}/posts" },
+} as const;
+
+export type ApiRoutes = typeof apiRoutes;
+export type RouteId = keyof ApiRoutes;
 '
 `;

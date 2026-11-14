@@ -107,7 +107,10 @@ async function main() {
       await Deno.writeTextFile(args.output, output);
       console.log(`Generated protocol types written to ${args.output}`);
     } catch (error) {
-      console.error("Error generating protocol types:", error);
+      console.error(
+        "Error generating protocol types:",
+        error instanceof Error ? error.message : error,
+      );
       Deno.exit(1);
     }
     return;
@@ -126,7 +129,10 @@ async function main() {
     });
     console.log(`Generated ${format ?? "types"} written to ${args.output}`);
   } catch (error) {
-    console.error("Error generating types:", error);
+    console.error(
+      "Error generating types:",
+      error instanceof Error ? error.message : error,
+    );
     Deno.exit(1);
   }
 }

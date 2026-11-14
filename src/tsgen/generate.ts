@@ -1,8 +1,14 @@
 import { toFileUrl } from "@std/path";
-import type { ApiDef, HttpMethod } from "@/core/types.ts";
+import type { HttpMethod } from "@/core/types.ts";
+import type { AnyPaginationMeta } from "@/pagination/types.ts";
 import { collectRouteFiles } from "./files.ts";
 import { filePathToApiPath, pathToTypeName } from "./path.ts";
-import { zodToTypeString } from "./zod.ts";
+import {
+  type ExtractedMethod,
+  type Extraction,
+  extractRoutes,
+  type RouteSource,
+} from "./extract.ts";
 
 const HTTP_METHODS: HttpMethod[] = [
   "GET",
@@ -20,9 +26,9 @@ export interface TypeGenOptions {
   /** Output file path. If provided, writes generated types to this file */
   output?: string;
   /**
-   * Path to deno.json config file. When provided, uses subprocess to import
-   * route files with the config's import map. This is needed when running
-   * the CLI as an external package.
+   * Path to deno.json config file. When provided, route files are imported
+   * in a subprocess that uses the config's import map. This is needed when
+   * running the CLI as an external package.
    */
   config?: string;
   /**
@@ -34,263 +40,148 @@ export interface TypeGenOptions {
   format?: "types" | "client" | "routes";
 }
 
-interface RouteModule {
-  handler?: { __apiDef?: ApiDef };
-}
+// =============================================================================
+// Extraction
+// =============================================================================
 
-// Helper script for subprocess import - extracts __apiDef and converts Zod schemas to type strings
-// This runs in user's context with their import map, so it can import Zod and route files
-// The zodToTypeString logic is inlined to avoid version/export issues
-const IMPORT_HELPER_SCRIPT = `
-// Inlined zodToTypeString implementation
-function getDef(schema) {
-  const zod = schema._zod;
-  return zod?.def ?? schema._def ?? {};
-}
-function getTypeName(def) {
-  return def.type ?? def.typeName ?? "unknown";
-}
-function convert(schema) {
-  const def = getDef(schema);
-  const typeName = getTypeName(def);
-  switch (typeName) {
-    case "string": return "string";
-    case "number": case "int": return "number";
-    case "boolean": return "boolean";
-    case "bigint": return "bigint";
-    case "date": return "Date";
-    case "symbol": return "symbol";
-    case "any": return "any";
-    case "unknown": return "unknown";
-    case "never": return "never";
-    case "void": return "void";
-    case "null": return "null";
-    case "undefined": return "undefined";
-    case "nan": return "number";
-    case "file": return "File";
-    case "literal": {
-      const values = def.values;
-      return values.map(v => typeof v === "string" ? \`"\${v}"\` : String(v)).join(" | ");
-    }
-    case "enum": {
-      const entries = def.entries;
-      const values = Object.values(entries);
-      return values.map(v => typeof v === "string" ? \`"\${v}"\` : String(v)).join(" | ");
-    }
-    case "array": {
-      const inner = convert(def.element);
-      if (inner.includes("|") && !inner.startsWith("(")) return \`(\${inner})[]\`;
-      return \`\${inner}[]\`;
-    }
-    case "object": {
-      const shape = def.shape;
-      const entries = Object.entries(shape);
-      if (entries.length === 0) return "{}";
-      const props = entries.map(([key, value]) => {
-        const isOptional = getTypeName(getDef(value)) === "optional";
-        const typeStr = convert(value);
-        return \`\${key}\${isOptional ? "?" : ""}: \${typeStr}\`;
-      });
-      return \`{ \${props.join("; ")}; }\`;
-    }
-    case "optional": return \`\${convert(def.innerType)} | undefined\`;
-    case "nullable": return \`\${convert(def.innerType)} | null\`;
-    case "union": return def.options.map(convert).join(" | ");
-    case "intersection": return \`\${convert(def.left)} & \${convert(def.right)}\`;
-    case "tuple": {
-      const itemTypes = def.items.map(convert);
-      if (def.rest) return \`[\${itemTypes.join(", ")}, ...\${convert(def.rest)}[]]\`;
-      return \`[\${itemTypes.join(", ")}]\`;
-    }
-    case "record": {
-      const keyType = def.keyType ? convert(def.keyType) : "string";
-      return \`Record<\${keyType}, \${convert(def.valueType)}>\`;
-    }
-    case "map": return \`Map<\${convert(def.keyType)}, \${convert(def.valueType)}>\`;
-    case "set": return \`Set<\${convert(def.valueType)}>\`;
-    case "promise": return \`Promise<\${convert(def.innerType)}>\`;
-    case "function": {
-      const inputType = def.input ? convert(def.input) : "[]";
-      const outputType = def.output ? convert(def.output) : "void";
-      return \`(...args: \${inputType}) => \${outputType}\`;
-    }
-    case "lazy": return convert(def.getter());
-    case "default": case "prefault": case "catch": case "readonly": case "nonoptional": case "success":
-      return convert(def.innerType);
-    case "transform": return "unknown";
-    case "pipe": return convert(def.out);
-    case "custom": return "unknown";
-    case "template_literal": return "string";
-    default: return "unknown";
-  }
-}
-function zodToTypeString(schema) { return convert(schema); }
-
-const filePath = Deno.args[0];
-try {
-  const mod = await import(filePath);
-  const apiDef = mod.handler?.__apiDef;
-  if (!apiDef) {
-    console.log("null");
-    Deno.exit(0);
-  }
-
-  // Convert Zod schemas to type strings before serializing
-  const result = {};
-  for (const [method, def] of Object.entries(apiDef)) {
-    if (!def) continue;
-    const methodResult = {
-      bodyType: def.body ? zodToTypeString(def.body) : undefined,
-      responseType: def.response ? zodToTypeString(def.response) : undefined,
-    };
-
-    // Handle SSE events
-    if (def.events) {
-      methodResult.events = {};
-      for (const [eventName, schema] of Object.entries(def.events)) {
-        methodResult.events[eventName] = zodToTypeString(schema);
-      }
-    }
-
-    // Handle pagination metadata
-    if (def.__pagination) {
-      methodResult.pagination = def.__pagination;
-    }
-
-    // Handle operationId
-    if (def.operationId) {
-      methodResult.operationId = def.operationId;
-    }
-
-    result[method] = methodResult;
-  }
-  console.log(JSON.stringify(result));
-} catch (e) {
-  console.error(e.message);
-  Deno.exit(1);
-}
-`;
+/** Line prefix that marks the result in the subprocess output. */
+const RESULT_MARKER = "__TYPED_ENDPOINTS_RESULT__";
 
 /**
- * Import a module using subprocess with the given config.
- * This allows importing files that use the config's import map.
+ * Run the extraction in a subprocess that uses the given config.
+ *
+ * One subprocess imports all route files. It loads `extract.ts` by URL, so
+ * the same code runs here and there. Route modules may print while they are
+ * imported; the result is the line that starts with the marker.
  */
-async function importWithConfig(
-  filePath: string,
+async function extractWithConfig(
+  sources: RouteSource[],
   configPath: string,
-): Promise<ApiDef | undefined> {
-  const absolutePath = await Deno.realPath(filePath);
-  const fileUrl = toFileUrl(absolutePath).href;
+): Promise<Extraction> {
+  const extractUrl = new URL("./extract.ts", import.meta.url).href;
+  const script = `
+    const { extractRoutes } = await import(${JSON.stringify(extractUrl)});
+    try {
+      const result = await extractRoutes(JSON.parse(Deno.args[0]));
+      console.log(${JSON.stringify(RESULT_MARKER)} + JSON.stringify(result));
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      Deno.exit(1);
+    }
+  `;
 
-  const cmd = new Deno.Command("deno", {
-    args: [
-      "eval",
-      "--config",
-      configPath,
-      IMPORT_HELPER_SCRIPT,
-      fileUrl, // Pass target file URL as an argument to the script
-    ],
+  const { code, stdout, stderr } = await new Deno.Command("deno", {
+    args: ["eval", "--config", configPath, script, JSON.stringify(sources)],
     stdout: "piped",
     stderr: "piped",
-  });
-
-  const { code, stdout, stderr } = await cmd.output();
+  }).output();
 
   if (code !== 0) {
-    const errorText = new TextDecoder().decode(stderr);
-    throw new Error(`Failed to import ${filePath} via eval: ${errorText}`);
+    throw new Error(new TextDecoder().decode(stderr).trim());
   }
 
-  const output = new TextDecoder().decode(stdout).trim();
-  if (output === "null") {
-    return undefined;
+  const resultLine = new TextDecoder().decode(stdout).split("\n")
+    .findLast((line) => line.startsWith(RESULT_MARKER));
+  if (resultLine === undefined) {
+    throw new Error("Route extraction subprocess produced no result");
   }
-
-  try {
-    const result = JSON.parse(output);
-    return result ?? undefined;
-  } catch (e) {
-    throw new Error(
-      `Failed to parse JSON from eval subprocess for ${filePath}: ${
-        typeof e === "object" && e && "message" in e ? e.message : e
-      }\nReceived: ${output}`,
-    );
-  }
+  return JSON.parse(resultLine.slice(RESULT_MARKER.length));
 }
 
-interface BasePaginationMeta {
-  items: string;
-  limitParam?: string;
-}
-
-interface CursorPaginationMeta extends BasePaginationMeta {
-  style: "cursor";
-  cursor: string;
-  cursorParam: string;
-}
-
-interface CursorIdPaginationMeta extends BasePaginationMeta {
-  style: "cursorId";
-  cursorIdParam: string;
-  idField: string;
-}
-
-interface OffsetPaginationMeta extends BasePaginationMeta {
-  style: "offset";
-  total: string;
-  offsetParam: string;
-}
-
-interface PagePaginationMeta extends BasePaginationMeta {
-  style: "page";
-  total?: string;
-  totalPages?: string;
-  pageParam: string;
-  perPageParam?: string;
-}
-
-interface UrlPaginationMeta extends BasePaginationMeta {
-  style: "url";
-  nextUrl: string;
-  prevUrl?: string;
-}
-
-type PaginationMeta =
-  | CursorPaginationMeta
-  | CursorIdPaginationMeta
-  | OffsetPaginationMeta
-  | PagePaginationMeta
-  | UrlPaginationMeta;
+// =============================================================================
+// Endpoints
+// =============================================================================
 
 interface EndpointType {
+  /** Base of the generated type names, e.g. `UsersByIdGet`. */
   name: string;
+  /** URL path in file-route notation, e.g. `/api/users/[id]`. */
   path: string;
   method: string;
+  filePath: string;
   request?: string;
+  query?: string;
+  params?: string;
   response?: string;
-  events?: Record<string, string>;
-  pagination?: PaginationMeta;
+  events?: Readonly<Record<string, string>>;
+  pagination?: AnyPaginationMeta;
   operationId?: string;
 }
 
+function describe(endpoint: EndpointType): string {
+  return `${endpoint.method} ${endpoint.path} (${endpoint.filePath})`;
+}
+
 /**
- * Import a route module and extract its apiDef.
- * Uses subprocess with config if provided, otherwise direct import.
+ * Fail when two endpoints derive the same generated name.
+ *
+ * `entries` pairs each generated name with the endpoint it came from.
  */
-async function getApiDef(
-  filePath: string,
-  config: string | undefined,
-  cacheBuster: string,
-): Promise<{ filePath: string; apiDef: ApiDef | undefined }> {
-  if (config) {
-    const apiDef = await importWithConfig(filePath, config);
-    return { filePath, apiDef };
+function assertNoCollisions(
+  what: string,
+  entries: readonly (readonly [string, EndpointType])[],
+  hint: string,
+): void {
+  const byName = new Map<string, EndpointType[]>();
+  for (const [name, endpoint] of entries) {
+    const list = byName.get(name);
+    if (list) list.push(endpoint);
+    else byName.set(name, [endpoint]);
   }
 
-  const absolutePath = await Deno.realPath(filePath);
-  const fileUrl = toFileUrl(absolutePath).href + cacheBuster;
-  const mod = (await import(fileUrl)) as RouteModule;
-  return { filePath, apiDef: mod.handler?.__apiDef };
+  const collisions = [...byName].filter(([, list]) => list.length > 1);
+  if (collisions.length === 0) return;
+
+  const lines = collisions.map(([name, list]) =>
+    `  ${name}: ${list.map(describe).join(" and ")}`
+  );
+  throw new Error(
+    `Several endpoints generate the same ${what}:\n${
+      lines.join("\n")
+    }\n${hint}`,
+  );
+}
+
+function isIdentifier(name: string): boolean {
+  return /^[A-Za-z_$][\w$]*$/.test(name);
+}
+
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function buildEndpoints(extraction: Extraction): EndpointType[] {
+  const endpoints: EndpointType[] = [];
+
+  for (const { filePath, methods } of extraction.routes) {
+    const apiPath = filePathToApiPath(filePath);
+    const baseName = pathToTypeName(apiPath);
+    const defined = HTTP_METHODS.filter((m) => methods[m]);
+
+    for (const method of defined) {
+      const def: ExtractedMethod = methods[method];
+      // Disambiguate if multiple methods on same endpoint
+      const name = defined.length > 1
+        ? `${baseName}${capitalize(method.toLowerCase())}`
+        : baseName;
+
+      endpoints.push({
+        name,
+        path: apiPath,
+        method,
+        filePath,
+        request: def.body,
+        query: def.query,
+        params: def.params,
+        response: def.response,
+        events: def.events,
+        pagination: def.pagination as AnyPaginationMeta | undefined,
+        operationId: def.operationId,
+      });
+    }
+  }
+
+  return endpoints;
 }
 
 /**
@@ -310,115 +201,33 @@ export async function generateTypes(
     }
   }
 
-  const endpoints: EndpointType[] = [];
-  const cacheBuster = `?t=${Date.now()}`;
-
-  // Import all route files (in parallel when using config for better perf)
-  const importResults = await Promise.all(
-    routeFiles
-      .sort()
-      .map((filePath) => getApiDef(filePath, config, cacheBuster)),
+  // Without a config the modules are imported into this process. The query
+  // string makes each run import the current file, not a cached module.
+  const cacheBuster = config ? "" : `?t=${Date.now()}`;
+  const sources: RouteSource[] = await Promise.all(
+    routeFiles.sort().map(async (filePath) => ({
+      filePath,
+      url: toFileUrl(await Deno.realPath(filePath)).href + cacheBuster,
+    })),
   );
 
-  for (const { filePath, apiDef } of importResults) {
-    if (!apiDef) continue;
+  const extraction = config
+    ? await extractWithConfig(sources, config)
+    : await extractRoutes(sources);
 
-    const apiPath = filePathToApiPath(filePath);
-    const baseName = pathToTypeName(apiPath);
-
-    for (const method of HTTP_METHODS) {
-      const methodDef = apiDef[method];
-      if (!methodDef) continue;
-
-      // Disambiguate if multiple methods on same endpoint
-      const methodCount = HTTP_METHODS.filter((m) => apiDef[m]).length;
-      const name = methodCount > 1
-        ? `${baseName}${method.charAt(0)}${method.slice(1).toLowerCase()}`
-        : baseName;
-
-      const endpoint: EndpointType = {
-        name,
-        path: apiPath,
-        method,
-      };
-
-      // When using subprocess, we get type strings directly (bodyType/responseType/events)
-      // When using direct import, we get Zod schemas (body/response/events)
-      // Use type assertion since subprocess returns a different shape
-      const def = methodDef as {
-        body?: unknown;
-        response?: unknown;
-        bodyType?: string;
-        responseType?: string;
-        events?: Record<string, unknown>;
-      };
-
-      if (def.bodyType) {
-        endpoint.request = def.bodyType;
-      } else if (def.body) {
-        endpoint.request = zodToTypeString(
-          def.body as Parameters<typeof zodToTypeString>[0],
-        );
-      }
-
-      if (def.responseType) {
-        endpoint.response = def.responseType;
-      } else if (def.response) {
-        endpoint.response = zodToTypeString(
-          def.response as Parameters<typeof zodToTypeString>[0],
-        );
-      }
-
-      // Handle SSE events
-      if (def.events) {
-        endpoint.events = {};
-        for (const [eventName, eventSchema] of Object.entries(def.events)) {
-          if (typeof eventSchema === "string") {
-            // From subprocess - already a type string
-            endpoint.events[eventName] = eventSchema;
-          } else {
-            // Direct import - convert Zod schema
-            endpoint.events[eventName] = zodToTypeString(
-              eventSchema as Parameters<typeof zodToTypeString>[0],
-            );
-          }
-        }
-      }
-
-      // Handle pagination metadata
-      const paginationDef = methodDef as { __pagination?: PaginationMeta };
-      if (paginationDef.__pagination) {
-        endpoint.pagination = paginationDef.__pagination;
-      } else if ((def as { pagination?: PaginationMeta }).pagination) {
-        // From subprocess
-        endpoint.pagination = (def as { pagination?: PaginationMeta })
-          .pagination;
-      }
-
-      // Handle operationId
-      const operationIdDef = methodDef as { operationId?: string };
-      if (operationIdDef.operationId) {
-        endpoint.operationId = operationIdDef.operationId;
-      } else if ((def as { operationId?: string }).operationId) {
-        // From subprocess
-        endpoint.operationId = (def as { operationId?: string }).operationId;
-      }
-
-      endpoints.push(endpoint);
-    }
-  }
+  const endpoints = buildEndpoints(extraction);
 
   const format = options.format ?? "types";
   let content: string;
   switch (format) {
     case "client":
-      content = generateClientFormat(endpoints);
+      content = generateClientFormat(endpoints, extraction.declarations);
       break;
     case "routes":
       content = generateRoutesFormat(endpoints);
       break;
     default:
-      content = generateTypesFormat(endpoints);
+      content = generateTypesFormat(endpoints, extraction.declarations);
   }
 
   if (output) {
@@ -428,26 +237,72 @@ export async function generateTypes(
   return content;
 }
 
+// =============================================================================
+// Shared rendering
+// =============================================================================
+
+/** Named types (recursive schemas) referenced by the generated type texts. */
+function renderDeclarations(
+  declarations: Extraction["declarations"],
+): string[] {
+  if (declarations.length === 0) return [];
+  return [
+    "// Named types",
+    ...declarations.map(([name, text]) => `export type ${name} = ${text};`),
+    "",
+  ];
+}
+
+function renderEvents(events: Readonly<Record<string, string>>): string {
+  const members = Object.entries(events).map(([name, type]) =>
+    `${isIdentifier(name) ? name : JSON.stringify(name)}: ${type};`
+  );
+  return `{ ${members.join(" ")} }`;
+}
+
+// =============================================================================
+// "types" format
+// =============================================================================
+
 /**
  * Generate flat type exports (legacy format).
  */
-function generateTypesFormat(endpoints: EndpointType[]): string {
+function generateTypesFormat(
+  endpoints: EndpointType[],
+  declarations: Extraction["declarations"],
+): string {
+  assertNoCollisions(
+    "type name",
+    endpoints.map((e) => [e.name, e] as const),
+    "Type names are derived from the route path; rename one of the routes.",
+  );
+
   const lines: string[] = [
     "// Auto-generated from API route Zod schemas",
     "// Do not edit manually",
     "",
+    ...renderDeclarations(declarations),
   ];
 
   for (const endpoint of endpoints) {
+    const { name } = endpoint;
     lines.push(`// ${endpoint.method} ${endpoint.path}`);
 
-    if (endpoint.request) {
-      lines.push(`export type ${endpoint.name}Request = ${endpoint.request};`);
+    if (endpoint.params) {
+      lines.push(`export type ${name}Params = ${endpoint.params};`);
     }
-
+    if (endpoint.query) {
+      lines.push(`export type ${name}Query = ${endpoint.query};`);
+    }
+    if (endpoint.request) {
+      lines.push(`export type ${name}Request = ${endpoint.request};`);
+    }
     if (endpoint.response) {
+      lines.push(`export type ${name}Response = ${endpoint.response};`);
+    }
+    if (endpoint.events) {
       lines.push(
-        `export type ${endpoint.name}Response = ${endpoint.response};`,
+        `export type ${name}Events = ${renderEvents(endpoint.events)};`,
       );
     }
 
@@ -457,103 +312,29 @@ function generateTypesFormat(endpoints: EndpointType[]): string {
   return lines.join("\n");
 }
 
-/**
- * Derive an operationId from path and method.
- * E.g., POST /api/auth/login -> authLogin
- * E.g., GET /api/users/[id] -> usersRetrieve
- */
-function deriveOperationId(path: string, method: string): string {
-  // Remove /api/ prefix
-  const cleanPath = path.replace(/^\/api\//, "");
+// =============================================================================
+// "routes" format
+// =============================================================================
 
-  // Split into segments and filter out params
-  const segments = cleanPath
-    .split("/")
-    .filter((seg) => seg && !seg.startsWith("[") && !seg.startsWith(":"));
-
-  // Convert to camelCase
-  const baseName = segments
-    .map((
-      seg,
-      i,
-    ) => (i === 0 ? seg : seg.charAt(0).toUpperCase() + seg.slice(1)))
-    .join("");
-
-  // Add method suffix for non-GET methods or param paths
-  const hasParams = path.includes("[") || path.includes(":");
-  if (method === "GET" && !hasParams) {
-    return baseName + "List";
-  } else if (method === "GET") {
-    return baseName + "Retrieve";
-  } else if (method === "POST") {
-    return baseName + "Create";
-  } else if (method === "PUT" || method === "PATCH") {
-    return baseName + "Update";
-  } else if (method === "DELETE") {
-    return baseName + "Delete";
-  }
-
-  return baseName + method.charAt(0) + method.slice(1).toLowerCase();
-}
-
-/**
- * Generate runtime route metadata for use with createHttpExecutor().
- *
- * Output example:
- * ```typescript
- * export const apiRoutes = {
- *   login: { method: "POST", path: "/api/auth/login" },
- *   usersRetrieve: { method: "GET", path: "/api/users/[id]" },
- * } as const;
- * export type ApiRoutes = typeof apiRoutes;
- * export type RouteId = keyof ApiRoutes;
- * ```
- */
-function generateRoutesFormat(endpoints: EndpointType[]): string {
-  const lines: string[] = [
-    "// Auto-generated route metadata for use with createHttpExecutor()",
-    "// Do not edit manually",
-    "",
-    "export const apiRoutes = {",
-  ];
-
-  for (const endpoint of endpoints) {
-    // Use explicit operationId if available, otherwise derive from path/method
-    const id = endpoint.operationId ??
-      deriveOperationId(endpoint.path, endpoint.method);
-
-    // Convert Fresh-style [param] to {param} for HTTP executor
-    const httpPath = endpoint.path.replace(/\[(\w+)\]/g, "{$1}");
-
-    lines.push(
-      `  ${id}: { method: "${endpoint.method}", path: "${httpPath}" },`,
-    );
-  }
-
-  lines.push("} as const;");
-  lines.push("");
-  lines.push("export type ApiRoutes = typeof apiRoutes;");
-  lines.push("export type RouteId = keyof ApiRoutes;");
-  lines.push("");
-
-  return lines.join("\n");
+/** Whether the last path segment is a parameter, e.g. `/users/[id]`. */
+function endsWithParam(path: string): boolean {
+  const last = path.split("/").filter(Boolean).at(-1) ?? "";
+  return last.startsWith("[") || last.startsWith(":");
 }
 
 /**
  * Convert HTTP method + path pattern to resource method name.
  * - GET /users -> list
  * - GET /users/:id -> retrieve
+ * - GET /users/:id/posts -> list
  * - POST /users -> create
  * - PUT/PATCH /users/:id -> update
  * - DELETE /users/:id -> delete
  */
-function httpMethodToResourceMethod(
-  method: string,
-  hasParams: boolean,
-): string {
+function httpMethodToResourceMethod(method: string, path: string): string {
   switch (method) {
     case "GET":
-      return hasParams ? "retrieve" : "list";
+      return endsWithParam(path) ? "retrieve" : "list";
     case "POST":
       return "create";
     case "PUT":
@@ -573,24 +354,85 @@ function httpMethodToResourceMethod(
 function pathToResourceSegments(path: string): string[] {
   return path
     .replace(/^\/api\//, "") // Remove /api/ prefix
-    .replace(/^\/(webhooks|internal)\//, "$1/") // Keep webhooks/internal as first segment
     .split("/")
     .filter((seg) => seg && !seg.startsWith("[") && !seg.startsWith(":"));
 }
 
 /**
- * Check if a path has dynamic parameters.
+ * Derive an operationId from path and method.
+ * E.g., POST /api/auth/login -> authLoginCreate
+ * E.g., GET /api/users/[id] -> usersRetrieve
  */
-function pathHasParams(path: string): boolean {
-  return path.includes("[") || path.includes(":");
+function deriveOperationId(path: string, method: string): string {
+  const baseName = pathToResourceSegments(path)
+    .map((seg, i) => (i === 0 ? seg : capitalize(seg)))
+    .join("");
+  return baseName + capitalize(httpMethodToResourceMethod(method, path));
 }
 
+/**
+ * Generate runtime route metadata for use with createHttpExecutor().
+ *
+ * Output example:
+ * ```typescript
+ * export const apiRoutes = {
+ *   login: { method: "POST", path: "/api/auth/login" },
+ *   usersRetrieve: { method: "GET", path: "/api/users/{id}" },
+ * } as const;
+ * export type ApiRoutes = typeof apiRoutes;
+ * export type RouteId = keyof ApiRoutes;
+ * ```
+ */
+function generateRoutesFormat(endpoints: EndpointType[]): string {
+  // Use explicit operationId if available, otherwise derive from path/method
+  const ids = endpoints.map((endpoint) =>
+    [
+      endpoint.operationId ??
+        deriveOperationId(endpoint.path, endpoint.method),
+      endpoint,
+    ] as const
+  );
+
+  assertNoCollisions(
+    "route id",
+    ids,
+    "Set a distinct `operationId` on one endpoint of each pair.",
+  );
+
+  const lines: string[] = [
+    "// Auto-generated route metadata for use with createHttpExecutor()",
+    "// Do not edit manually",
+    "",
+    "export const apiRoutes = {",
+  ];
+
+  for (const [id, endpoint] of ids) {
+    // Convert Fresh-style [param] to {param} for HTTP executor
+    const httpPath = endpoint.path.replace(/\[(\w+)\]/g, "{$1}");
+    const key = isIdentifier(id) ? id : JSON.stringify(id);
+
+    lines.push(
+      `  ${key}: { method: "${endpoint.method}", path: ${
+        JSON.stringify(httpPath)
+      } },`,
+    );
+  }
+
+  lines.push("} as const;");
+  lines.push("");
+  lines.push("export type ApiRoutes = typeof apiRoutes;");
+  lines.push("export type RouteId = keyof ApiRoutes;");
+  lines.push("");
+
+  return lines.join("\n");
+}
+
+// =============================================================================
+// "client" format
+// =============================================================================
+
 interface ResourceMethod {
-  name: string;
-  body?: string;
-  response?: string;
-  events?: Record<string, string>;
-  pagination?: PaginationMeta;
+  endpoint: EndpointType;
 }
 
 interface ResourceNode {
@@ -598,45 +440,81 @@ interface ResourceNode {
   children: Record<string, ResourceNode>;
 }
 
+/** Style-specific pagination fields, in output order. */
+const PAGINATION_FIELDS: Record<AnyPaginationMeta["style"], string[]> = {
+  cursor: ["cursor", "cursorParam"],
+  cursorId: ["cursorIdParam", "idField"],
+  offset: ["total", "offsetParam"],
+  page: ["pageParam", "perPageParam", "total", "totalPages"],
+  url: ["nextUrl", "prevUrl"],
+};
+
+function renderPagination(meta: AnyPaginationMeta, indent: string): string[] {
+  const values = meta as unknown as Record<string, string | undefined>;
+  const fields = [
+    "style",
+    "items",
+    "limitParam",
+    ...PAGINATION_FIELDS[meta.style],
+  ];
+  return [
+    `${indent}pagination: {`,
+    ...fields
+      .filter((field) => values[field])
+      .map((field) => `${indent}  ${field}: ${JSON.stringify(values[field])};`),
+    `${indent}};`,
+  ];
+}
+
 /**
  * Generate resource-based Api interface for use with createClient().
  */
-function generateClientFormat(endpoints: EndpointType[]): string {
-  // Build resource tree
-  const root: Record<string, ResourceNode> = {};
-
-  for (const endpoint of endpoints) {
+function generateClientFormat(
+  endpoints: EndpointType[],
+  declarations: Extraction["declarations"],
+): string {
+  // Each endpoint becomes `<segments>.<method>` in the interface.
+  const placed = endpoints.map((endpoint) => {
     const segments = pathToResourceSegments(endpoint.path);
-    const hasParams = pathHasParams(endpoint.path);
-    const resourceMethod = httpMethodToResourceMethod(
-      endpoint.method,
-      hasParams,
-    );
+    // SSE endpoints use "subscribe" method
+    const methodName = endpoint.events
+      ? "subscribe"
+      : httpMethodToResourceMethod(endpoint.method, endpoint.path);
+    return { endpoint, segments, methodName };
+  });
 
-    // Navigate/create the tree structure
-    let current = root;
-    for (let i = 0; i < segments.length; i++) {
-      const segment = segments[i];
-      if (!current[segment]) {
-        current[segment] = { methods: {}, children: {} };
-      }
+  assertNoCollisions(
+    "client method",
+    placed.map((p) => [[...p.segments, p.methodName].join("."), p.endpoint]),
+    "The client names methods by HTTP method and path shape; these endpoints cannot both be in one generated client.",
+  );
 
-      if (i === segments.length - 1) {
-        // Last segment - add the method
-        // SSE endpoints use "subscribe" method
-        const methodName = endpoint.events ? "subscribe" : resourceMethod;
-        current[segment].methods[methodName] = {
-          name: methodName,
-          body: endpoint.request,
-          response: endpoint.response,
-          events: endpoint.events,
-          pagination: endpoint.pagination,
-        };
-      } else {
-        // Intermediate segment - go deeper
-        current = current[segment].children;
-      }
+  // Build resource tree
+  const root: ResourceNode = { methods: {}, children: {} };
+  for (const { endpoint, segments, methodName } of placed) {
+    let node = root;
+    for (const segment of segments) {
+      node = node.children[segment] ??= { methods: {}, children: {} };
     }
+    node.methods[methodName] = { endpoint };
+  }
+
+  // A resource and a method of the same parent cannot share a name.
+  const shadowed: [string, EndpointType][] = [];
+  const findShadowed = (node: ResourceNode, path: string[]): void => {
+    for (const [name, child] of Object.entries(node.children)) {
+      const method = node.methods[name];
+      if (method) shadowed.push([[...path, name].join("."), method.endpoint]);
+      findShadowed(child, [...path, name]);
+    }
+  };
+  findShadowed(root, []);
+  if (shadowed.length > 0) {
+    throw new Error(
+      `A client method and a nested resource have the same name:\n${
+        shadowed.map(([name, e]) => `  ${name}: ${describe(e)}`).join("\n")
+      }`,
+    );
   }
 
   // Generate TypeScript interface
@@ -644,108 +522,42 @@ function generateClientFormat(endpoints: EndpointType[]): string {
     "// Auto-generated API types for use with createClient()",
     "// Do not edit manually",
     "",
+    ...renderDeclarations(declarations),
     "export interface Api {",
   ];
 
-  function renderNode(
-    node: Record<string, ResourceNode>,
-    indent: string,
-  ): void {
-    for (const [name, resource] of Object.entries(node)) {
-      lines.push(`${indent}${name}: {`);
-
-      // Render methods
-      for (const [methodName, method] of Object.entries(resource.methods)) {
-        lines.push(`${indent}  ${methodName}: {`);
-        if (method.body) {
-          lines.push(`${indent}    body: ${method.body};`);
-        }
-        if (method.response) {
-          lines.push(`${indent}    response: ${method.response};`);
-        }
-        if (method.events) {
-          lines.push(`${indent}    events: {`);
-          for (const [eventName, eventType] of Object.entries(method.events)) {
-            lines.push(`${indent}      ${eventName}: ${eventType};`);
-          }
-          lines.push(`${indent}    };`);
-        }
-        if (method.pagination) {
-          lines.push(`${indent}    pagination: {`);
-          lines.push(`${indent}      style: "${method.pagination.style}";`);
-          lines.push(`${indent}      items: "${method.pagination.items}";`);
-          if (method.pagination.limitParam) {
-            lines.push(
-              `${indent}      limitParam: "${method.pagination.limitParam}";`,
-            );
-          }
-          // Output style-specific properties
-          switch (method.pagination.style) {
-            case "cursor":
-              lines.push(
-                `${indent}      cursor: "${method.pagination.cursor}";`,
-              );
-              lines.push(
-                `${indent}      cursorParam: "${method.pagination.cursorParam}";`,
-              );
-              break;
-            case "cursorId":
-              lines.push(
-                `${indent}      cursorIdParam: "${method.pagination.cursorIdParam}";`,
-              );
-              lines.push(
-                `${indent}      idField: "${method.pagination.idField}";`,
-              );
-              break;
-            case "offset":
-              lines.push(
-                `${indent}      total: "${method.pagination.total}";`,
-              );
-              lines.push(
-                `${indent}      offsetParam: "${method.pagination.offsetParam}";`,
-              );
-              break;
-            case "page":
-              lines.push(
-                `${indent}      pageParam: "${method.pagination.pageParam}";`,
-              );
-              if (method.pagination.perPageParam) {
-                lines.push(
-                  `${indent}      perPageParam: "${method.pagination.perPageParam}";`,
-                );
-              }
-              if (method.pagination.total) {
-                lines.push(
-                  `${indent}      total: "${method.pagination.total}";`,
-                );
-              }
-              if (method.pagination.totalPages) {
-                lines.push(
-                  `${indent}      totalPages: "${method.pagination.totalPages}";`,
-                );
-              }
-              break;
-            case "url":
-              lines.push(
-                `${indent}      nextUrl: "${method.pagination.nextUrl}";`,
-              );
-              if (method.pagination.prevUrl) {
-                lines.push(
-                  `${indent}      prevUrl: "${method.pagination.prevUrl}";`,
-                );
-              }
-              break;
-          }
-          lines.push(`${indent}    };`);
+  function renderNode(node: ResourceNode, indent: string): void {
+    for (const [methodName, { endpoint }] of Object.entries(node.methods)) {
+      lines.push(`${indent}${methodName}: {`);
+      if (endpoint.query) {
+        lines.push(`${indent}  query: ${endpoint.query};`);
+      }
+      if (endpoint.request) {
+        lines.push(`${indent}  body: ${endpoint.request};`);
+      }
+      if (endpoint.response) {
+        lines.push(`${indent}  response: ${endpoint.response};`);
+      }
+      if (endpoint.events) {
+        lines.push(`${indent}  events: {`);
+        for (const [eventName, eventType] of Object.entries(endpoint.events)) {
+          const key = isIdentifier(eventName)
+            ? eventName
+            : JSON.stringify(eventName);
+          lines.push(`${indent}    ${key}: ${eventType};`);
         }
         lines.push(`${indent}  };`);
       }
-
-      // Render children
-      if (Object.keys(resource.children).length > 0) {
-        renderNode(resource.children, indent + "  ");
+      if (endpoint.pagination) {
+        lines.push(...renderPagination(endpoint.pagination, `${indent}  `));
       }
+      lines.push(`${indent}};`);
+    }
 
+    for (const [name, child] of Object.entries(node.children)) {
+      const key = isIdentifier(name) ? name : JSON.stringify(name);
+      lines.push(`${indent}${key}: {`);
+      renderNode(child, indent + "  ");
       lines.push(`${indent}};`);
     }
   }
