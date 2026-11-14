@@ -28,6 +28,15 @@ import type {
   JsonSchema,
 } from "../contract/index.ts";
 import {
+  assignment,
+  docstring,
+  fit,
+  imports,
+  type ImportTable,
+  signature,
+} from "./format.ts";
+import {
+  argumentName,
   pascalCase,
   pythonLiteral,
   PythonModels,
@@ -40,25 +49,30 @@ export interface PythonClientOptions {
   readonly source?: string;
 }
 
-const PRELUDE = `
-from collections.abc import AsyncIterator, Iterator, Mapping
-from dataclasses import dataclass
-from typing import Annotated, Any, Generic, Literal, TypeVar, cast
-from urllib.parse import quote, urljoin, urlsplit
+/** What the module may import: the names its source uses are imported. */
+const IMPORTS: readonly ImportTable[] = [
+  [
+    ["collections.abc", ["AsyncIterator", "Iterator", "Mapping"]],
+    ["dataclasses", ["dataclass"]],
+    ["typing", ["Annotated", "Any", "Literal", "cast"]],
+    ["urllib.parse", ["quote", "urljoin", "urlsplit"]],
+  ],
+  [
+    ["httpx", []],
+    ["pydantic", ["BaseModel", "ConfigDict", "Field", "TypeAdapter"]],
+    ["pydantic.alias_generators", ["to_camel"]],
+  ],
+];
 
-import httpx
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
-
-StatusT = TypeVar("StatusT", bound=int)
-BodyT = TypeVar("BodyT")
-_T = TypeVar("_T")
-
+/** `SafeInt`, written when a model uses it. */
+const SAFE_INT = `
 # An integer JavaScript represents exactly: what Zod's int() accepts.
 SafeInt = Annotated[int, Field(ge=-9007199254740991, le=9007199254740991)]
+`.trim();
 
-
+const PRELUDE = `
 @dataclass(frozen=True)
-class Fail(Generic[StatusT, BodyT]):
+class Fail[StatusT: int, BodyT]:
     """An error response the operation declares: its status and its body."""
 
     status: StatusT
@@ -66,29 +80,40 @@ class Fail(Generic[StatusT, BodyT]):
 
 
 class ApiError(Exception):
-    """A response with a status outside 200-299 that was not asked for as a
-    value: any such status for a plain call, a status the operation does
-    not declare for a \`_result\` call."""
+    """A response outside 200-299 that was not asked for as a value.
 
-    def __init__(self, status: int, body: Any) -> None:
+    Any such status for a plain call; a status the operation does not
+    declare for a \`_result\` call.
+    """
+
+    def __init__(self, status: int, body: object) -> None:
+        """Keep the status and the parsed body of the response."""
         super().__init__(f"HTTP {status}")
         self.status = status
         self.body = body
-`.trimStart();
+
+
+class PaginationError(RuntimeError):
+    """A paginated list cannot be followed to its next page."""
+`.trim();
 
 const RUNTIME = `
+# Where the next page is: a query to ask with, a URL to ask, or nowhere.
+type _Step = tuple[Literal["query"], dict[str, Any]] | tuple[Literal["url"], str] | None
+
+
 def _segment(value: str) -> str:
-    """A path parameter, percent-encoded."""
+    """Encode a path parameter."""
     return quote(value, safe="")
 
 
 def _rest(value: str) -> str:
-    """A catch-all path parameter: it keeps its slashes."""
+    """Encode a catch-all path parameter: it keeps its slashes."""
     return quote(value, safe="/")
 
 
 def _query(query: BaseModel | None) -> dict[str, Any]:
-    """Query parameters as httpx takes them; a list repeats its key."""
+    """Write query parameters as httpx takes them; a list repeats its key."""
     if query is None:
         return {}
     values: dict[str, Any] = query.model_dump(
@@ -97,13 +122,13 @@ def _query(query: BaseModel | None) -> dict[str, Any]:
     return {key: value for key, value in values.items() if value is not None}
 
 
-def _body(adapter: TypeAdapter[Any], body: Any) -> Any:
+def _body(adapter: TypeAdapter[Any], body: object) -> object:
     # Fields that were not set stay absent: absent and null are different.
     return adapter.dump_python(body, mode="json", by_alias=True, exclude_unset=True)
 
 
-def _content(response: httpx.Response) -> Any:
-    """The body of a response: parsed JSON, the text, or None when empty."""
+def _content(response: httpx.Response) -> object:
+    """Read the body of a response: parsed JSON, the text, or None when empty."""
     if not response.content:
         return None
     try:
@@ -112,27 +137,27 @@ def _content(response: httpx.Response) -> Any:
         return response.text
 
 
-def _expect(response: httpx.Response, adapter: TypeAdapter[_T]) -> _T:
-    """The parsed body of a success; any other status raises."""
+def _expect[T](response: httpx.Response, adapter: TypeAdapter[T]) -> T:
+    """Parse the body of a success; any other status raises."""
     if not response.is_success:
         raise ApiError(response.status_code, _content(response))
     return adapter.validate_python(_content(response))
 
 
-def _result(
+def _result[T](
     response: httpx.Response,
-    adapter: TypeAdapter[_T],
+    adapter: TypeAdapter[T],
     errors: Mapping[int, TypeAdapter[Any]],
-) -> _T | Fail[Any, Any]:
-    """The parsed body of a success, or a declared error as a value."""
+) -> T | Fail[Any, Any]:
+    """Parse the body of a success, or a declared error as a value."""
     declared = errors.get(response.status_code)
     if declared is not None:
         return Fail(response.status_code, declared.validate_python(_content(response)))
     return _expect(response, adapter)
 
 
-def _at(value: Any, path: str | None) -> Any:
-    """The value at a dot-notation path of a response."""
+def _at(value: object, path: str | None) -> object:
+    """Find the value at a dot-notation path of a response."""
     if path is None:
         return None
     for key in path.split("."):
@@ -142,106 +167,134 @@ def _at(value: Any, path: str | None) -> Any:
     return value
 
 
+def _page_items(page: object, meta: Mapping[str, Any]) -> list[Any]:
+    found = _at(page, meta.get("items"))
+    return cast("list[Any]", found) if isinstance(found, list) else []
+
+
+def _stuck(call: str, what: str) -> PaginationError:
+    return PaginationError(
+        f"{call}: the server answered with the {what} it was asked for; "
+        "there is no next page to ask for"
+    )
+
+
+def _after_cursor(
+    call: str, meta: Mapping[str, Any], page: object, query: Mapping[str, Any]
+) -> _Step:
+    cursor = _at(page, meta["cursor"])
+    if cursor is None or cursor == "":
+        return None
+    if cursor == query.get(meta["cursorParam"]):
+        raise _stuck(call, "cursor")
+    return "query", {**query, meta["cursorParam"]: cursor}
+
+
+def _after_item(
+    call: str, meta: Mapping[str, Any], page: object, query: Mapping[str, Any]
+) -> _Step:
+    items = _page_items(page, meta)
+    if not items:
+        return None
+    # A page shorter than the size asked for is the last one.
+    limit = query.get(meta.get("limitParam", ""))
+    if isinstance(limit, int) and len(items) < limit:
+        return None
+    last = _at(items[-1], meta["idField"])
+    if last is None:
+        field = meta["idField"]
+        message = f'{call}: the last item of the page has no "{field}" to continue from'
+        raise PaginationError(message)
+    if str(last) == query.get(meta["cursorIdParam"]):
+        raise _stuck(call, "item")
+    return "query", {**query, meta["cursorIdParam"]: str(last)}
+
+
+def _after_offset(
+    meta: Mapping[str, Any], page: object, query: Mapping[str, Any]
+) -> _Step:
+    count = len(_page_items(page, meta))
+    if count == 0:
+        return None
+    offset = int(query.get(meta["offsetParam"], 0)) + count
+    total = _at(page, meta.get("total"))
+    if isinstance(total, int) and offset >= total:
+        return None
+    return "query", {**query, meta["offsetParam"]: offset}
+
+
+def _after_page(
+    meta: Mapping[str, Any], page: object, query: Mapping[str, Any], page_size: int
+) -> _Step:
+    count = len(_page_items(page, meta))
+    current = int(query.get(meta["pageParam"], 1))
+    size = int(query.get(meta.get("perPageParam", ""), 0)) or page_size
+    total_pages = _at(page, meta.get("totalPages"))
+    total = _at(page, meta.get("total"))
+    last = (
+        count < size
+        or (isinstance(total_pages, int) and current >= total_pages)
+        or (isinstance(total, int) and (current - 1) * size + count >= total)
+    )
+    return None if last else ("query", {**query, meta["pageParam"]: current + 1})
+
+
+def _after_url(meta: Mapping[str, Any], page: object) -> _Step:
+    url = _at(page, meta["nextUrl"])
+    return ("url", url) if isinstance(url, str) and url != "" else None
+
+
 def _next_page(
     call: str,
     meta: Mapping[str, Any],
-    page: Any,
+    page: object,
     query: Mapping[str, Any],
     page_size: int,
-) -> tuple[Literal["query"], dict[str, Any]] | tuple[Literal["url"], str] | None:
-    """Where the page after \`page\` is, by pagination style."""
-    items = _page_items(page, meta)
-    count = len(items)
-
-    def stuck(what: str) -> Exception:
-        return RuntimeError(
-            f"{call}: the server answered with the {what} it was asked for; "
-            "there is no next page to ask for"
-        )
-
+) -> _Step:
+    """Find where the page after \`page\` is, by pagination style."""
     style = meta["style"]
     if style == "cursor":
-        cursor = _at(page, meta["cursor"])
-        if cursor is None or cursor == "":
-            return None
-        if cursor == query.get(meta["cursorParam"]):
-            raise stuck("cursor")
-        return "query", {**query, meta["cursorParam"]: cursor}
-
+        return _after_cursor(call, meta, page, query)
     if style == "cursorId":
-        if count == 0:
-            return None
-        # A page shorter than the size asked for is the last one.
-        limit = query.get(meta.get("limitParam", ""))
-        if isinstance(limit, int) and count < limit:
-            return None
-        last = _at(items[-1], meta["idField"])
-        if last is None:
-            raise RuntimeError(
-                f"{call}: the last item of the page has no "
-                f"\\"{meta['idField']}\\" to continue from"
-            )
-        if str(last) == query.get(meta["cursorIdParam"]):
-            raise stuck("item")
-        return "query", {**query, meta["cursorIdParam"]: str(last)}
-
+        return _after_item(call, meta, page, query)
     if style == "offset":
-        if count == 0:
-            return None
-        offset = int(query.get(meta["offsetParam"], 0)) + count
-        total = _at(page, meta.get("total"))
-        if isinstance(total, int) and offset >= total:
-            return None
-        return "query", {**query, meta["offsetParam"]: offset}
-
+        return _after_offset(meta, page, query)
     if style == "page":
-        if count == 0:
-            return None
-        current = int(query.get(meta["pageParam"], 1))
-        total_pages = _at(page, meta.get("totalPages"))
-        if isinstance(total_pages, int) and current >= total_pages:
-            return None
-        size = int(query.get(meta.get("perPageParam", ""), 0)) or page_size
-        total = _at(page, meta.get("total"))
-        if isinstance(total, int) and (current - 1) * size + count >= total:
-            return None
-        if count < size:
-            return None
-        return "query", {**query, meta["pageParam"]: current + 1}
-
+        return _after_page(meta, page, query, page_size)
     if style == "url":
-        url = _at(page, meta["nextUrl"])
-        return ("url", url) if isinstance(url, str) and url != "" else None
-
-    raise TypeError(f"{call}: unknown pagination style \\"{style}\\"")
+        return _after_url(meta, page)
+    message = f'{call}: unknown pagination style "{style}"'
+    raise TypeError(message)
 
 
 def _same_origin(call: str, base_url: str, url: str) -> str:
-    """The URL of a next page, which has to be on the server asked first:
-    the client's headers are sent with it."""
+    """Resolve the URL of a next page, which has to be on the server asked first.
+
+    The client's headers are sent with it.
+    """
     resolved = urljoin(base_url + "/", url)
     base, target = urlsplit(base_url), urlsplit(resolved)
     if (base.scheme, base.netloc) != (target.scheme, target.netloc):
-        raise RuntimeError(
+        message = (
             f"{call}: the next page is on another origin ({resolved}); "
             "it is not followed"
         )
+        raise PaginationError(message)
     return resolved
-
-
-def _page_items(page: Any, meta: Mapping[str, Any]) -> list[Any]:
-    found = _at(page, meta.get("items"))
-    return cast("list[Any]", found) if isinstance(found, list) else []
-`.trimStart();
+`.trim();
 
 /** One operation, with the Python names the module gives its parts. */
 interface Rendered {
   readonly operation: ContractOperation;
+  /** `GET /notes/{id}`. */
+  readonly label: string;
   readonly method: string;
   readonly query?: string;
   readonly body?: string;
   readonly response?: string;
   readonly errors: ReadonlyMap<string, string>;
+  /** What `_result` returns, when the operation declares errors. */
+  readonly result?: string;
   /** Type of one item of a paginated list. */
   readonly item?: string;
 }
@@ -273,11 +326,17 @@ function itemsSchema(
   return { ...(items as JsonSchema), $defs: defs };
 }
 
+/** A banner between the parts of the module. */
+function banner(title: string): string[] {
+  const rule = `# ${"=".repeat(77)}`;
+  return [rule, `# ${title}`, rule, "", ""];
+}
+
 /**
  * Render a contract as the source of a Python client module.
  *
- * Operations that stream server-sent events are listed in a comment and
- * left out.
+ * Operations that stream server-sent events are listed in the module's
+ * docstring and left out.
  */
 export function renderPythonClient(
   contract: Contract,
@@ -286,6 +345,8 @@ export function renderPythonClient(
   const models = new PythonModels();
   const rendered: Rendered[] = [];
   const skipped: ContractOperation[] = [];
+  /** What each `_result` returns: defined after the models. */
+  const results: string[] = [];
 
   for (const operation of contract.operations) {
     if (operation.events) {
@@ -293,105 +354,169 @@ export function renderPythonClient(
       continue;
     }
     const base = pascalCase(operation.operationId);
-    const response = operation.response &&
-      models.define(`${base}Response`, operation.response, true);
-    const item = operation.pagination && operation.response
+    const label = `${operation.method} ${operation.path}`;
+    const part = (
+      suffix: string,
+      role: string,
+      schema: JsonSchema | undefined,
+      strict: boolean,
+    ): string | undefined => {
+      if (!schema) return undefined;
+      const type = models.define(`${base}${suffix}`, schema, strict);
+      models.describe(type, role, label);
+      return type;
+    };
+
+    const response = part("Response", "response", operation.response, true);
+    const itemSchema = operation.pagination && operation.response
       ? itemsSchema(operation.response, operation.pagination.items)
       : undefined;
+    const query = part("Query", "query", operation.query, false);
+    const body = part("Body", "body", operation.body, true);
+    const errors = new Map(
+      Object.entries(operation.errors ?? {}).map(([status, schema]) => [
+        status,
+        part(`Error${status}`, `${status} body`, schema, true)!,
+      ]),
+    );
+    const item = part("Item", "items", itemSchema, true);
+
+    // What a call that takes errors as values returns has a name.
+    const result = errors.size > 0 ? `${base}Result` : undefined;
+    if (result) {
+      results.push(
+        ...assignment(
+          0,
+          `type ${result}`,
+          undefined,
+          [
+            response ?? "Any",
+            ...[...errors].map(([status, type]) =>
+              `Fail[Literal[${status}], ${type}]`
+            ),
+          ].join(" | "),
+        ),
+      );
+    }
 
     rendered.push({
       operation,
+      label,
       method: snakeCase(operation.operationId),
-      ...(operation.query && {
-        query: models.define(`${base}Query`, operation.query, false),
-      }),
-      ...(operation.body && {
-        body: models.define(`${base}Body`, operation.body, true),
-      }),
+      ...(query && { query }),
+      ...(body && { body }),
       ...(response && { response }),
-      errors: new Map(
-        Object.entries(operation.errors ?? {}).map(([status, schema]) => [
-          status,
-          models.define(`${base}Error${status}`, schema, true),
-        ]),
-      ),
-      ...(item && { item: models.define(`${base}Item`, item, true) }),
+      errors,
+      ...(result && { result }),
+      ...(item && { item }),
     });
   }
 
-  const rule = "# " + "=".repeat(77);
-  const lines: string[] = [
-    `"""API models and client${
-      options.source ? ` for ${options.source}` : ""
-    }.`,
-    "",
-    "Generated by typed-endpoints. Do not edit.",
-    ...(models.usesTypeStatement
-      ? [
-        "",
-        "Needs Python 3.12: a type that refers to itself is a `type` statement.",
-      ]
-      : []),
-    '"""',
-    "",
+  const body: string[] = [
     PRELUDE,
     "",
-    rule,
-    "# Models",
-    rule,
     "",
-    "",
+    ...banner("Models"),
     ...models.render(),
-    rule,
-    "# Client",
-    rule,
-    "",
-    "",
+    ...banner("Client"),
+    ...(results.length > 0
+      ? [
+        "# What a call returns that takes the declared errors as values.",
+        ...results,
+        "",
+      ]
+      : []),
   ];
+  for (const item of rendered) body.push(...adapters(item));
+  body.push("", "", RUNTIME, "", "", ...clientClass(rendered, false));
+  body.push("", "", ...clientClass(rendered, true));
 
-  for (const item of rendered) lines.push(...adapters(item));
-  if (skipped.length > 0) {
-    lines.push("", "# Not generated: server-sent event streams.");
-    for (const operation of skipped) {
-      lines.push(`#   ${operation.method} ${operation.path}`);
-    }
-  }
-  lines.push("", "", RUNTIME, "", ...clientClass(rendered, false));
-  lines.push("", "", ...clientClass(rendered, true), "");
-
-  return lines.join("\n");
+  const source = body.join("\n");
+  return [
+    ...docstring(
+      0,
+      [
+        `API models and client${
+          options.source ? ` for ${options.source}` : ""
+        }.`,
+        "",
+        "Generated by typed-endpoints. Do not edit.",
+        "",
+        "Needs Python 3.12.",
+        ...(skipped.length > 0
+          ? [
+            "",
+            "Not in this module: server-sent event streams (" +
+            skipped.map((operation) =>
+              `\`${operation.method} ${operation.path}\``
+            ).join(", ") + ").",
+          ]
+          : []),
+      ].join("\n"),
+    ),
+    "",
+    ...imports(source, IMPORTS),
+    "",
+    // Two empty lines before a class.
+    ...(models.usesSafeInt ? [SAFE_INT, "", ""] : [""]),
+    source,
+    "",
+  ].join("\n");
 }
 
 function adapters(item: Rendered): string[] {
   const name = item.method.toUpperCase();
   const lines: string[] = [];
   if (item.body) {
-    lines.push(`_${name}_BODY: TypeAdapter[Any] = TypeAdapter(${item.body})`);
+    lines.push(
+      ...assignment(
+        0,
+        `_${name}_BODY`,
+        "TypeAdapter[Any]",
+        `TypeAdapter(${item.body})`,
+      ),
+    );
   }
   // Without a response schema the body is returned as it was parsed.
   lines.push(
-    item.response
-      ? `_${name}_RESPONSE: TypeAdapter[${item.response}] = TypeAdapter(${item.response})`
-      : `_${name}_RESPONSE: TypeAdapter[Any] = TypeAdapter(Any)`,
+    ...assignment(
+      0,
+      `_${name}_RESPONSE`,
+      `TypeAdapter[${item.response ?? "Any"}]`,
+      `TypeAdapter(${item.response ?? "Any"})`,
+    ),
   );
   if (item.errors.size > 0) {
     lines.push(
-      `_${name}_ERRORS: dict[int, TypeAdapter[Any]] = {${
-        [...item.errors].map(([status, type]) =>
-          `${status}: TypeAdapter(${type})`
-        ).join(", ")
-      }}`,
+      ...assignment(
+        0,
+        `_${name}_ERRORS`,
+        "dict[int, TypeAdapter[Any]]",
+        `{${
+          [...item.errors].map(([status, type]) =>
+            `${status}: TypeAdapter(${type})`
+          ).join(", ")
+        }}`,
+      ),
     );
   }
   if (item.operation.pagination) {
     lines.push(
-      `_${name}_PAGINATION: dict[str, Any] = ${
-        pythonLiteral(item.operation.pagination)
-      }`,
+      ...assignment(
+        0,
+        `_${name}_PAGINATION`,
+        "dict[str, Any]",
+        pythonLiteral(item.operation.pagination),
+      ),
     );
     if (item.item) {
       lines.push(
-        `_${name}_ITEM: TypeAdapter[${item.item}] = TypeAdapter(${item.item})`,
+        ...assignment(
+          0,
+          `_${name}_ITEM`,
+          `TypeAdapter[${item.item}]`,
+          `TypeAdapter(${item.item})`,
+        ),
       );
     }
   }
@@ -403,7 +528,7 @@ function pathExpression(operation: ContractOperation): string {
   const path = operation.path.replace(
     /\{(\+?)(\w+)\}/g,
     (_, rest: string, name: string) =>
-      `{${rest ? "_rest" : "_segment"}(${snakeCase(name)})}`,
+      `{${rest ? "_rest" : "_segment"}(${argumentName(name)})}`,
   );
   return `${operation.pathParams.length > 0 ? "f" : ""}${JSON.stringify(path)}`;
 }
@@ -435,11 +560,13 @@ function clientClass(
     `        http: ${http} | None = None,`,
     "        headers: Mapping[str, str] | None = None,",
     "    ) -> None:",
+    '        """Send requests to `base_url`, with `http` if it is given."""',
     '        self._base_url = base_url.rstrip("/")',
     `        self._http = http if http is not None else ${http}()`,
     "        self._headers = dict(headers or {})",
     "",
     `    ${def} ${isAsync ? "aclose" : "close"}(self) -> None:`,
+    '        """Close the HTTP client."""',
     `        ${wait}self._http.${isAsync ? "aclose" : "close"}()`,
     "",
     `    ${def} _send(`,
@@ -447,7 +574,7 @@ function clientClass(
     "        method: str,",
     "        path: str,",
     "        query: Mapping[str, Any] | None = None,",
-    "        body: Any = None,",
+    "        body: object = None,",
     "    ) -> httpx.Response:",
     `        return ${wait}self._http.request(`,
     "            method,",
@@ -464,15 +591,19 @@ function clientClass(
     "        path: str,",
     "        query: dict[str, Any],",
     "        meta: Mapping[str, Any],",
-    `    ) -> ${iterator}[Any]:`,
-    '        """Every page of a list, as parsed JSON."""',
+    `    ) -> ${iterator}[object]:`,
+    '        """Yield every page of a list, as parsed JSON."""',
     "        url: str | None = None",
     "        size: int | None = None",
     "        while True:",
     "            if url is None:",
     `                response = ${wait}self._send(method, path, query)`,
     "            else:",
-    `                response = ${wait}self._http.request(method, url, headers=self._headers)`,
+    ...fit(
+      16,
+      "response = ",
+      `${wait}self._http.request(method, url, headers=self._headers)`,
+    ),
     "            if not response.is_success:",
     "                raise ApiError(response.status_code, _content(response))",
     "            page = _content(response)",
@@ -498,88 +629,87 @@ function operationMethods(
   item: Rendered,
   words: { def: string; wait: string; iterator: string; loop: string },
 ): string[] {
-  const { operation } = item;
+  const { operation, label } = item;
   const { def, wait, iterator, loop } = words;
   const constant = item.method.toUpperCase();
   const response = item.response ?? "Any";
 
   const parameters = [
-    ...operation.pathParams.map(({ name }) => `${snakeCase(name)}: str`),
+    "self",
+    ...operation.pathParams.map(({ name }) => `${argumentName(name)}: str`),
     ...(item.body ? [`body: ${item.body}`] : []),
     ...(item.query ? [`query: ${item.query} | None = None`] : []),
   ];
-  const signature = (name: string, returns: string) => [
-    `    ${def} ${name}(`,
-    "        self,",
-    ...parameters.map((parameter) => `        ${parameter},`),
-    `    ) -> ${returns}:`,
-  ];
-  const send = [
-    `${wait}self._send(`,
-    `    ${JSON.stringify(operation.method)},`,
-    `    ${pathExpression(operation)},`,
-    ...(item.query ? ["    _query(query),"] : item.body ? ["    None,"] : []),
-    ...(item.body ? [`    _body(_${constant}_BODY, body),`] : []),
-    ")",
-  ];
-  const title = `${operation.method} ${operation.path}`;
-  const summary = operation.summary ?? operation.description;
-  const doc = `${title}${
-    summary ? `: ${summary.replaceAll('"""', "'''")}` : ""
-  }`;
+  const send = `${wait}self._send(${
+    [
+      JSON.stringify(operation.method),
+      pathExpression(operation),
+      ...(item.query ? ["_query(query)"] : item.body ? ["None"] : []),
+      ...(item.body ? [`_body(_${constant}_BODY, body)`] : []),
+    ].join(", ")
+  })`;
+  const summary = (operation.summary ?? operation.description)?.trim();
 
   const lines: string[] = [
-    ...signature(item.method, response),
-    `        """${doc}"""`,
-    `        response = ${send[0]}`,
-    ...send.slice(1).map((line) => `        ${line}`),
-    `        return _expect(response, _${constant}_RESPONSE)`,
+    ...signature(4, `${def} ${item.method}`, parameters, response),
+    ...docstring(8, `Call \`${label}\`.${summary ? `\n\n${summary}` : ""}`),
+    ...fit(8, "response = ", send),
+    ...fit(8, "return ", `_expect(response, _${constant}_RESPONSE)`),
   ];
 
-  if (item.errors.size > 0) {
-    const failures = [...item.errors].map(([status, type]) =>
-      `Fail[Literal[${status}], ${type}]`
-    );
+  if (item.result) {
     lines.push(
       "",
-      ...signature(
-        `${item.method}_result`,
-        [response, ...failures].join(" | "),
+      ...signature(4, `${def} ${item.method}_result`, parameters, item.result),
+      ...docstring(
+        8,
+        `Call \`${label}\`, with the declared errors as values.`,
       ),
-      `        """${title}, with the declared errors as values."""`,
-      `        response = ${send[0]}`,
-      ...send.slice(1).map((line) => `        ${line}`),
-      `        return _result(response, _${constant}_RESPONSE, _${constant}_ERRORS)`,
+      ...fit(8, "response = ", send),
+      ...fit(
+        8,
+        "return ",
+        `_result(response, _${constant}_RESPONSE, _${constant}_ERRORS)`,
+      ),
     );
   }
 
   if (operation.pagination && item.response) {
-    const pages = [
-      `self._pages(`,
-      `    ${JSON.stringify(item.method)},`,
-      `    ${JSON.stringify(operation.method)},`,
-      `    ${pathExpression(operation)},`,
-      `    ${item.query ? "_query(query)" : "{}"},`,
-      `    _${constant}_PAGINATION,`,
-      `)`,
-    ];
+    const pages = `self._pages(${
+      [
+        JSON.stringify(item.method),
+        JSON.stringify(operation.method),
+        pathExpression(operation),
+        item.query ? "_query(query)" : "{}",
+        `_${constant}_PAGINATION`,
+      ].join(", ")
+    })`;
     lines.push(
       "",
-      ...signature(`${item.method}_pages`, `${iterator}[${item.response}]`),
-      `        """Every page of ${title}, from the one the query asks for."""`,
-      `        ${loop} page in ${pages[0]}`,
-      ...pages.slice(1, -1).map((line) => `        ${line}`),
-      "        ):",
+      ...signature(
+        4,
+        `${def} ${item.method}_pages`,
+        parameters,
+        `${iterator}[${item.response}]`,
+      ),
+      ...docstring(
+        8,
+        `Yield every page of \`${label}\`, from the one the query asks for.`,
+      ),
+      ...fit(8, `${loop} page in `, pages, ":"),
       `            yield _${constant}_RESPONSE.validate_python(page)`,
     );
     if (item.item) {
       lines.push(
         "",
-        ...signature(`${item.method}_items`, `${iterator}[${item.item}]`),
-        `        """Every item of ${title}, across its pages."""`,
-        `        ${loop} page in ${pages[0]}`,
-        ...pages.slice(1, -1).map((line) => `        ${line}`),
-        "        ):",
+        ...signature(
+          4,
+          `${def} ${item.method}_items`,
+          parameters,
+          `${iterator}[${item.item}]`,
+        ),
+        ...docstring(8, `Yield every item of \`${label}\`, across its pages.`),
+        ...fit(8, `${loop} page in `, pages, ":"),
         `            for item in _page_items(page, _${constant}_PAGINATION):`,
         `                yield _${constant}_ITEM.validate_python(item)`,
       );

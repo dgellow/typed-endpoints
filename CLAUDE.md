@@ -29,9 +29,10 @@ permissions):
 - `./scripts/check-framework-types` — type-check the integrations against the
   real Next.js, SvelteKit, Astro, Hono and h3 packages at pinned versions
 - `./scripts/test-python` — run `e2e_tests/python` through `uv` (needs `uv`):
-  pyright in strict mode over the generated module and the hand-written
-  handlers, then the conformance tests against the generated FastAPI
-  application. Python is always run through `uv`
+  `ruff format --check` and `ruff check` with every rule selected, then pyright
+  in strict mode, over the generated modules, the hand-written handlers and the
+  tests; then the conformance tests against the generated FastAPI application.
+  Python is always run through `uv`
 - `./scripts/test-rust` — run `e2e_tests/rust` (needs `cargo` and `rustup`):
   `cargo fmt --check` (the generated module under the 2021 and 2024 style
   editions) and `cargo clippy -- -D warnings -W clippy::pedantic` over the
@@ -55,7 +56,7 @@ not a result.
 | Deno dependencies      | `deno.lock`                                                                                                                       | `deno install --frozen`                                                                                             |
 | uv                     | `required-version` in `e2e_tests/python/pyproject.toml`                                                                           | uv                                                                                                                  |
 | Python                 | `e2e_tests/python/.python-version`                                                                                                | uv, which installs its own build of it (`python-preference = "only-managed"`); a version the pinned uv can download |
-| Python packages        | `e2e_tests/python/uv.lock`                                                                                                        | `uv run --frozen`                                                                                                   |
+| Python packages, ruff  | `e2e_tests/python/uv.lock` (ruff also as `ruff==0.17.5` in `pyproject.toml`: a newer one has more rules)                          | `uv run --frozen`                                                                                                   |
 | Rust, clippy, rustfmt  | `e2e_tests/rust/rust-toolchain.toml`                                                                                              | rustup; `scripts/test-rust` checks                                                                                  |
 | Rust crates            | `e2e_tests/rust/Cargo.lock`                                                                                                       | `cargo --locked`                                                                                                    |
 | Frameworks             | exact versions in `scripts/check-framework-types` (Next.js, SvelteKit, Astro, TypeScript) and `scripts/bun-package.ts` (Hono, h3) | the scripts install them                                                                                            |
@@ -110,7 +111,7 @@ src/
 │   └── generate.ts # types / client / routes output formats
 ├── contract/       # generateContract(): the routes as data, JSON Schema per part
 │   └── types.ts    # TypeGraph: schemas as named, shared types with cycles marked
-├── python/         # Pydantic models (models.ts), a FastAPI module (fastapi.ts), an httpx client (client.ts)
+├── python/         # Pydantic models (models.ts), a FastAPI module (fastapi.ts), an httpx client (client.ts), layout as ruff formats (format.ts)
 ├── rust/           # serde types (models.ts), the contract as statics (contract.ts), the runtime that checks against it (runtime.ts), the axum module (axum.ts)
 ├── cli.ts          # CLI entry point
 └── mod.ts          # Main module exports
@@ -243,9 +244,16 @@ other than cursor) has Python unit tests (`test_pagination.py`).
 
 Generated code is not just code that works: it is written as a person would
 write it in that language, and the language's own tools say so. For Rust that is
-enforced (`./scripts/test-rust` runs rustfmt and clippy's pedantic lints over
-the generated module); for Python it is not yet. A property of generated code is
-claimed after it was measured, with the same metric for every server compared.
+enforced by `./scripts/test-rust` (rustfmt and clippy's pedantic lints over the
+generated module), for Python by `./scripts/test-python` (ruff's formatter and
+every ruff rule over the generated modules; `pyproject.toml` lists the few rules
+that are off, each with its reason). A property of generated code is claimed
+after it was measured, with the same metric for every server compared.
+
+Generated Python is laid out by `src/python/format.ts`, which breaks a statement
+that is too wide the way `ruff format` does: the generators build a statement as
+one line and never run a formatter. A new shape of statement is tried against
+the formatter before it is relied on.
 
 The Rust generator reads the contract through `TypeGraph`
 (`src/contract/types.ts`), which decides what a nominal language needs decided:

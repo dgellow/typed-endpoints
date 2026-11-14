@@ -10,6 +10,7 @@ import asyncio
 import os
 import unittest
 import uuid
+from typing import Any, cast
 
 import client_generated as api
 
@@ -17,7 +18,7 @@ API_URL = os.environ["API_URL"]
 
 
 def unique(prefix: str) -> str:
-    """A name no other test, run or server-side note uses."""
+    """Make a name no other test, run or server-side note uses."""
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
 
@@ -91,10 +92,9 @@ class ClientTest(unittest.TestCase):
                 note, api.NotesDeleteBody.model_construct(reason="no")
             )
         self.assertEqual(raised.exception.status, 400)
-        self.assertEqual(raised.exception.body["in"], "body")
-        self.assertEqual(
-            [issue["path"] for issue in raised.exception.body["issues"]], [["reason"]]
-        )
+        body = cast("dict[str, Any]", raised.exception.body)
+        self.assertEqual(body["in"], "body")
+        self.assertEqual([issue["path"] for issue in body["issues"]], [["reason"]])
 
     def test_pages_and_items_follow_the_cursor(self) -> None:
         tag = unique("listed")
@@ -180,13 +180,13 @@ class ClientTest(unittest.TestCase):
         link = api.OddCreateBodyChain
         odd = api.OddCreateBody(
             type_="memo",
-            createdAt="2026-11-14",
-            created_at="2026-11-13",
+            created_at="2026-11-14",
+            created_at_2="2026-11-13",
             field_2fa=True,
             pair=("width", 2.5),
             scores={"first": 1, "second": 2},
             loose=["a", "b"],
-            looseOrNull=None,
+            loose_or_null=None,
             version=2,
             level="very-high",
             anything={"nested": [1, "two", None]},
