@@ -5,6 +5,8 @@ The handlers do what the TypeScript handlers of the fixture do. Models,
 generator writes from the TypeScript routes.
 """
 
+import asyncio
+from collections.abc import AsyncIterator
 from typing import Literal
 
 from fastapi.responses import Response
@@ -113,6 +115,24 @@ class Notes:
             depth=depth(body),
             root=api.TreesCreateResponseRoot.model_validate(body.model_dump()),
         )
+
+    async def ticks_list(
+        self, query: api.TicksListQuery, last_event_id: str | None
+    ) -> AsyncIterator[api.TicksListEvent]:
+        if query.pause is not None:
+            await asyncio.sleep(query.pause / 1000)
+        # A client that reconnects continues after the event it has.
+        start = 0 if last_event_id is None else int(last_event_id) + 1
+        for n in range(start, query.count):
+            if last_event_id is None and n == query.failAt:
+                raise RuntimeError("backend went away")
+            if n == query.badAt:
+                # Built unchecked: an event its model rejects.
+                yield api.TicksListTickEvent(
+                    data=api.TicksListTickData.model_construct(n="not a number")
+                )
+            yield api.TicksListTickEvent(data=api.TicksListTickData(n=n), id=str(n))
+        yield api.TicksListDoneEvent(data=api.TicksListDoneData(total=query.count))
 
     def _store(self, note_id: str, likes: int, body: api.NotesCreateBody) -> Note:
         # Only the fields the body set: an absent `pinned` stays absent.

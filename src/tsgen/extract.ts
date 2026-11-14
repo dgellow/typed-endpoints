@@ -62,6 +62,8 @@ export interface ExtractedMethod {
   readonly description?: string;
   /** Tags of the operation. */
   readonly tags?: readonly string[];
+  /** For an event stream: milliseconds of silence before a keep-alive. */
+  readonly keepAlive?: number;
 }
 
 /** A JSON Schema document (draft 2020-12). */
@@ -127,6 +129,7 @@ interface MethodDefLike {
   readonly summary?: string;
   readonly description?: string;
   readonly tags?: readonly string[];
+  readonly keepAlive?: number;
 }
 
 /**
@@ -341,6 +344,8 @@ export async function extractRoutes(
         ...(def.summary && { summary: def.summary }),
         ...(def.description && { description: def.description }),
         ...(def.tags && { tags: def.tags }),
+        ...(def.events && def.keepAlive !== undefined &&
+          { keepAlive: def.keepAlive }),
       };
     }
 

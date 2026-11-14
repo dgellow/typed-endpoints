@@ -1005,21 +1005,37 @@ app = api.create_app(Notes())
 
 A handler returns the response value, a `Fail` with a status the operation
 declares, or a `Response`, which is sent as it is: the same three as in
-TypeScript. A status the operation does not declare is an error for the type
-checker; past the type checker it is a 500 and is logged, as is a value the
-response model rejects.
+TypeScript. The handler of a server-sent event stream is an async generator of
+typed events:
+
+```python
+async def ticks_list(
+    self, query: api.TicksListQuery, last_event_id: str | None
+) -> AsyncIterator[api.TicksListEvent]:
+    start = 0 if last_event_id is None else int(last_event_id) + 1
+    for n in range(start, query.count):
+        yield api.TicksListTickEvent(data=api.TicksListTickData(n=n), id=str(n))
+```
+
+The stream is framed as the TypeScript handlers frame it, byte for byte. A
+handler that raises, or yields an event its model rejects, ends the stream with
+the comment `: error`, which the TypeScript client reads as a failure and
+reconnects after; the endpoint's `keepAlive` interval is kept. A status the
+operation does not declare is an error for the type checker; past the type
+checker it is a 500 and is logged, as is a value the response model rejects.
 
 What is kept the same on both sides:
 
-|                                                     | TypeScript handlers                                    | Generated FastAPI module                                 |
-| --------------------------------------------------- | ------------------------------------------------------ | -------------------------------------------------------- |
-| A body's types                                      | not coerced (`"5"` is not a number)                    | strict models for bodies and responses                   |
-| Query and path parameters                           | coerced from text where the schema says so             | coerced                                                  |
-| Lengths, bounds, patterns, literals, closed objects | Zod                                                    | the same constraints on the Pydantic field               |
-| An optional field that was not set                  | absent from the response                               | absent (`exclude_unset`), never `null`                   |
-| A request that fails validation                     | 400 `{ error, in, issues: [{ path, message, code }] }` | the same shape, same `in` and `path`                     |
-| A field name Python cannot use (`from`, `data-id`)  | as written                                             | a Python attribute (`from_`) with the wire name as alias |
-| The same object in two operations                   | one type                                               | one class, with a name per operation                     |
+|                                                     | TypeScript handlers                                    | Generated FastAPI module                                                                                                                                                         |
+| --------------------------------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A body's types                                      | not coerced (`"5"` is not a number)                    | strict models for bodies and responses                                                                                                                                           |
+| Query and path parameters                           | coerced from text where the schema says so             | coerced                                                                                                                                                                          |
+| Lengths, bounds, patterns, literals, closed objects | Zod                                                    | the same constraints on the Pydantic field                                                                                                                                       |
+| An optional field that was not set                  | absent from the response                               | absent (`exclude_unset`), never `null`                                                                                                                                           |
+| What a handler returns or yields                    | parsed by the schema before it is sent                 | validated again as plain data, also when it is a model instance: Pydantic trusts an instance, and one built with `model_construct()` or changed afterwards may not fit its model |
+| A request that fails validation                     | 400 `{ error, in, issues: [{ path, message, code }] }` | the same shape, same `in` and `path`                                                                                                                                             |
+| A field name Python cannot use (`from`, `data-id`)  | as written                                             | a Python attribute (`from_`) with the wire name as alias                                                                                                                         |
+| The same object in two operations                   | one type                                               | one class, with a name per operation                                                                                                                                             |
 
 The description FastAPI serves of the application (`/openapi.json`, `/docs`)
 says what the application answers: for each operation the response model, the
@@ -1036,9 +1052,9 @@ What differs, and what does not cross:
   Parsing it and writing it back could change the text
 - A JSON body sent as `text/plain` is read by the TypeScript handlers and
   refused by FastAPI; a form body is a 400 there, not a 415
-- Not generated yet: server-sent event streams (listed in a comment in the
-  module), request-dependent responses (`projection()`, `selection()`),
-  protocols
+- Not generated yet: request-dependent responses (`projection()`,
+  `selection()`), protocols, and event streams in the Python client (listed in a
+  comment in its module)
 
 **A Python client.** `generatePythonClient()` (`--format python-client`) writes
 a module with the same models and two classes, `Client` and `AsyncClient`
@@ -1082,8 +1098,9 @@ and a hand-written implementation of `Handlers` pass pyright in strict mode; the
 application runs under uvicorn; and the tests that hold for the fixture's
 TypeScript server hold for it, using the TypeScript client generated from the
 same routes: CRUD, declared errors as values, cursor pagination, validation
-failures, a DELETE body, a catch-all path, a recursive schema, and the lens laws
-of `checkResourceLaws()`.
+failures, a DELETE body, a catch-all path, a recursive schema, event streams
+(frames, failure and resume, keep-alive), and the lens laws of
+`checkResourceLaws()`.
 
 ## API
 

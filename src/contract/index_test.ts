@@ -28,6 +28,7 @@ Deno.test("contract: every operation, ordered by path and method, with its templ
       "GET /api/notes/{id} notesRetrieve",
       "PUT /api/notes/{id} notesUpdate",
       "POST /api/shapes shapesCreate",
+      "GET /api/ticks ticksList",
       "POST /api/trees treesCreate",
     ],
   );
@@ -120,6 +121,18 @@ Deno.test("contract: an event stream lists its events; what JSON Schema cannot s
       assertEquals(typeof schema, "object");
     }
   }
+
+  // The data schema of each event, and the keep-alive interval.
+  const { ticksList } = byId(
+    (await generateContract({ routesDirs: [PYTHON_FIXTURE] })).operations,
+  );
+  assertEquals(Object.keys(ticksList.events!), ["tick", "done"]);
+  assertEquals(
+    (ticksList.events!.tick as { required: string[] }).required,
+    ["n"],
+  );
+  assertEquals(ticksList.keepAlive, 40);
+  assertEquals(ticksList.response, undefined);
 });
 
 Deno.test("contract: `output` writes the same document as JSON", async () => {

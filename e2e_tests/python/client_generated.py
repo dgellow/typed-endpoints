@@ -206,6 +206,9 @@ _SHAPES_CREATE_RESPONSE: TypeAdapter[ShapesCreateResponse] = TypeAdapter(ShapesC
 _TREES_CREATE_BODY: TypeAdapter[Any] = TypeAdapter(TreesCreateBody)
 _TREES_CREATE_RESPONSE: TypeAdapter[TreesCreateResponse] = TypeAdapter(TreesCreateResponse)
 
+# Not generated: server-sent event streams.
+#   GET /api/ticks
+
 
 def _segment(value: str) -> str:
     """A path parameter, percent-encoded."""

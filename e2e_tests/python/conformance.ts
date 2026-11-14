@@ -326,6 +326,82 @@ export function conformance(label: string, baseUrl: () => string): void {
     ]);
   });
 
+  test("an event stream: typed events, in order, in the same frames", async () => {
+    const api = client();
+    const seen: unknown[] = [];
+    for await (const event of api.ticks.subscribe({ query: { count: 2 } })) {
+      seen.push([event.event, event.data, event.id]);
+      if (event.event === "tick") {
+        assertType<Equal<typeof event.data, { n: number }>>();
+      }
+    }
+    assertEquals(seen, [
+      ["tick", { n: 0 }, "0"],
+      ["tick", { n: 1 }, "1"],
+      ["done", { total: 2 }, undefined],
+    ]);
+
+    // Byte for byte what is on the wire.
+    const response = await send("GET", "/api/ticks?count=2");
+    assertEquals(response.status, 200);
+    assertEquals(
+      response.headers.get("content-type")?.split(";")[0],
+      "text/event-stream",
+    );
+    assertEquals(
+      await response.text(),
+      'event: tick\nid: 0\ndata: {"n":0}\n\n' +
+        'event: tick\nid: 1\ndata: {"n":1}\n\n' +
+        'event: done\ndata: {"total":2}\n\n',
+    );
+
+    // The query is validated before the stream begins.
+    const invalid = await send("GET", "/api/ticks?count=-1");
+    assertEquals(invalid.status, 400);
+    assertEquals((await invalid.json() as Invalid).in, "query");
+  });
+
+  test("an event stream that fails says so, and the client resumes after the event it has", async () => {
+    const api = client();
+    const seen: number[] = [];
+    for await (
+      const event of api.ticks.subscribe({
+        query: { count: 4, failAt: 2 },
+        reconnectDelay: 5,
+      })
+    ) {
+      if (event.event === "tick") seen.push(event.data.n);
+    }
+    // The first connection failed before tick 2; the second was asked
+    // for with Last-Event-ID: 1 and continued from there.
+    assertEquals(seen, [0, 1, 2, 3]);
+
+    // On the wire: the events before the failure, then the comment.
+    const failed = await send("GET", "/api/ticks?count=4&failAt=1");
+    assertEquals(
+      await failed.text(),
+      'event: tick\nid: 0\ndata: {"n":0}\n\n: error\n\n',
+    );
+
+    // An event its schema rejects is a failure too, and is never sent.
+    const bad = await send("GET", "/api/ticks?count=4&badAt=1");
+    assertEquals(
+      await bad.text(),
+      'event: tick\nid: 0\ndata: {"n":0}\n\n: error\n\n',
+    );
+  });
+
+  test("an event stream that is silent is kept alive with comments", async () => {
+    const response = await send("GET", "/api/ticks?count=1&pause=150");
+    const text = await response.text();
+    const comments = text.split(": keep-alive\n\n").length - 1;
+    assert(comments >= 1, `no keep-alive comment in ${JSON.stringify(text)}`);
+    assertEquals(
+      text.replaceAll(": keep-alive\n\n", ""),
+      'event: tick\nid: 0\ndata: {"n":0}\n\nevent: done\ndata: {"total":1}\n\n',
+    );
+  });
+
   test("the note is a lawful resource", async () => {
     const url = `${baseUrl()}/api/notes/${label}-lawful`;
     const created = await fetch(url, {

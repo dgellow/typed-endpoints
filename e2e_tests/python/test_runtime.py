@@ -64,6 +64,23 @@ class Respond(unittest.TestCase):
                 respond(wrong), (500, {"error": "Internal Server Error"})
             )
 
+    def test_a_model_instance_is_checked_again(self) -> None:
+        # Pydantic trusts an instance. One built unchecked, or changed
+        # after it was built, is not what its model describes.
+        unchecked = api.NotesRetrieveResponse.model_construct(
+            id="1", likes=0, title="", tags=[]
+        )
+        self.assertEqual(respond(unchecked), (500, {"error": "Internal Server Error"}))
+
+        changed = api.NotesRetrieveResponse(id="1", likes=0, title="t", tags=[])
+        changed.title = ""
+        self.assertEqual(respond(changed), (500, {"error": "Internal Server Error"}))
+
+        failure = api.NotFound.model_construct(error="gone", id="1")
+        self.assertEqual(
+            respond(api.Fail(404, failure)), (500, {"error": "Internal Server Error"})
+        )
+
     def test_a_declared_failure_is_sent_with_its_status(self) -> None:
         body = {"error": "not_found", "id": "1"}
         self.assertEqual(respond(api.Fail(404, body)), (404, body))
