@@ -111,29 +111,31 @@ Deno.test("rust models: a struct; required, nullable, optional and default membe
 ${DERIVE}
 pub struct Person {
     pub id: String,
+    /// Always there: \`None\` is written \`null\`.
     pub deleted: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nickname: Option<String>,
     #[serde(default, skip_serializing_if = "MaybeAbsent::is_absent")]
     pub note: MaybeAbsent<String>,
+    /// \`"member"\` when left out.
     #[serde(default = "default_person_role")]
     pub role: String,
-    #[serde(default = "default_person_limit")]
+    /// \`null\` when left out.
+    #[serde(default)]
     pub limit: Option<i64>,
+    /// \`["a"]\` when left out.
     #[serde(default = "default_person_tags")]
     pub tags: Vec<String>,
+    /// \`0.5\` when left out.
     #[serde(default = "default_person_ratio")]
     pub ratio: f64,
+    /// \`100000\` when left out.
     #[serde(default = "default_person_seats")]
     pub seats: u64,
 }
 
 fn default_person_role() -> String {
     String::from("member")
-}
-
-fn default_person_limit() -> Option<i64> {
-    None
 }
 
 fn default_person_tags() -> Vec<String> {
@@ -221,6 +223,7 @@ pub struct Filter {
 pub struct Page {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+    /// At least 1, \`20\` when left out.
     #[serde(default = "default_page_limit")]
     pub limit: u64,
 }
@@ -256,6 +259,7 @@ Deno.test("rust models: both sides of a schema are one type", () => {
     rendered.render().join("\n").trimEnd(),
     `#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Body {
+    /// \`"light"\` when left out.
     #[serde(default = "default_body_theme")]
     pub theme: String,
 }
@@ -345,6 +349,7 @@ Deno.test("rust models: string literals are an enum; a rule names its values", (
     source,
     `${DERIVE_EQ}
 pub struct Alarm {
+    /// \`"cm"\` when left out.
     #[serde(default = "default_alarm_unit")]
     pub unit: AlarmUnit,
     pub level: AlarmLevel,
@@ -581,6 +586,7 @@ pub struct Tree {
     pub named: BTreeMap<String, Tree>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<Box<Tree>>,
+    /// Always there: \`None\` is written \`null\`.
     pub origin: Option<Box<Tree>>,
     pub either: TreeEither,
 }
@@ -689,12 +695,16 @@ Deno.test("rust models: descriptions become documentation", () => {
       false,
     ),
   );
-  // A type without a description takes the one it is given.
-  rendered.describe(type, "The body of `POST /notes`.");
-  rendered.describe(type, "Not this one.");
+  // A type without a description says where it is used: every place.
+  rendered.describe(type, "body", "POST /notes");
+  rendered.describe(type, "body", "PUT /notes/{id}");
+  rendered.describe(type, "response", "POST /notes");
+  rendered.describe(type, "response", "PUT /notes/{id}");
+  rendered.describe(type, "404 body", "GET /notes/{id}");
   assertEquals(
     rendered.render().join("\n").trimEnd(),
-    `/// The body of \`POST /notes\`.
+    `/// The body and response of \`POST /notes\` and \`PUT /notes/{id}\`; the 404 body
+/// of \`GET /notes/{id}\`.
 ${DERIVE_EQ}
 pub struct Note {
     /// Where it is kept.
@@ -706,6 +716,130 @@ pub struct Note {
   assertEquals(
     rust(z.object({ id: z.string() }).describe("A note")).source.split("\n")[0],
     "/// A note",
+  );
+});
+
+Deno.test("rust models: what the runtime checks and the type does not say is documentation", () => {
+  assertEquals(
+    rust(z.object({
+      title: z.string().min(1).max(40),
+      code: z.string().length(3),
+      slug: z.string().regex(/^[a-z-]+$/).describe("Part of the address."),
+      when: z.iso.datetime(),
+      tags: z.array(z.string().min(1)).max(4),
+      scores: z.record(z.string(), z.number().min(0).max(1)),
+      // An integer has the bounds of a safe integer: not worth saying.
+      likes: z.number().int(),
+      // Not negative: the type says so.
+      views: z.number().int().min(0).max(1000),
+      ratio: z.number().gt(0).multipleOf(0.5),
+      limit: z.number().int().min(1).max(100).default(20),
+      note: z.string().nullable(),
+    })).source,
+    `${DERIVE}
+pub struct Thing {
+    /// 1 to 40 characters.
+    pub title: String,
+    /// Exactly 3 characters.
+    pub code: String,
+    /// Part of the address.
+    ///
+    /// Matches \`^[a-z-]+$\`.
+    pub slug: String,
+    /// An ISO 8601 date and time.
+    pub when: String,
+    /// At most 4 items, each at least 1 character.
+    pub tags: Vec<String>,
+    /// Each value 0 to 1.
+    pub scores: BTreeMap<String, f64>,
+    pub likes: i64,
+    /// At most 1000.
+    pub views: u64,
+    /// Greater than 0, a multiple of 0.5.
+    pub ratio: f64,
+    /// 1 to 100, \`20\` when left out.
+    #[serde(default = "default_thing_limit")]
+    pub limit: u64,
+    /// Always there: \`None\` is written \`null\`.
+    pub note: Option<String>,
+}
+
+fn default_thing_limit() -> u64 {
+    20
+}`,
+  );
+});
+
+Deno.test("rust models: a default that is the type's own is left to serde", () => {
+  assertEquals(
+    rust(z.object({
+      tags: z.array(z.string()).default([]),
+      draft: z.boolean().default(false),
+      parent: z.string().nullable().default(null),
+    })).source,
+    `#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub struct Thing {
+    /// \`[]\` when left out.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// \`false\` when left out.
+    #[serde(default)]
+    pub draft: bool,
+    /// \`null\` when left out.
+    #[serde(default)]
+    pub parent: Option<String>,
+}`,
+  );
+});
+
+Deno.test("rust models: a union that is JSON itself is serde_json's value", () => {
+  type Json =
+    | string
+    | number
+    | boolean
+    | null
+    | Json[]
+    | { [key: string]: Json };
+  const Json: z.ZodType<Json> = z.union([
+    z.string(),
+    z.number(),
+    z.boolean(),
+    z.null(),
+    z.array(z.lazy(() => Json)),
+    z.record(z.string(), z.lazy(() => Json)),
+  ]);
+  const { graph, models: rendered } = models();
+  rendered.type(
+    graph.define(
+      "Thing",
+      jsonSchema(z.object({ data: Json, more: Json.optional() }), "input"),
+      false,
+    ),
+  );
+  assertEquals(
+    rendered.render().join("\n").trimEnd(),
+    `${DERIVE}
+pub struct Thing {
+    pub data: Value,
+    #[serde(
+        default,
+        deserialize_with = "runtime::present_member",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub more: Option<Value>,
+}`,
+  );
+  assertEquals(rendered.usesValue, true);
+
+  // With a bound on one alternative it is a type of its own.
+  type Short = string | Short[];
+  const Short: z.ZodType<Short> = z.union([
+    z.string().max(3),
+    z.array(z.lazy(() => Short)),
+  ]);
+  assertEquals(
+    rust(z.object({ data: Short })).source.includes("pub enum ThingData {"),
+    true,
   );
 });
 

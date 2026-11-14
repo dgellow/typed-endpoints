@@ -73,7 +73,9 @@ class EdgesCreateBody(BaseModel):
     email: Annotated[str, Field(pattern="^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$")] | None = None
 
 
-class NotesListResponseItemsItem(BaseModel):
+class Note(BaseModel):
+    """A note as the server shows it."""
+
     model_config = ConfigDict(strict=True, extra="forbid", populate_by_name=True, regex_engine="python-re")
     title: Annotated[str, Field(min_length=1, max_length=40)]
     tags: Annotated[list[Annotated[str, Field(min_length=1)]], Field(max_length=4)]
@@ -84,7 +86,7 @@ class NotesListResponseItemsItem(BaseModel):
 
 class NotesListResponse(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", populate_by_name=True, regex_engine="python-re")
-    items: list[NotesListResponseItemsItem]
+    items: list[Note]
     cursor: str | None = None
 
 
@@ -93,12 +95,6 @@ class NotesListQuery(BaseModel):
     cursor: str | None = None
     limit: Annotated[int, Field(ge=1, le=100)] = 2
     tag: list[str] | None = None
-
-
-NotesListItem = NotesListResponseItemsItem
-
-
-NotesCreateResponse = NotesListResponseItemsItem
 
 
 class NotesCreateBody(BaseModel):
@@ -129,12 +125,6 @@ class NotFound(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", populate_by_name=True, regex_engine="python-re")
     error: Literal["not_found"]
     id: str
-
-
-NotesRetrieveResponse = NotesListResponseItemsItem
-
-
-NotesUpdateResponse = NotesListResponseItemsItem
 
 
 NotesUpdateBody = NotesCreateBody
@@ -309,17 +299,17 @@ _EDGES_CREATE_BODY: TypeAdapter[Any] = TypeAdapter(EdgesCreateBody)
 _EDGES_CREATE_RESPONSE: TypeAdapter[EdgesCreateResponse] = TypeAdapter(EdgesCreateResponse)
 _NOTES_LIST_RESPONSE: TypeAdapter[NotesListResponse] = TypeAdapter(NotesListResponse)
 _NOTES_LIST_PAGINATION: dict[str, Any] = {"style": "cursor", "items": "items", "cursor": "cursor", "cursorParam": "cursor", "limitParam": "limit"}
-_NOTES_LIST_ITEM: TypeAdapter[NotesListItem] = TypeAdapter(NotesListItem)
+_NOTES_LIST_ITEM: TypeAdapter[Note] = TypeAdapter(Note)
 _NOTES_CREATE_BODY: TypeAdapter[Any] = TypeAdapter(NotesCreateBody)
-_NOTES_CREATE_RESPONSE: TypeAdapter[NotesCreateResponse] = TypeAdapter(NotesCreateResponse)
+_NOTES_CREATE_RESPONSE: TypeAdapter[Note] = TypeAdapter(Note)
 _NOTES_CREATE_ERRORS: dict[int, TypeAdapter[Any]] = {409: TypeAdapter(NotesCreateError409)}
 _NOTES_DELETE_BODY: TypeAdapter[Any] = TypeAdapter(NotesDeleteBody)
 _NOTES_DELETE_RESPONSE: TypeAdapter[NotesDeleteResponse] = TypeAdapter(NotesDeleteResponse)
 _NOTES_DELETE_ERRORS: dict[int, TypeAdapter[Any]] = {404: TypeAdapter(NotFound)}
-_NOTES_RETRIEVE_RESPONSE: TypeAdapter[NotesRetrieveResponse] = TypeAdapter(NotesRetrieveResponse)
+_NOTES_RETRIEVE_RESPONSE: TypeAdapter[Note] = TypeAdapter(Note)
 _NOTES_RETRIEVE_ERRORS: dict[int, TypeAdapter[Any]] = {404: TypeAdapter(NotFound)}
 _NOTES_UPDATE_BODY: TypeAdapter[Any] = TypeAdapter(NotesUpdateBody)
-_NOTES_UPDATE_RESPONSE: TypeAdapter[NotesUpdateResponse] = TypeAdapter(NotesUpdateResponse)
+_NOTES_UPDATE_RESPONSE: TypeAdapter[Note] = TypeAdapter(Note)
 _ODD_CREATE_BODY: TypeAdapter[Any] = TypeAdapter(OddCreateBody)
 _ODD_CREATE_RESPONSE: TypeAdapter[OddCreateResponse] = TypeAdapter(OddCreateResponse)
 _SHAPES_CREATE_BODY: TypeAdapter[Any] = TypeAdapter(ShapesCreateBody)
@@ -608,7 +598,7 @@ class Client:
     def notes_list_items(
         self,
         query: NotesListQuery | None = None,
-    ) -> Iterator[NotesListItem]:
+    ) -> Iterator[Note]:
         """Every item of GET /api/notes, across its pages."""
         for page in self._pages(
             "notes_list",
@@ -623,7 +613,7 @@ class Client:
     def notes_create(
         self,
         body: NotesCreateBody,
-    ) -> NotesCreateResponse:
+    ) -> Note:
         """POST /api/notes"""
         response = self._send(
             "POST",
@@ -636,7 +626,7 @@ class Client:
     def notes_create_result(
         self,
         body: NotesCreateBody,
-    ) -> NotesCreateResponse | Fail[Literal[409], NotesCreateError409]:
+    ) -> Note | Fail[Literal[409], NotesCreateError409]:
         """POST /api/notes, with the declared errors as values."""
         response = self._send(
             "POST",
@@ -677,7 +667,7 @@ class Client:
     def notes_retrieve(
         self,
         id: str,
-    ) -> NotesRetrieveResponse:
+    ) -> Note:
         """GET /api/notes/{id}"""
         response = self._send(
             "GET",
@@ -688,7 +678,7 @@ class Client:
     def notes_retrieve_result(
         self,
         id: str,
-    ) -> NotesRetrieveResponse | Fail[Literal[404], NotFound]:
+    ) -> Note | Fail[Literal[404], NotFound]:
         """GET /api/notes/{id}, with the declared errors as values."""
         response = self._send(
             "GET",
@@ -700,7 +690,7 @@ class Client:
         self,
         id: str,
         body: NotesUpdateBody,
-    ) -> NotesUpdateResponse:
+    ) -> Note:
         """PUT /api/notes/{id}"""
         response = self._send(
             "PUT",
@@ -870,7 +860,7 @@ class AsyncClient:
     async def notes_list_items(
         self,
         query: NotesListQuery | None = None,
-    ) -> AsyncIterator[NotesListItem]:
+    ) -> AsyncIterator[Note]:
         """Every item of GET /api/notes, across its pages."""
         async for page in self._pages(
             "notes_list",
@@ -885,7 +875,7 @@ class AsyncClient:
     async def notes_create(
         self,
         body: NotesCreateBody,
-    ) -> NotesCreateResponse:
+    ) -> Note:
         """POST /api/notes"""
         response = await self._send(
             "POST",
@@ -898,7 +888,7 @@ class AsyncClient:
     async def notes_create_result(
         self,
         body: NotesCreateBody,
-    ) -> NotesCreateResponse | Fail[Literal[409], NotesCreateError409]:
+    ) -> Note | Fail[Literal[409], NotesCreateError409]:
         """POST /api/notes, with the declared errors as values."""
         response = await self._send(
             "POST",
@@ -939,7 +929,7 @@ class AsyncClient:
     async def notes_retrieve(
         self,
         id: str,
-    ) -> NotesRetrieveResponse:
+    ) -> Note:
         """GET /api/notes/{id}"""
         response = await self._send(
             "GET",
@@ -950,7 +940,7 @@ class AsyncClient:
     async def notes_retrieve_result(
         self,
         id: str,
-    ) -> NotesRetrieveResponse | Fail[Literal[404], NotFound]:
+    ) -> Note | Fail[Literal[404], NotFound]:
         """GET /api/notes/{id}, with the declared errors as values."""
         response = await self._send(
             "GET",
@@ -962,7 +952,7 @@ class AsyncClient:
         self,
         id: str,
         body: NotesUpdateBody,
-    ) -> NotesUpdateResponse:
+    ) -> Note:
         """PUT /api/notes/{id}"""
         response = await self._send(
             "PUT",

@@ -101,7 +101,9 @@ class NotesListQuery(BaseModel):
     tag: list[str] | None = None
 
 
-class NotesListResponseItemsItem(BaseModel):
+class Note(BaseModel):
+    """A note as the server shows it."""
+
     model_config = ConfigDict(strict=True, extra="forbid", populate_by_name=True, regex_engine="python-re")
     title: Annotated[str, Field(min_length=1, max_length=40)]
     tags: Annotated[list[Annotated[str, Field(min_length=1)]], Field(max_length=4)]
@@ -112,7 +114,7 @@ class NotesListResponseItemsItem(BaseModel):
 
 class NotesListResponse(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", populate_by_name=True, regex_engine="python-re")
-    items: list[NotesListResponseItemsItem]
+    items: list[Note]
     cursor: str | None = None
 
 
@@ -121,9 +123,6 @@ class NotesCreateBody(BaseModel):
     title: Annotated[str, Field(min_length=1, max_length=40)]
     tags: Annotated[list[Annotated[str, Field(min_length=1)]], Field(max_length=4)]
     pinned: bool | None = None
-
-
-NotesCreateResponse = NotesListResponseItemsItem
 
 
 class NotesCreateError409(BaseModel):
@@ -157,16 +156,10 @@ class NotFound(BaseModel):
 NotesRetrieveParams = NotesDeleteParams
 
 
-NotesRetrieveResponse = NotesListResponseItemsItem
-
-
 NotesUpdateParams = NotesDeleteParams
 
 
 NotesUpdateBody = NotesCreateBody
-
-
-NotesUpdateResponse = NotesListResponseItemsItem
 
 
 class OddCreateBodyChain(BaseModel):
@@ -404,7 +397,7 @@ class Handlers(Protocol):
     async def notes_create(
         self,
         body: NotesCreateBody,
-    ) -> NotesCreateResponse | Fail[Literal[409], NotesCreateError409] | Response:
+    ) -> Note | Fail[Literal[409], NotesCreateError409] | Response:
         """POST /api/notes"""
         ...
 
@@ -419,7 +412,7 @@ class Handlers(Protocol):
     async def notes_retrieve(
         self,
         params: NotesRetrieveParams,
-    ) -> NotesRetrieveResponse | Fail[Literal[404], NotFound] | Response:
+    ) -> Note | Fail[Literal[404], NotFound] | Response:
         """GET /api/notes/{id}"""
         ...
 
@@ -427,7 +420,7 @@ class Handlers(Protocol):
         self,
         params: NotesUpdateParams,
         body: NotesUpdateBody,
-    ) -> NotesUpdateResponse | Response:
+    ) -> Note | Response:
         """PUT /api/notes/{id}"""
         ...
 
@@ -475,13 +468,13 @@ _EDGES_CREATE_RESPONSE: TypeAdapter[Any] = TypeAdapter(EdgesCreateResponse)
 _EDGES_CREATE_ERRORS: dict[int, TypeAdapter[Any]] = {}
 _NOTES_LIST_RESPONSE: TypeAdapter[Any] = TypeAdapter(NotesListResponse)
 _NOTES_LIST_ERRORS: dict[int, TypeAdapter[Any]] = {}
-_NOTES_CREATE_RESPONSE: TypeAdapter[Any] = TypeAdapter(NotesCreateResponse)
+_NOTES_CREATE_RESPONSE: TypeAdapter[Any] = TypeAdapter(Note)
 _NOTES_CREATE_ERRORS: dict[int, TypeAdapter[Any]] = {409: TypeAdapter(NotesCreateError409)}
 _NOTES_DELETE_RESPONSE: TypeAdapter[Any] = TypeAdapter(NotesDeleteResponse)
 _NOTES_DELETE_ERRORS: dict[int, TypeAdapter[Any]] = {404: TypeAdapter(NotFound)}
-_NOTES_RETRIEVE_RESPONSE: TypeAdapter[Any] = TypeAdapter(NotesRetrieveResponse)
+_NOTES_RETRIEVE_RESPONSE: TypeAdapter[Any] = TypeAdapter(Note)
 _NOTES_RETRIEVE_ERRORS: dict[int, TypeAdapter[Any]] = {404: TypeAdapter(NotFound)}
-_NOTES_UPDATE_RESPONSE: TypeAdapter[Any] = TypeAdapter(NotesUpdateResponse)
+_NOTES_UPDATE_RESPONSE: TypeAdapter[Any] = TypeAdapter(Note)
 _NOTES_UPDATE_ERRORS: dict[int, TypeAdapter[Any]] = {}
 _ODD_CREATE_RESPONSE: TypeAdapter[Any] = TypeAdapter(OddCreateResponse)
 _ODD_CREATE_ERRORS: dict[int, TypeAdapter[Any]] = {}
@@ -539,7 +532,7 @@ def create_router(handlers: Handlers) -> APIRouter:
     @router.post(
         "/api/notes",
         operation_id="notesCreate", response_model=None,
-        responses={200: {"model": NotesCreateResponse}, 400: {"model": InvalidRequest}, 409: {"model": NotesCreateError409}},
+        responses={200: {"model": Note}, 400: {"model": InvalidRequest}, 409: {"model": NotesCreateError409}},
     )
     async def notes_create(body: Annotated[NotesCreateBody, Body()]) -> Response:
         return await _respond(
@@ -566,7 +559,7 @@ def create_router(handlers: Handlers) -> APIRouter:
     @router.get(
         "/api/notes/{id}",
         operation_id="notesRetrieve", response_model=None,
-        responses={200: {"model": NotesRetrieveResponse}, 400: {"model": InvalidRequest}, 404: {"model": NotFound}},
+        responses={200: {"model": Note}, 400: {"model": InvalidRequest}, 404: {"model": NotFound}},
     )
     async def notes_retrieve(id: str) -> Response:
         params = _parse(NotesRetrieveParams, {"id": id}, "path")
@@ -580,7 +573,7 @@ def create_router(handlers: Handlers) -> APIRouter:
     @router.put(
         "/api/notes/{id}",
         operation_id="notesUpdate", response_model=None,
-        responses={200: {"model": NotesUpdateResponse}, 400: {"model": InvalidRequest}},
+        responses={200: {"model": Note}, 400: {"model": InvalidRequest}},
     )
     async def notes_update(id: str, body: Annotated[NotesUpdateBody, Body()]) -> Response:
         params = _parse(NotesUpdateParams, {"id": id}, "path")

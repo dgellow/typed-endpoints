@@ -9,8 +9,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use typed_endpoints_rust_e2e::api_generated as api;
 
-/// A note, as every operation answers it.
-type Note = api::NotesRetrieveResponse;
+use api::Note;
 
 /// The notes of this server, by id.
 #[derive(Default)]
@@ -77,7 +76,7 @@ impl api::Handlers for Notes {
     async fn notes_create(
         &self,
         body: api::NotesCreateBody,
-    ) -> Result<api::NotesCreateResponse, api::NotesCreateError> {
+    ) -> Result<Note, api::NotesCreateError> {
         if self.notes().values().any(|note| note.title == body.title) {
             return Err(api::NotesCreateError::Conflict(api::NotesCreateError409 {
                 title: body.title,
@@ -104,7 +103,7 @@ impl api::Handlers for Notes {
         &self,
         params: api::NotesUpdateParams,
         body: api::NotesUpdateBody,
-    ) -> Result<api::NotesUpdateResponse, api::InternalError> {
+    ) -> Result<Note, api::InternalError> {
         Ok(self.store(params.id, body))
     }
 

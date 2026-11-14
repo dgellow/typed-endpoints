@@ -1144,7 +1144,7 @@ impl api::Handlers for Notes {
     async fn notes_retrieve(
         &self,
         params: api::NotesRetrieveParams,
-    ) -> Result<api::NotesRetrieveResponse, api::NotesRetrieveError> {
+    ) -> Result<api::Note, api::NotesRetrieveError> {
         let row = self.db.find(&params.id).await?; // any error: a 500
         row.ok_or_else(|| api::NotFound { id: params.id }.into()) // the declared 404
     }
@@ -1164,21 +1164,22 @@ cause and reported through `tracing`.
 Rust was added to see where the design gives way under a language with nominal
 types, value types and no `null`. What it took:
 
-| TypeScript says                                         | Rust needs                                                   | What the generator does                                                                                                                 |
-| ------------------------------------------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
-| a union or a set of literals, written in place          | a name for every type                                        | names them after the place they are in (`ShapesCreateBodyUnit`); the same values in a second place are the same type under another name |
-| `{ a: string }` twice is one type                       | two structs are two types                                    | recognises the same object, whatever document it is in, and writes `pub type B = A`                                                     |
-| what goes in and what comes out are one schema          | a type for each side would make a handler copy between them  | one type for both sides: a default is filled in when a request leaves it out, and the runtime refuses unknown members                   |
-| a union told apart by a member                          | an enum, and a way to tell its variants apart                | `#[serde(tag = "kind")]`; the variants are structs without that member                                                                  |
-| a member that is always one string                      | no literal types                                             | serde writes it (`#[serde(tag = "error", rename = "not_found")]`); the struct has no field for it                                       |
-| a type that contains itself                             | indirection, or the type has no size                         | `Box` where a cycle closes, none behind a `Vec` or a map                                                                                |
-| `type Json = string \| null \| Json[] \| ...`           | a recursive type has to be nominal                           | an enum of its own name, with a `Null` variant                                                                                          |
-| `x?: T \| null`: absent, null and a value               | `Option` has two states                                      | `MaybeAbsent<T>`: `Absent`, `Null`, `Value(T)`                                                                                          |
-| one `number`                                            | `i64`, `u64` and `f64`                                       | `u64` for an integer that is not negative; `2.0` is accepted for an integer, as in JavaScript, and reaches the handler as `2`           |
-| a pattern is a JavaScript `RegExp`                      | another regex dialect: `\d` matches every Unicode digit      | rewrites `\d`, `\w`, `\b` to what they mean in JavaScript; each pattern is compiled once, when the router is built                      |
-| every issue of a request, with its path                 | `serde` stops at the first, and knows no lengths or patterns | does not validate with `serde`: checks the JSON against the contract first, then builds the typed value                                 |
-| `fail(404, body)`, the status checked against a literal | no literal types                                             | an enum per operation: `NotesRetrieveError::NotFound(NotFound)`                                                                         |
-| a handler may throw                                     | a function that can fail says so in its type                 | every method returns a `Result`; `InternalError` takes any error                                                                        |
+| TypeScript says                                         | Rust needs                                                   | What the generator does                                                                                                           |
+| ------------------------------------------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| a union or a set of literals, written in place          | a name for every type                                        | a schema with an id has that name (`.meta({ id: "Note" })`); any other is named after the place it is in (`ShapesCreateBodyUnit`) |
+| `{ a: string }` twice is one type                       | two structs are two types                                    | recognises the same object, whatever document it is in, and writes `pub type B = A`                                               |
+| what goes in and what comes out are one schema          | a type for each side would make a handler copy between them  | one type for both sides: a default is filled in when a request leaves it out, and the runtime refuses unknown members             |
+| a union told apart by a member                          | an enum, and a way to tell its variants apart                | `#[serde(tag = "kind")]`; the variants are structs without that member                                                            |
+| a member that is always one string                      | no literal types                                             | serde writes it (`#[serde(tag = "error", rename = "not_found")]`); the struct has no field for it                                 |
+| a type that contains itself                             | indirection, or the type has no size                         | `Box` where a cycle closes, none behind a `Vec` or a map                                                                          |
+| `type Json = string \| null \| Json[] \| ...`           | a recursive type has to be nominal                           | `serde_json::Value` when the type is JSON itself; any other is an enum of its own name, with a `Null` variant                     |
+| `z.string().min(1).max(40)`                             | `String` says none of it                                     | the runtime checks it, and the field's documentation says it: `/// 1 to 40 characters.`                                           |
+| `x?: T \| null`: absent, null and a value               | `Option` has two states                                      | `MaybeAbsent<T>`: `Absent`, `Null`, `Value(T)`                                                                                    |
+| one `number`                                            | `i64`, `u64` and `f64`                                       | `u64` for an integer that is not negative; `2.0` is accepted for an integer, as in JavaScript, and reaches the handler as `2`     |
+| a pattern is a JavaScript `RegExp`                      | another regex dialect: `\d` matches every Unicode digit      | rewrites `\d`, `\w`, `\b` to what they mean in JavaScript; each pattern is compiled once, when the router is built                |
+| every issue of a request, with its path                 | `serde` stops at the first, and knows no lengths or patterns | does not validate with `serde`: checks the JSON against the contract first, then builds the typed value                           |
+| `fail(404, body)`, the status checked against a literal | no literal types                                             | an enum per operation: `NotesRetrieveError::NotFound(NotFound)`                                                                   |
+| a handler may throw                                     | a function that can fail says so in its type                 | every method returns a `Result`; `InternalError` takes any error                                                                  |
 
 The contract is in the module as data the compiler checks (`static` values of a
 `Schema` type), not as text parsed when the server starts, and the runtime
