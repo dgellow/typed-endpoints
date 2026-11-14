@@ -19,7 +19,6 @@ import type {
   DependentStep,
   MappedStep,
   Protocol,
-  Step,
   StepResponse,
 } from "./types.ts";
 import {
@@ -38,10 +37,51 @@ type IsIndependent<T> = T extends { __kind: "step" } ? true
   : T extends { __kind: "mapped_step" } ? false
   : false;
 
-/** Get the dependency of a dependent step - accesses property directly */
+/**
+ * Steps named as a source in a mapped step's `requestMapping`.
+ *
+ * `mappedStep()` captures the mapping with a `const` type parameter, so the
+ * step names are literal types. A mapping whose step names were widened to
+ * `string` contributes nothing here; the runtime check still applies.
+ */
+type MappingSources<T> = T extends { requestMapping: infer M } ? {
+    [F in keyof M]: M[F] extends
+      { __kind: "field_mapping"; step: infer S extends string }
+      ? string extends S ? never : S
+      : never;
+  }[keyof M]
+  : never;
+
+/**
+ * Every step that must have run before this one: `dependsOn`, plus for a
+ * mapped step each step its `requestMapping` reads from.
+ */
 type DependencyOf<T> = T extends { __kind: "dependent_step"; dependsOn: string }
   ? T["dependsOn"]
-  : T extends { __kind: "mapped_step"; dependsOn: string } ? T["dependsOn"]
+  : T extends { __kind: "mapped_step"; dependsOn: string }
+    ? T["dependsOn"] | MappingSources<T>
+  : never;
+
+/**
+ * The request `execute()` accepts for a step.
+ *
+ * - step: the input type of its request schema
+ * - mapped step: the input type of its static `requestSchema`
+ * - dependent step: the input type of the schema its `request` function
+ *   returns. A branch that returns `z.never()` contributes nothing.
+ *
+ * Values forwarded from earlier steps are typed by their base type here
+ * (`code: string`); that they equal the earlier value is checked at runtime.
+ */
+export type StepInput<T> = T extends
+  { __kind: "step"; request: infer R extends z.ZodType } ? z.input<R>
+  : T extends
+    { __kind: "mapped_step"; requestSchema: infer R extends z.ZodType }
+    ? z.input<R>
+  : T extends {
+    __kind: "dependent_step";
+    request: (prev: never) => infer R extends z.ZodType;
+  } ? z.input<R>
   : never;
 
 /** Steps available when state has certain completed steps */
@@ -137,8 +177,7 @@ export class ProtocolSession<
    */
   async execute<K extends string & AvailableSteps<TSteps, TDone & string>>(
     stepName: K,
-    request: TSteps[K] extends Step<string, infer R, z.ZodType> ? z.infer<R>
-      : unknown,
+    request: StepInput<TSteps[K]>,
   ): Promise<ExecuteResult<StepResponse<TSteps[K]>, TSteps, TDone | K>> {
     const step = this.protocol.steps[stepName];
 

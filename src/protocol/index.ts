@@ -159,6 +159,7 @@ export type {
   MockResponses,
   SessionState,
   StepExecutor,
+  StepInput,
 } from "./client.ts";
 
 // OpenAPI extensions
