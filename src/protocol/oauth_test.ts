@@ -290,23 +290,15 @@ Deno.test("OAuth exchange step rejects requests with wrong code", () => {
   assertEquals(result.success, false);
 });
 
-Deno.test("OAuth exchange step returns z.never() schema when authorize failed", () => {
-  const errorResponse = {
-    type: "error" as const,
-    error: "access_denied" as const,
-  };
-
-  const requestSchema = exchangeStep.request(errorResponse);
-
-  // z.never() should reject everything
-  const result = requestSchema.safeParse({
-    grant_type: "authorization_code",
-    code: "any-code",
-    client_id: "my-client",
-    client_secret: "secret",
-  });
-
-  assertEquals(result.success, false);
+Deno.test("OAuth exchange step follows a successful authorize only", () => {
+  assertEquals(
+    exchangeStep.when?.({ type: "success", code: "c", state: "s" }),
+    true,
+  );
+  assertEquals(
+    exchangeStep.when?.({ type: "error", error: "access_denied" }),
+    false,
+  );
 });
 
 Deno.test("OAuth refresh step depends on exchange step", () => {
@@ -335,24 +327,21 @@ Deno.test("OAuth refresh step generates request schema from exchange response", 
   assertEquals(result.success, true);
 });
 
-Deno.test("OAuth refresh step returns z.never() when no refresh token available", () => {
-  const noRefreshResponse = {
+Deno.test("OAuth refresh step needs a successful exchange with a refresh token", () => {
+  const success = {
     type: "success" as const,
     access_token: "access-token-123",
     token_type: "Bearer" as const,
     expires_in: 3600,
-    // No refresh_token!
   };
 
-  const requestSchema = refreshStep.request(noRefreshResponse);
-
-  const result = requestSchema.safeParse({
-    grant_type: "refresh_token",
-    refresh_token: "any-token",
-    client_id: "my-client",
-  });
-
-  assertEquals(result.success, false);
+  assertEquals(refreshStep.when?.({ ...success, refresh_token: "r" }), true);
+  // No refresh_token!
+  assertEquals(refreshStep.when?.(success), false);
+  assertEquals(
+    refreshStep.when?.({ type: "error", error: "invalid_grant" }),
+    false,
+  );
 });
 
 Deno.test("OAuth protocol has correct structure", () => {

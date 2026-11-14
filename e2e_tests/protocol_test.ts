@@ -301,8 +301,10 @@ Deno.test("E2E: OAuth protocol - full authorization code flow", async () => {
     assertEquals(authResponse.code, "auth-code-xyz");
   }
 
-  // Exchange
-  const { response: tokenResponse, session: s2 } = await s1.execute(
+  // Exchange needs the success variant of authorize: established here.
+  const granted = s1.ready("exchange");
+  if (!granted) throw new Error("authorize did not succeed");
+  const { response: tokenResponse, session: s2 } = await granted.execute(
     "exchange",
     {
       grant_type: "authorization_code",
@@ -317,8 +319,10 @@ Deno.test("E2E: OAuth protocol - full authorization code flow", async () => {
     assertEquals(tokenResponse.access_token, "access-token-abc");
   }
 
-  // Refresh
-  const { response: refreshResponse } = await s2.execute("refresh", {
+  // Refresh needs a successful exchange that issued a refresh token.
+  const refreshable = s2.ready("refresh");
+  if (!refreshable) throw new Error("no refresh token");
+  const { response: refreshResponse } = await refreshable.execute("refresh", {
     grant_type: "refresh_token",
     refresh_token: "refresh-token-def",
     client_id: "my-app",

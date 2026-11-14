@@ -356,7 +356,11 @@ Deno.test("OAuth protocol: successful authorization flow", async () => {
   // Step 2: Exchange (now unlocked)
   assertEquals(s1.canExecute("exchange"), true);
 
-  const { response: tokenResponse } = await s1.execute("exchange", {
+  // The compiler wants to know that authorize succeeded.
+  const granted = s1.ready("exchange");
+  assert(granted);
+
+  const { response: tokenResponse } = await granted.execute("exchange", {
     grant_type: "authorization_code",
     code: "auth-code-12345", // Must match authorize response
     client_id: "my-client",
@@ -385,10 +389,13 @@ Deno.test("OAuth protocol: exchange requires correct code", async () => {
     state: "state",
   });
 
+  const granted = s1.ready("exchange");
+  assert(granted);
+
   // Exchange with wrong code should fail validation
   await assertRejects(
     async () => {
-      await s1.execute("exchange", {
+      await granted.execute("exchange", {
         grant_type: "authorization_code",
         code: "wrong-code", // Should be "correct-code"
         client_id: "client",
@@ -421,18 +428,23 @@ Deno.test("OAuth protocol: error response blocks exchange", async () => {
 
   assertEquals(authResponse.type, "error");
 
-  // Exchange should fail because authorize returned error (z.never() schema)
+  // The step's guard does not hold, so there is no session to continue with.
+  assertEquals(s1.canExecute("exchange"), false);
+  assertEquals(s1.ready("exchange"), undefined);
+
+  // Bypassing the types, the session refuses the step.
   await assertRejects(
     async () => {
-      await s1.execute("exchange", {
+      // deno-lint-ignore no-explicit-any
+      await (s1 as any).execute("exchange", {
         grant_type: "authorization_code",
         code: "any-code",
         client_id: "client",
         client_secret: "secret",
       });
     },
-    Error,
-    "Invalid request",
+    StepRefusedError,
+    '"authorize" does not allow this step',
   );
 });
 
