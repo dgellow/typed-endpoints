@@ -76,11 +76,23 @@ export {
 export {
   buildHandlers,
   type BuildHandlersOptions,
+  defineIntegration,
   type HandlerMethodDef,
   type Handlers,
   type HandlerSseMethodDef,
+  type Integration,
+  type RawParams,
   type RequestAccess,
+  type RouteHandler,
 } from "./core/handlers.ts";
+
+// Route file layouts
+export {
+  ROUTE_CONVENTIONS,
+  type RouteConvention,
+  type RouteOfFile,
+  routeOfFile,
+} from "./core/routes.ts";
 
 // Fresh adapter
 export {

@@ -76,7 +76,7 @@ export interface ApiMethodDef<
   /** Description of the OpenAPI operation. */
   readonly description?: string;
   /** Tags of the OpenAPI operation. */
-  readonly tags?: string[];
+  readonly tags?: readonly string[];
   /** Operation ID for protocol step mapping and route generation */
   readonly operationId?: string;
   /** Pagination metadata (set by pagination helpers) */
@@ -133,7 +133,7 @@ export interface SseMethodDef<
   /** Description of the OpenAPI operation. */
   readonly description?: string;
   /** Tags of the OpenAPI operation. */
-  readonly tags?: string[];
+  readonly tags?: readonly string[];
   /** Operation ID for protocol step mapping and route generation */
   readonly operationId?: string;
 }

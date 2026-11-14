@@ -6,6 +6,7 @@ import {
 import { z } from "zod";
 import type { ApiDef, ApiMethodDef, HttpMethod } from "./types.ts";
 import type { AnyPaginationMeta } from "../pagination/types.ts";
+import { readModuleApi } from "./module_api.ts";
 import {
   apiPathToTemplate,
   deriveOperationId,
@@ -13,6 +14,8 @@ import {
   fileUrlOf,
   HTTP_METHODS,
   listRouteFiles,
+  type RouteConvention,
+  routeOfFile,
 } from "./routes.ts";
 
 /** Extended method def that may include pagination metadata */
@@ -51,10 +54,15 @@ export interface OpenApiServer {
 export interface GeneratorOptions {
   /** Directory that holds the route files. Default: `"routes/api"`. */
   readonly routesDir?: string;
+  /**
+   * The framework whose route file layout `routesDir` follows. Default:
+   * `"fresh"`. See `RouteConvention`.
+   */
+  readonly convention?: RouteConvention;
   /** Contents of the `info` object. */
   readonly info?: OpenApiInfo;
   /** Contents of the `servers` list. Left out of the spec when empty. */
-  readonly servers?: OpenApiServer[];
+  readonly servers?: readonly OpenApiServer[];
   /**
    * Fail when a route cannot be described. Default: false.
    *
@@ -103,6 +111,7 @@ export async function generateOpenApiSpec(
     info = {},
     servers = [],
     strict = false,
+    convention = "fresh",
   } = options;
 
   const registry = new OpenAPIRegistry();
@@ -116,10 +125,16 @@ export async function generateOpenApiSpec(
   const operations: Operation[] = [];
 
   for (const filePath of routeFiles) {
+    // Not every file below the directory is a route in every convention.
+    const route = routeOfFile(filePath, convention);
+    if (!route) continue;
+
     let apiDef: ApiDef | undefined;
     try {
       const fileUrl = await fileUrlOf(filePath) + cacheBuster;
-      apiDef = ((await import(fileUrl)) as RouteModule).handler?.__apiDef;
+      apiDef = readModuleApi(await import(fileUrl), route.method) as
+        | ApiDef
+        | undefined;
     } catch (error) {
       if (!strict) console.warn(`Failed to process route ${filePath}:`, error);
       problems.push(
@@ -129,7 +144,7 @@ export async function generateOpenApiSpec(
     }
     if (!apiDef) continue;
 
-    const apiPath = filePathToApiPath(filePath);
+    const apiPath = route.apiPath;
     for (const method of HTTP_METHODS) {
       const def = apiDef[method];
       if (!def?.public) continue;
@@ -184,7 +199,7 @@ export async function generateOpenApiSpec(
       version: info.version ?? "1.0.0",
       description: info.description,
     },
-    servers: servers.length > 0 ? servers : undefined,
+    servers: servers.length > 0 ? [...servers] : undefined,
   });
 }
 
