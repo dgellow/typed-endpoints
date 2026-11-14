@@ -468,6 +468,56 @@ export type NamedByKey<TSteps> = {
     : TSteps[K];
 };
 
+/**
+ * Declare that executing a step revokes earlier steps.
+ *
+ * After the step runs, the named steps count as not executed: their
+ * responses leave the session, and steps that depend on them are no longer
+ * available, at compile time and at runtime, until they run again.
+ *
+ * A step that revokes its own dependency consumes it. An authorization
+ * code can be exchanged once (RFC 6749, section 4.1.2):
+ *
+ * @example
+ * ```typescript
+ * const exchange = revoking(
+ *   dependentStep({ name: "exchange", dependsOn: authorize, ... }),
+ *   ["authorize"],
+ * );
+ *
+ * const { session } = await granted.execute("exchange", request);
+ * session.execute("exchange", request); // compile error: authorize is spent
+ * ```
+ *
+ * The session value from before the step still has its earlier type. A
+ * session created with `singleUse` refuses it at runtime.
+ *
+ * @param step The step that revokes.
+ * @param revokes Names of the steps it revokes.
+ */
+export function revoking<
+  TStep extends { readonly __kind: string },
+  const TRevoked extends string,
+>(
+  step: TStep,
+  revokes: readonly TRevoked[],
+): TStep & { readonly revokes: readonly TRevoked[] } {
+  return { ...step, revokes };
+}
+
+/**
+ * Steps whose `revokes` names steps of the protocol.
+ *
+ * A revoked name that is not a step is a compile error on that step.
+ */
+export type RevokesKnown<TSteps> = {
+  readonly [K in keyof TSteps]: TSteps[K] extends
+    { readonly revokes: readonly (infer R)[] }
+    ? [R] extends [keyof TSteps] ? TSteps[K]
+    : TSteps[K] & { readonly revokes: readonly (keyof TSteps)[] }
+    : TSteps[K];
+};
+
 /** Members of the union `R` that a function taking `P` accepts. */
 export type AcceptedBy<R, P> = R extends P ? R : never;
 
@@ -551,7 +601,9 @@ export function protocol<
   const TSteps extends Record<string, { readonly __kind: string }>,
 >(
   config: ProtocolConfig<TName, TSteps> & {
-    readonly steps: NoInfer<NamedByKey<TSteps> & PrevAccepted<TSteps>>;
+    readonly steps: NoInfer<
+      NamedByKey<TSteps> & PrevAccepted<TSteps> & RevokesKnown<TSteps>
+    >;
   },
 ): Protocol<TName, TSteps> {
   return {
@@ -716,6 +768,14 @@ export function validateProtocol<T extends ProtocolLike>(proto: T): {
     for (const dep of getStepDependencies(step)) {
       if (!(dep in proto.steps)) {
         errors.push(`Step "${name}" depends on "${dep}" which doesn't exist`);
+      }
+    }
+
+    // Check revoked steps exist
+    const revokes = (step as { revokes?: readonly string[] }).revokes ?? [];
+    for (const revoked of revokes) {
+      if (!(revoked in proto.steps)) {
+        errors.push(`Step "${name}" revokes "${revoked}" which doesn't exist`);
       }
     }
 
