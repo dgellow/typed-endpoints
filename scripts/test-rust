@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+#
+# Run the Rust side (e2e_tests/rust): the axum server built from the
+# generated module is checked by clippy, started, and the conformance
+# tests that hold for the TypeScript server are run against it.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+project="$root/e2e_tests/rust"
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "error: cargo is not installed (https://rustup.rs)" >&2
+  exit 1
+fi
+
+cd "$project"
+
+# The generated module and the hand-written handlers: no warning allowed.
+cargo clippy --locked --quiet -- -D warnings
+cargo build --locked --quiet
+
+log="$(mktemp)"
+"$project/target/debug/typed-endpoints-rust-e2e" >"$log" 2>&1 &
+server=$!
+trap 'kill "$server" 2>/dev/null || true; rm -f "$log"' EXIT
+
+url=""
+for _ in $(seq 1 100); do
+  url="$(grep -m1 '^http://' "$log" || true)"
+  if [ -n "$url" ]; then
+    break
+  fi
+  if ! kill -0 "$server" 2>/dev/null; then
+    echo "error: the server did not start:" >&2
+    cat "$log" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+if [ -z "$url" ]; then
+  echo "error: the server did not say where it listens:" >&2
+  cat "$log" >&2
+  exit 1
+fi
+
+cd "$root"
+status=0
+AXUM_URL="$url" deno test --allow-read --allow-net --allow-env=AXUM_URL \
+  e2e_tests/rust/against_axum.ts "$@" || status=$?
+
+if [ "$status" -ne 0 ]; then
+  echo "--- server log ---" >&2
+  cat "$log" >&2
+fi
+exit "$status"

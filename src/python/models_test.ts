@@ -83,7 +83,14 @@ Deno.test("python models: lists, tuples and mappings", () => {
     type(z.array(z.string().min(1)).min(1).max(4)),
     "Annotated[list[Annotated[str, Field(min_length=1)]], Field(min_length=1, max_length=4)]",
   );
-  assertEquals(type(z.tuple([z.string(), z.number()])), "tuple[str, float]");
+  assertEquals(
+    type(z.tuple([z.string(), z.number()])),
+    "Annotated[tuple[str, float], Field(strict=False)]",
+  );
+  assertEquals(
+    python(z.tuple([z.string(), z.number()]), { strict: false }).type,
+    "tuple[str, float]",
+  );
   assertEquals(type(z.record(z.string(), z.number())), "dict[str, float]");
 });
 
@@ -231,10 +238,34 @@ Deno.test("python models: a schema that refers to itself", () => {
 
   assertEquals(python(Tree, { name: "Tree" }).source.split("\n").slice(2), [
     "    name: str",
-    '    children: list["Tree"]',
+    '    children: "list[Tree]"',
     "",
     "",
     "Tree.model_rebuild()",
+  ]);
+
+  // Not through a list: `"Link" | None` is not an expression Python can
+  // evaluate, so the whole annotation is the string.
+  const Link: z.ZodType = z.object({
+    kind: z.literal("link"),
+    get next() {
+      return Link.optional();
+    },
+    get origin() {
+      return Link.nullable();
+    },
+    get either() {
+      return z.union([Link, z.literal("none")]);
+    },
+  });
+  assertEquals(python(Link, { name: "Link" }).source.split("\n").slice(2), [
+    '    kind: Literal["link"]',
+    '    next: "Link | None" = None',
+    '    origin: "Link | None"',
+    "    either: 'Link | Literal[\"none\"]'",
+    "",
+    "",
+    "Link.model_rebuild()",
   ]);
 
   // Inside another schema, the class is named after the field that holds
@@ -244,11 +275,61 @@ Deno.test("python models: a schema that refers to itself", () => {
     source.split("\n").filter((line) => /^class |children|rebuild/.test(line)),
     [
       "class ForestRoot(BaseModel):",
-      '    children: list["ForestRoot"]',
+      '    children: "list[ForestRoot]"',
       "class Forest(BaseModel):",
       "ForestRoot.model_rebuild()",
     ],
   );
+});
+
+Deno.test("python models: a type that refers to itself and is not a class is a type statement", () => {
+  type Json = string | null | Json[] | { [key: string]: Json };
+  const Json: z.ZodType<Json> = z.union([
+    z.string(),
+    z.null(),
+    z.array(z.lazy(() => Json)),
+    z.record(z.string(), z.lazy(() => Json)),
+  ]);
+  const models = new PythonModels();
+  const type = models.define(
+    "Doc",
+    jsonSchema(z.object({ data: Json, more: Json.optional() }), "input"),
+    true,
+  );
+  assertEquals(type, "Doc");
+  assertEquals(models.usesTypeStatement, true);
+  assertEquals(
+    models.render().filter((line) => /^type |data|more/.test(line)),
+    [
+      "type DocData = str | None | list[DocData] | dict[str, DocData]",
+      "    data: DocData",
+      "    more: DocData | None = None",
+    ],
+  );
+
+  // Through a class: the class names the type before it exists.
+  type Expr = number | { op: "neg"; of: Expr };
+  const Expr: z.ZodType<Expr> = z.union([
+    z.number(),
+    z.object({
+      op: z.literal("neg"),
+      get of() {
+        return Expr;
+      },
+    }),
+  ]);
+  assertEquals(
+    python(Expr, { name: "Expr" }).source.split("\n").filter((line) =>
+      /^type |^class | {4}of|rebuild/.test(line)
+    ),
+    [
+      "class Expr2(BaseModel):",
+      '    of: "Expr"',
+      "type Expr = float | Expr2",
+      "Expr2.model_rebuild()",
+    ],
+  );
+  assertEquals(new PythonModels().usesTypeStatement, false);
 });
 
 Deno.test("python models: a named schema is one class; the same object twice is one class with two names", () => {

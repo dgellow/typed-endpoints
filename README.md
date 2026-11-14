@@ -1052,6 +1052,13 @@ What differs, and what does not cross:
   Parsing it and writing it back could change the text
 - A JSON body sent as `text/plain` is read by the TypeScript handlers and
   refused by FastAPI; a form body is a 400 there, not a 415
+- `\d` in a pattern matches every Unicode digit; `2.0` is refused for an
+  integer; an explicit `null` is accepted for an optional field; a scalar query
+  parameter given twice takes the last value; a value that fits no member of a
+  union is reported once per member. The conformance suite asserts each of
+  these, so the list stays true
+- A type that refers to itself and is not an object (a JSON value) is a `type`
+  statement, which needs Python 3.12
 - Not generated yet: request-dependent responses (`projection()`,
   `selection()`), protocols, and event streams in the Python client (listed in a
   comment in its module)
@@ -1101,6 +1108,102 @@ same routes: CRUD, declared errors as values, cursor pagination, validation
 failures, a DELETE body, a catch-all path, a recursive schema, event streams
 (frames, failure and resume, keep-alive), and the lens laws of
 `checkResourceLaws()`.
+
+### Other Languages: Rust and axum
+
+`generateAxum()` writes one Rust module from a routes directory:
+
+```bash
+typed-endpoints -r routes/api -o server/src/api_generated.rs --format axum
+```
+
+The module needs `axum`, `serde` (with `derive`), `serde_json` and `fancy-regex`
+(patterns with lookarounds), and Rust 1.80 or later; it builds under the 2021
+and 2024 editions. It holds:
+
+- a serde type for every request part, response and declared error body
+- `Handlers`, a trait with one method per operation. A method that is missing or
+  no longer fits the routes does not compile
+- an error enum per operation that declares errors, one variant per status: a
+  status the operation does not declare cannot be written
+- `router(handlers)`, an `axum::Router` that checks each request, calls the
+  handler and checks what it returns
+
+```rust
+mod api_generated;
+use api_generated as api;
+
+struct Notes { /* ... */ }
+
+impl api::Handlers for Notes {
+    async fn notes_retrieve(
+        &self,
+        params: api::NotesRetrieveParams,
+    ) -> Result<api::NotesRetrieveResponse, api::NotesRetrieveError> {
+        self.find(&params.id).ok_or(api::NotesRetrieveError::Status404(api::NotFound {
+            error: api::NotFoundError::NotFound,
+            id: params.id,
+        }))
+    }
+
+    // ...
+}
+
+let app = api::router(Notes::new());
+```
+
+Rust was added to see where the design gives way under a language with nominal
+types, value types and no `null`. What it took:
+
+| TypeScript says                                         | Rust needs                                                   | What the generator does                                                                                                                                                                  |
+| ------------------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| a union or a set of literals, written in place          | a name for every type                                        | names them after the place they are in (`ShapesCreateBodyUnit`); the same values in a second place are the same type under another name                                                  |
+| `{ a: string }` twice is one type                       | two structs are two types                                    | recognises the same object and writes `pub type B = A`                                                                                                                                   |
+| a type that contains itself                             | indirection, or the type has no size                         | `Box` where a cycle closes, none behind a `Vec` or a map                                                                                                                                 |
+| `type Json = string \| null \| Json[] \| ...`           | a recursive type has to be nominal                           | an enum of its own name, with a `Null` variant                                                                                                                                           |
+| `x?: T \| null`: absent, null and a value               | `Option` has two states                                      | `Option<Option<T>>`, read and written so that null and absent stay apart                                                                                                                 |
+| one `number`                                            | `i64` and `f64`                                              | `2.0` is accepted for an integer, as in JavaScript, and reaches the handler as `2`                                                                                                       |
+| a pattern is a JavaScript `RegExp`                      | another regex dialect: `\d` matches every Unicode digit      | rewrites `\d`, `\w`, `\b` to what they mean in JavaScript                                                                                                                                |
+| every issue of a request, with its path                 | `serde` stops at the first, and knows no lengths or patterns | does not validate with `serde`: checks the JSON against the contract's schema first, then builds the typed value (a value the schema accepts and the type does not is a 500, and logged) |
+| `fail(404, body)`, the status checked against a literal | no literal types                                             | an enum per operation: `NotesRetrieveError::Status404(NotFound)`                                                                                                                         |
+
+The validator in the module interprets the JSON Schema of the contract and words
+its issues as Zod does. That turned out closer to the TypeScript handlers than
+mapping the schema onto the validation library of the language, which is what
+the Python generator does. The conformance suite sends 27 requests that have to
+be refused (`e2e_tests/conformance/refusals.json` records what the TypeScript
+handlers answer):
+
+|                                      | axum | FastAPI |
+| ------------------------------------ | ---- | ------- |
+| Same status, same issues, same words | 27   | 1       |
+| Same status and same paths           | 27   | 19      |
+| Same status                          | 27   | 26      |
+| Differences the suite declares       | 0    | 8       |
+
+Issues come in the order of the schema when `serde_json` is built with its
+`preserve_order` feature, and in alphabetical order of the members without it.
+
+What does not cross, or not yet:
+
+- The body and the response of an operation are different types also where the
+  schema is the same one: a request type is the input side of the schema (a
+  default may be absent, unknown members are ignored) and a response type the
+  output side. A handler that gives back what it received copies it
+- A handler returns a value or a declared error. There is no third case for a
+  response written by hand
+- A constant that is not a string (`z.literal(2)`) is an `i64` in the type; the
+  check against the schema still refuses 3
+- The contract does not say whether a query member is coerced
+  (`z.coerce.number()`) or not (`z.number()`, which no query text satisfies in
+  TypeScript): every number and boolean of a query or a path is read from text
+- Not generated yet: event streams (listed in a comment in the module), a
+  client, request-dependent responses, protocols
+
+How it is checked (`./scripts/test-rust`): the generated module and a
+hand-written implementation of `Handlers` pass `cargo clippy` with warnings
+denied; the server runs; and the conformance tests of the Python section, minus
+the event streams, hold for it with no declared difference.
 
 ## API
 
@@ -1316,7 +1419,8 @@ typed-endpoints - Generate TypeScript types from API route Zod schemas
 Options:
   -r, --routes <dir>    Routes directory, repeatable (default: routes/api)
   -o, --output <file>   Output file path (required)
-  -f, --format <type>   Output format: types, client, routes, or protocol (default: types)
+  -f, --format <fmt>    Output format: types, client, routes, protocol, contract,
+                        fastapi, python-client or axum (default: types)
   --convention <name>   Route file layout: fresh, next, sveltekit, astro, or nitro
                         (default: fresh; also the layout for Bun, Hono and fetch)
   -p, --protocol <file> Protocol module path (required when --format protocol)
@@ -1330,6 +1434,11 @@ Formats:
   client   - Resource-based Api interface for createClient()
   routes   - Runtime route metadata for createHttpExecutor()
   protocol - Branded types from a protocol module
+  contract - The routes as JSON: each operation with a JSON Schema per part
+  fastapi  - A Python module: Pydantic models, a Handlers protocol and a
+             FastAPI router
+  python-client - A Python module: Pydantic models and an httpx client
+  axum     - A Rust module: serde types, a Handlers trait and an axum router
 ```
 
 ## Architecture
@@ -1351,7 +1460,9 @@ src/
 │   ├── dependent_types.ts # Type-level functions: ResponseFamily, Apply, Resolve
 │   └── openapi.ts     # OpenAPI spec generation (x-pagination)
 ├── contract/          # The routes as language-neutral data (JSON Schema per part)
-├── python/            # Pydantic models and a FastAPI router from the contract
+│   └── types.ts       # TypeGraph: names, shared types and cycles, for generators
+├── python/            # Pydantic models, a FastAPI router and an httpx client
+├── rust/              # serde types, a schema-checking runtime and an axum router
 ├── pagination/
 │   ├── types.ts       # Pagination type definitions
 │   └── index.ts       # cursor, cursorId, offset, page, url helpers

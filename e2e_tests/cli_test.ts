@@ -172,7 +172,7 @@ Deno.test("CLI --format contract writes what generateContract() returns", async 
   try {
     const result = await runCli(
       "-r",
-      "e2e_tests/fixtures/python/routes",
+      "e2e_tests/fixtures/conformance/routes",
       "-o",
       output,
       "--format",
@@ -182,7 +182,7 @@ Deno.test("CLI --format contract writes what generateContract() returns", async 
     assertEquals(
       JSON.parse(await Deno.readTextFile(output)),
       await generateContract({
-        routesDirs: ["e2e_tests/fixtures/python/routes"],
+        routesDirs: ["e2e_tests/fixtures/conformance/routes"],
       }),
     );
   } finally {
@@ -195,7 +195,7 @@ Deno.test("CLI --format fastapi writes the checked-in Python module", async () =
   try {
     const result = await runCli(
       "-r",
-      "e2e_tests/fixtures/python/routes",
+      "e2e_tests/fixtures/conformance/routes",
       "-o",
       output,
       "--format",
@@ -217,7 +217,7 @@ Deno.test("CLI --format python-client writes the checked-in Python client", asyn
   try {
     const result = await runCli(
       "-r",
-      "e2e_tests/fixtures/python/routes",
+      "e2e_tests/fixtures/conformance/routes",
       "-o",
       output,
       "--format",
@@ -227,6 +227,28 @@ Deno.test("CLI --format python-client writes the checked-in Python client", asyn
     assertEquals(
       await Deno.readTextFile(output),
       await Deno.readTextFile("e2e_tests/python/client_generated.py"),
+    );
+  } finally {
+    await Deno.remove(output);
+  }
+});
+
+Deno.test("CLI --format axum writes the checked-in Rust module", async () => {
+  const output = await Deno.makeTempFile({ suffix: ".rs" });
+  try {
+    const result = await runCli(
+      "-r",
+      "e2e_tests/fixtures/conformance/routes",
+      "-o",
+      output,
+      "--format",
+      "axum",
+    );
+    assertEquals(result.code, 0, result.stderr);
+    // The module `./scripts/test-rust` builds and runs.
+    assertEquals(
+      await Deno.readTextFile(output),
+      await Deno.readTextFile("e2e_tests/rust/src/api_generated.rs"),
     );
   } finally {
     await Deno.remove(output);

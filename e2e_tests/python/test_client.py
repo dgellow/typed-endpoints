@@ -176,6 +176,34 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(answer.depth, 3)
         self.assertEqual(answer.root.model_dump(), root.model_dump())
 
+    def test_shapes_python_has_to_find_a_way_to_say(self) -> None:
+        link = api.OddCreateBodyChain
+        odd = api.OddCreateBody(
+            type_="memo",
+            createdAt="2026-11-14",
+            created_at="2026-11-13",
+            field_2fa=True,
+            pair=("width", 2.5),
+            scores={"first": 1, "second": 2},
+            loose=["a", "b"],
+            looseOrNull=None,
+            version=2,
+            anything={"nested": [1, "two", None]},
+            chain=link(name="a", origin=None, next=link(name="b", origin=None)),
+            json_={"list": [1, "two", None, {"deep": [True]}]},
+            expr=api.OddCreateBodyExpr3(
+                op="add", args=[1, api.OddCreateBodyExpr2(op="neg", of=2)]
+            ),
+        )
+        answer = self.client.odd_create(odd)
+        sent = odd.model_dump(by_alias=True, exclude_unset=True)
+        self.assertEqual(
+            answer.model_dump(by_alias=True, exclude_unset=True),
+            {**sent, "limit": None},
+        )
+        self.assertEqual(answer.pair, ("width", 2.5))
+        self.assertIsNotNone(answer.chain.next)
+
 
 class AsyncClientTest(unittest.TestCase):
     def test_the_async_client_does_the_same(self) -> None:

@@ -339,7 +339,15 @@ function convertTuple(def: Def, state: State): Node {
 function convertRecord(def: Def, state: State): Node {
   const key = def.keyType ? convert(def.keyType, state).text : "string";
   const value = convert(def.valueType, state).text;
-  const record = `Record<${key}, ${value}>`;
+  // Inside a lazy schema the record may be part of a type that refers to
+  // itself, and `type T = Record<string, T>` is a circularity error
+  // (TS2456): the arguments of `Record` are resolved at once. An index
+  // signature is the same type, and its members are resolved when read.
+  const recursive = key === "string" &&
+    [...state.active].some((schema) => getType(schema) === "lazy");
+  const record = recursive
+    ? `{ [key: string]: ${value}; }`
+    : `Record<${key}, ${value}>`;
 
   // z.partialRecord(): newer Zod 4 releases flag the record as partial;
   // older ones keep an enum or literal key type but drop its list of

@@ -49,7 +49,7 @@ for _ in $(seq 1 100); do
 done
 
 # The fixture's TypeScript handlers, for the Python client.
-(cd "$root" && exec deno run --allow-read --allow-net e2e_tests/python/serve_typescript.ts) >"$tslog" 2>&1 &
+(cd "$root" && exec deno run --allow-read --allow-net e2e_tests/conformance/serve_typescript.ts) >"$tslog" 2>&1 &
 tsserver=$!
 tsurl=""
 for _ in $(seq 1 300); do

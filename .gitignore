@@ -7,3 +7,6 @@ recombine/
 # Python (e2e_tests/python, run through uv)
 .venv/
 __pycache__/
+
+# Rust (e2e_tests/rust)
+target/

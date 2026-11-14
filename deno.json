@@ -18,6 +18,7 @@
     "e2e_tests/bun",
     "e2e_tests/framework-types",
     "e2e_tests/python/.venv",
+    "e2e_tests/rust/target",
     "scripts/bun-package.ts",
     "TypeScript",
     "aplas-code"
@@ -36,6 +37,7 @@
     "./protocol": "./src/protocol/index.ts",
     "./contract": "./src/contract/index.ts",
     "./python": "./src/python/index.ts",
+    "./rust": "./src/rust/index.ts",
     "./cli": "./src/cli.ts"
   },
   "publish": {

@@ -32,6 +32,9 @@ permissions):
   pyright in strict mode over the generated module and the hand-written
   handlers, then the conformance tests against the generated FastAPI
   application. Python is always run through `uv`
+- `./scripts/test-rust` — run `e2e_tests/rust` (needs `cargo`): `cargo clippy`
+  with warnings denied over the generated module and the hand-written handlers,
+  then the conformance tests against the generated axum server
 
 ## Project Structure
 
@@ -73,13 +76,17 @@ src/
 │   ├── extract.ts  # Route import + schema rendering (in-process and subprocess)
 │   └── generate.ts # types / client / routes output formats
 ├── contract/       # generateContract(): the routes as data, JSON Schema per part
+│   └── types.ts    # TypeGraph: schemas as named, shared types with cycles marked
 ├── python/         # Pydantic models (models.ts), a FastAPI module (fastapi.ts), an httpx client (client.ts)
+├── rust/           # serde types (models.ts), a schema-checking runtime (runtime.ts), an axum module (axum.ts)
 ├── cli.ts          # CLI entry point
 └── mod.ts          # Main module exports
 e2e_tests/          # End-to-end tests (protocol flows, Fresh server, CLI, Vite)
 e2e_tests/bun/      # Tests run by Bun (`bun:test`); excluded from Deno's tools
 e2e_tests/framework-types/ # Compile-only check against the frameworks' types
-e2e_tests/python/   # uv project: generated FastAPI module, handlers, conformance tests
+e2e_tests/conformance/ # The suite every server passes (suite.ts), the recorded refusals
+e2e_tests/python/   # uv project: generated FastAPI module and client, handlers
+e2e_tests/rust/     # cargo project: generated axum module, handlers
 ```
 
 ## Testing
@@ -184,16 +191,32 @@ own Standard Schema interface (`schema["~standard"].jsonSchema`), which needs no
 import of `zod` and so works in the extraction subprocess. Request parts are the
 input side, responses the output side; what JSON Schema cannot state is `{}`.
 
+A claim about generated code in another language is established by running it:
+`e2e_tests/conformance/suite.ts` is one test suite run against the fixture's
+TypeScript handlers (`e2e_tests/conformance_test.ts`), the generated FastAPI
+application (`./scripts/test-python`) and the generated axum server
+(`./scripts/test-rust`). A server that answers differently is fixed, or the
+difference is declared where the suite is called (`Difference`); a declared
+difference is asserted, not skipped. `refusals.json` records what the TypeScript
+handlers answer to 27 requests they refuse, and a server without the
+`issues-in-other-words` difference answers the same, word for word.
+
 The Python generator writes one module: Pydantic models, a `Handlers` protocol,
-`create_router()`. User code implements `Handlers` elsewhere. A claim about the
-generated Python is established by running it: `e2e_tests/python/conformance.ts`
-is one test suite run against the fixture's TypeScript handlers
-(`e2e_tests/python_conformance_test.ts`) and against the generated FastAPI
-application (`./scripts/test-python`). A difference between the two servers is
-either fixed or listed in the README table. The generated Python client
-(`test_client.py`) is run against both servers as well; logic it carries that
-the fixture does not reach (pagination styles other than cursor) has Python unit
-tests (`test_pagination.py`).
+`create_router()`. User code implements `Handlers` elsewhere. Validation is
+Pydantic's, which is where its declared differences come from. The generated
+Python client (`test_client.py`) is run against the TypeScript and the FastAPI
+server; logic it carries that the fixture does not reach (pagination styles
+other than cursor) has Python unit tests (`test_pagination.py`).
+
+The Rust generator reads the contract through `TypeGraph`
+(`src/contract/types.ts`), which decides what a nominal language needs decided:
+a name for every object, union and set of literals, the same object recognised
+as one type, a reference that closes a cycle marked (`cyclic`), a non-object
+type that refers to itself made a definition (`named`). The module it writes
+does not validate with `serde`: its runtime (`src/rust/runtime.ts`, Rust source
+in a `String.raw` template, so no backtick and no `${` in it) checks JSON
+against the contract's schema, words issues as Zod does, and only then builds
+the typed value. Python's models do not use `TypeGraph` yet.
 
 ## Key Concepts (Request-Dependent Responses)
 

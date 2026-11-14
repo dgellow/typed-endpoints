@@ -8,6 +8,6 @@ import { fileRouter } from "@/integrations/fetch.ts";
 
 const server = Deno.serve(
   { port: 0, hostname: "127.0.0.1", onListen: () => {} },
-  await fileRouter("e2e_tests/fixtures/python/routes"),
+  await fileRouter("e2e_tests/fixtures/conformance/routes"),
 );
 console.log(`http://127.0.0.1:${server.addr.port}`);
