@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+#
+# Run the Bun tests (e2e_tests/bun) the way a Bun project consumes the
+# package: the library source is installed as a package under node_modules
+# of a throwaway project, next to its npm dependencies, and the tests import
+# it by name.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+
+if ! command -v bun >/dev/null 2>&1; then
+  echo "error: bun is not installed (https://bun.sh)" >&2
+  exit 1
+fi
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+# The package: sources without tests and fixtures, as `deno publish` ships them.
+pkg="$work/node_modules/@dgellow/typed-endpoints"
+mkdir -p "$pkg"
+cp -R "$root/src" "$pkg/src"
+find "$pkg/src" \( -name '*_test.ts' -o -name '*.test.ts' \) -type f -delete
+find "$pkg/src" \( -name fixtures -o -name __snapshots__ \) -type d -prune -exec rm -rf {} +
+
+# package.json files for the package and the consumer, derived from deno.json:
+# the same entry points, the npm dependencies at the same versions.
+bun "$root/scripts/bun-package.ts" "$root/deno.json" "$pkg/package.json" "$work/package.json"
+
+cp -R "$root/e2e_tests/bun/." "$work/"
+
+cd "$work"
+bun install --silent
+bun test "$@"

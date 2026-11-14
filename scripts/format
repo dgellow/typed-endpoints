@@ -3,3 +3,6 @@
 set -e
 
 deno fmt
+# The Bun tests are excluded from Deno's tools in deno.json; format them
+# with the same defaults.
+deno fmt --no-config e2e_tests/bun scripts/bun-package.ts
