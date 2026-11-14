@@ -28,13 +28,17 @@ permissions):
 ```
 src/
 ├── core/           # Shared types, request validation, OpenAPI generation
+│   └── routes.ts   # Route discovery, path conversion, operationId derivation
 ├── integrations/   # Framework integrations (Fresh v2 runtime, Vite build-time)
 ├── client/         # Typed HTTP client
+│   └── sse.ts      # Incremental text/event-stream parser
 ├── protocol/       # Multi-step protocol DSL (experimental)
 │   ├── types.ts    # Step, DependentStep, MappedStep, composition types
-│   ├── dsl.ts      # Builders: step(), dependentStep(), mappedStep()
+│   ├── dsl.ts      # Builders: step(), dependentStep(), mappedStep(); validateProtocol()
 │   ├── mapping.ts  # Declarative field mappings: fromStep()
 │   ├── client.ts   # Type-safe session execution
+│   ├── errors.ts   # ProtocolError hierarchy thrown by sessions
+│   ├── introspect.ts # Zod schema path lookup used by validateProtocol()
 │   ├── http.ts     # HTTP executor for real endpoints
 │   ├── openapi.ts  # x-protocol OpenAPI extension
 │   ├── compose.ts  # Endpoint composition (fromEndpoint, fromEndpointMapped)
@@ -42,6 +46,9 @@ src/
 │   └── oauth.ts    # OAuth 2.0 reference implementation
 ├── pagination/     # Cursor, offset, page, URL pagination helpers
 ├── tsgen/          # TypeScript type generation from routes
+│   ├── zod.ts      # Zod schema -> TypeScript type text
+│   ├── extract.ts  # Route import + schema rendering (in-process and subprocess)
+│   └── generate.ts # types / client / routes output formats
 ├── cli.ts          # CLI entry point
 └── mod.ts          # Main module exports
 e2e_tests/          # End-to-end tests (protocol flows, Fresh server, CLI, Vite)
