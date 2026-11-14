@@ -631,7 +631,7 @@ async function capturingErrors<T>(
   }
 }
 
-Deno.test("sseEndpoint: a handler error cuts the stream after the events sent so far", async () => {
+Deno.test("sseEndpoint: a handler error ends the stream as a failure after the events sent so far", async () => {
   const handlers = createApiHandlers({
     GET: sseEndpoint({
       events: { tick: z.object({ n: z.number() }) },
@@ -646,10 +646,12 @@ Deno.test("sseEndpoint: a handler error cuts the stream after the events sent so
     readStream(await handlers.GET(createMockContext({})))
   );
 
-  // The event that was sent stays sent. The stream then fails where a
-  // normal end would close it: a reader can tell the two apart.
-  assertEquals(result.text, 'event: tick\ndata: {"n":0}\n\n');
-  assertEquals((result.error as Error).message, "boom");
+  // The event that was sent stays sent. Then a comment says the stream
+  // failed, and the stream closes: a reader can tell this end from a
+  // normal one, and the body itself does not error.
+  assertEquals(result, {
+    text: 'event: tick\ndata: {"n":0}\n\n: error\n\n',
+  });
   assertEquals(errors.length, 1);
   assertEquals(errors[0][0], "GET /api/test: SSE stream error:");
   assertEquals((errors[0][1] as Error).message, "boom");
@@ -687,7 +689,7 @@ Deno.test("sseEndpoint: an event is parsed by its schema before it is sent", asy
   });
 });
 
-Deno.test("sseEndpoint: an event its schema rejects is not sent and cuts the stream", async () => {
+Deno.test("sseEndpoint: an event its schema rejects is not sent and fails the stream", async () => {
   let cleanedUp = false;
   let aborted = false;
   const handlers = createApiHandlers({
@@ -711,21 +713,23 @@ Deno.test("sseEndpoint: an event its schema rejects is not sent and cuts the str
     readStream(await handlers.GET(createMockContext({})))
   );
 
-  assertEquals(result.text, 'event: tick\ndata: {"n":0}\n\n');
+  assertEquals(result, {
+    text: 'event: tick\ndata: {"n":0}\n\n: error\n\n',
+  });
+  assertEquals(errors.length, 1);
   assertEquals(
-    (result.error as Error).message.startsWith(
+    (errors[0][1] as Error).message.startsWith(
       'the handler yielded an event "tick" whose data does not match its schema',
     ),
     true,
   );
-  assertEquals(errors.length, 1);
   // The handler is stopped where it stands: its `finally` runs and its
   // signal is aborted.
   assertEquals(cleanedUp, true);
   assertEquals(aborted, true);
 });
 
-Deno.test("sseEndpoint: an event the endpoint does not declare cuts the stream", async () => {
+Deno.test("sseEndpoint: an event the endpoint does not declare fails the stream", async () => {
   const handlers = createApiHandlers({
     GET: sseEndpoint({
       events: { tick: z.object({ n: z.number() }) },
@@ -738,12 +742,12 @@ Deno.test("sseEndpoint: an event the endpoint does not declare cuts the stream",
   const { result, errors } = await capturingErrors(async () =>
     readStream(await handlers.GET(createMockContext({})))
   );
-  assertEquals(result.text, "");
+  assertEquals(result, { text: ": error\n\n" });
+  assertEquals(errors.length, 1);
   assertEquals(
-    (result.error as Error).message,
+    (errors[0][1] as Error).message,
     'the handler yielded the event "tock", which the endpoint does not declare',
   );
-  assertEquals(errors.length, 1);
 });
 
 Deno.test("sseEndpoint: the handler receives the id of the last event the client saw", async () => {

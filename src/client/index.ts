@@ -35,6 +35,8 @@ import type {
 } from "./types.ts";
 import { createSseParser } from "./sse.ts";
 
+export { SSE_FAILURE_COMMENT } from "./sse.ts";
+
 export type {
   AllOf,
   Apply,
@@ -439,9 +441,9 @@ function isFatalSseError(error: unknown): boolean {
  * signals completion by returning from its handler. Network failures and 5xx
  * responses are retried; 4xx responses and undecodable events are not.
  *
- * A stream that is cut (the handler failed, or the network did) is a
- * failure, not an end: the client reconnects with the id of the last
- * event it saw. The count of attempts starts over once an event arrives;
+ * A stream the server ended because its handler failed (`SseStreamError`)
+ * and a connection that dropped are failures, not ends: the client
+ * reconnects with the id of the last event it saw. The count of attempts starts over once an event arrives;
  * `maxReconnectAttempts` connections in a row without one reject the
  * iteration with the last error.
  */
@@ -535,6 +537,10 @@ async function* createSseSubscription<TEvents extends SseEventsDef>(
         await reader.cancel().catch(() => {});
       }
 
+      // The server closed the stream. If it said its handler failed, that
+      // is a failure like a dropped connection, and retried like one.
+      if (parser.failed) throw new SseStreamError();
+
       // Stream ended normally, exit
       return;
     } catch (error) {
@@ -554,6 +560,21 @@ async function* createSseSubscription<TEvents extends SseEventsDef>(
       const waited = await delay(reconnectDelay * attempts, signal);
       if (!waited) return;
     }
+  }
+}
+
+/**
+ * The server ended an event stream because its handler failed.
+ *
+ * Retried like a dropped connection. It is what the iteration rejects
+ * with when `maxReconnectAttempts` connections in a row end this way
+ * before any event.
+ */
+export class SseStreamError extends Error {
+  /** Create the error. */
+  constructor() {
+    super("The server ended the event stream after a failure");
+    this.name = "SseStreamError";
   }
 }
 
