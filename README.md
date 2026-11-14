@@ -58,7 +58,10 @@ export const handler = createApiHandlers({
     async handler(ctx, { params }) {
       // params.id is typed as string
       const user = await getUser(params.id);
-      return Response.json(user);
+      if (!user) return Response.json({ error: "not found" }, { status: 404 });
+      // A returned value is checked against `response`: at compile time by
+      // its type, at runtime by parsing it. It is sent as JSON.
+      return user;
     },
   }),
 
@@ -73,11 +76,22 @@ export const handler = createApiHandlers({
     async handler(ctx, { params, body }) {
       // body is validated and typed
       await updateUser(params.id, body);
-      return Response.json({ success: true });
+      return { success: true };
     },
   }),
 });
 ```
+
+A handler returns either a value or a `Response`:
+
+- A **value** has to be of the `response` schema's input type. It is parsed with
+  the schema (defaults applied, unknown keys stripped), then sent as JSON with
+  status 200. If the schema rejects it, the client gets a 500 and the issues are
+  logged: the handler broke the endpoint's contract, which is a server bug.
+- A **`Response`** is sent as it is and not checked. Use it for other status
+  codes, headers, or bodies that are not JSON.
+
+This holds for every integration below.
 
 ### Bun
 
@@ -473,7 +487,6 @@ import {
   fieldsOf,
   projection,
   relationsOf,
-  select,
 } from "@dgellow/typed-endpoints";
 
 const User = z.object({ id: z.string(), name: z.string(), email: z.string() });
@@ -484,10 +497,8 @@ export const handler = createApiHandlers({
   GET: endpoint({
     query: z.object({ fields: fieldsOf(User) }), // optional list of property names
     response: z.object({ data: z.array(projection(User, "fields")) }),
-    handler: async (_ctx, { query }) =>
-      Response.json({
-        data: (await getUsers()).map((user) => select(user, query.fields)),
-      }),
+    // Return complete objects; the response schema cuts them down.
+    handler: async () => ({ data: await getUsers() }),
   }),
 });
 
@@ -549,9 +560,11 @@ How it works:
   interfaces whose `response` member refers to `this["request"]`; intersecting
   the interface with `{ request: O }` applies it.
 
-The response is not checked against the rule at runtime, on either side: the
-handler is trusted to return what was asked for (`select()` does it for
-projections).
+On the server, a handler that returns a value (not a `Response`) gets the rule
+applied to it: the listed properties are picked, relations that were not asked
+for are dropped. What the client's type says is then what the server sent. A
+handler that builds its own `Response` is trusted; `select()` implements a
+projection by hand. The client does not check what it receives.
 
 ### Server-Sent Events (SSE)
 
