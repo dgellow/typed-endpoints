@@ -530,16 +530,22 @@ approximation:
 **What we track at compile time:**
 
 - Which step _names_ have been completed (via union type `TDone`)
-- Which steps are available next (via `AvailableSteps<TSteps, TDone>`): a step
-  needs its `dependsOn` step and every step its `requestMapping` reads from
+- What is known about each response (via `TSeen`): which _variant_ of a union
+  came back, whether an optional field has a value
+- Which steps are available next (via `AvailableSteps<TSteps, TDone, TSeen>`): a
+  step needs its `dependsOn` step and every step its `requestMapping` reads
+  from, and their responses have to be known to be of the kind the step can
+  follow. `exchange` after `authorize` does not compile until the session knows
+  that `authorize` succeeded
 - The shape of each request, including for dependent and mapped steps
+- That the `prev` a dependent step expects is a response its dependency can
+  produce
 
 **What we enforce at runtime:**
 
 - The actual dependent typing (e.g., `code` in exchange must equal `code` from
   authorize)
-- Which _variant_ of a response a step needs (e.g., exchange after a failed
-  authorize is rejected at runtime, not by the compiler)
+- The same variant conditions, for callers that bypass the types
 - Schema validation via Zod
 
 The `request: (prev) => Schema` function is what André Videla calls a
@@ -602,36 +608,36 @@ const authorizeStep = step({
 });
 
 // Step 2: Token Exchange - REQUEST DEPENDS ON STEP 1 RESPONSE
-// `prev` is annotated: dependentStep() knows the previous step by name only
-// and cannot infer its response type.
 const exchangeStep = dependentStep({
   name: "exchange",
-  dependsOn: "authorize",
-  request: (prev: z.infer<typeof AuthorizeResponse>) => {
-    // Only valid if authorize succeeded
-    if (prev.type !== "success") return z.never();
-    return z.object({
+  // The step object: `prev` is typed from its response schema.
+  dependsOn: authorizeStep,
+  // Which responses this step can follow. TypeScript infers the type guard
+  // from the predicate, so `prev` below is the success variant.
+  when: (prev) => prev.type === "success",
+  request: (prev) =>
+    z.object({
       grant_type: z.literal("authorization_code"),
       code: z.literal(prev.code), // THE KEY: enforces exact code from step 1
       client_id: z.string(),
       client_secret: z.string(),
-    });
-  },
+    }),
   response: ExchangeResponse,
 });
 
 // Step 3: Token Refresh - depends on exchange response
 const refreshStep = dependentStep({
   name: "refresh",
-  dependsOn: "exchange",
-  request: (prev: z.infer<typeof ExchangeResponse>) => {
-    if (!prev.refresh_token) return z.never();
-    return z.object({
+  dependsOn: exchangeStep,
+  // A guard that TypeScript cannot infer is written out.
+  when: (prev): prev is typeof prev & { refresh_token: string } =>
+    prev.refresh_token !== undefined,
+  request: (prev) =>
+    z.object({
       grant_type: z.literal("refresh_token"),
       refresh_token: z.literal(prev.refresh_token), // From exchange response
       client_id: z.string(),
-    });
-  },
+    }),
   response: z.object({ access_token: z.string(), expires_in: z.number() }),
 });
 
@@ -650,6 +656,12 @@ const oauth2Protocol = protocol({
 
 The reference implementation in `src/protocol/oauth.ts` also has a `revoke`
 step, declared as `terminal`.
+
+`dependsOn` also accepts the name of the step (`dependsOn: "authorize"`). The
+type of `prev` is then an annotation:
+`request: (prev: { code: string }) => ...`. `protocol()` compares it with the
+response of the named step and rejects an annotation that no response of that
+step satisfies.
 
 ### Core Primitives
 
@@ -722,12 +734,17 @@ executing a step, TypeScript knows which steps become available:
 import {
   createMockExecutor,
   createSession,
+  present,
 } from "@dgellow/typed-endpoints/protocol";
 
 // Create a session for the protocol
 const executor = createMockExecutor(oauth2Protocol, {
   authorize: { type: "success", code: "auth-code-123", state: "random" },
-  exchange: { type: "success", access_token: "token-xyz", ... },
+  exchange: {
+    access_token: "token-xyz",
+    token_type: "Bearer",
+    expires_in: 3600,
+  },
 });
 
 const session = createSession(oauth2Protocol, executor);
@@ -739,32 +756,41 @@ const { response: auth, session: s1 } = await session.execute("authorize", {
   state: "random",
 });
 
-if (auth.type === "error") {
-  // The compiler tracks that "authorize" ran, not which variant it returned:
-  // s1.execute("exchange", ...) compiles here and is rejected at runtime,
-  // because the exchange step answers a failed authorize with z.never().
+// "exchange" follows a successful authorize only. Here the session knows
+// that authorize ran, not which variant came back:
+//   s1.execute("exchange", ...)   // compile error
+//
+// ready() runs the conditions of the step against the responses the session
+// holds. The result is the session typed with what they prove, or undefined.
+const granted = s1.ready("exchange");
+if (!granted) {
+  console.log(auth.type); // "error"
   return;
 }
 
-// After authorize, "exchange" is available. Calling it before authorize is a
-// compile error. The request is typed: a missing or misspelled field does not
-// compile.
-const { response: tokens, session: s2 } = await s1.execute("exchange", {
+// The request is typed: a missing or misspelled field does not compile.
+const { response: tokens, session: s2 } = await granted.execute("exchange", {
   grant_type: "authorization_code",
-  code: auth.code, // Checked at runtime: must equal the code authorize returned
+  // Typed as string: the session knows authorize returned the success variant.
+  // Checked at runtime: must equal the code authorize returned.
+  code: granted.responses.authorize.code,
   client_id: "my-client",
   client_secret: "secret",
 });
 
-// Session tracks all responses with their types
-console.log(s2.responses.authorize.code); // typed as string
-console.log(s2.responses.exchange.access_token); // typed as string
+// narrow() establishes a fact with a guard of your own; present() is a guard
+// for "this field has a value".
+const refreshable = s2.narrow("exchange", present("refresh_token"));
 ```
 
 Key features:
 
 - **Compile-time step enforcement**: Can only execute steps whose dependencies
   have run
+- **Variant-dependent availability**: A step that follows one variant of a
+  response (`when`), or forwards a field only some responses have, is available
+  once `ready()` or `narrow()` has established it. `canExecute()` and
+  `availableSteps()` apply the same conditions at runtime
 - **Typed requests**: The request of every step kind is checked against its
   schema type
 - **Literal type preservation**: `dependsOn: "authorize"` is preserved as the
