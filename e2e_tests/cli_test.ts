@@ -101,3 +101,128 @@ Deno.test("CLI --format protocol without --protocol fails", async () => {
   const { code } = await cmd.output();
   assertEquals(code, 1, "CLI should fail when --protocol is missing");
 });
+
+// =============================================================================
+// Route formats and argument handling
+// =============================================================================
+
+const ROUTES = "src/tsgen/fixtures/routes/api";
+
+async function runCli(
+  ...args: string[]
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const { code, stdout, stderr } = await new Deno.Command("deno", {
+    args: [
+      "run",
+      "--allow-read",
+      "--allow-write",
+      "--allow-run",
+      "--allow-env",
+      "--allow-net",
+      "src/cli.ts",
+      ...args,
+    ],
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  const decoder = new TextDecoder();
+  return {
+    code,
+    stdout: decoder.decode(stdout),
+    stderr: decoder.decode(stderr),
+  };
+}
+
+async function assertTypeChecks(file: string): Promise<void> {
+  const { code, stderr } = await new Deno.Command("deno", {
+    args: ["check", file],
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  assertEquals(code, 0, new TextDecoder().decode(stderr));
+}
+
+for (const format of ["types", "client", "routes"]) {
+  Deno.test(`CLI --format ${format} writes output that type-checks`, async () => {
+    const tmpFile = await Deno.makeTempFile({ suffix: ".ts" });
+    try {
+      const result = await runCli("-r", ROUTES, "-o", tmpFile, "-f", format);
+      assertEquals(result.code, 0, result.stderr);
+      assertEquals(
+        result.stdout.trim(),
+        `Generated ${format} written to ${tmpFile}`,
+      );
+
+      const output = await Deno.readTextFile(tmpFile);
+      assertEquals(output.length > 0, true);
+      await assertTypeChecks(tmpFile);
+    } finally {
+      await Deno.remove(tmpFile);
+    }
+  });
+}
+
+Deno.test("CLI defaults to the types format", async () => {
+  const explicit = await Deno.makeTempFile({ suffix: ".ts" });
+  const implicit = await Deno.makeTempFile({ suffix: ".ts" });
+  try {
+    assertEquals(
+      (await runCli("-r", ROUTES, "-o", explicit, "-f", "types")).code,
+      0,
+    );
+    assertEquals((await runCli("-r", ROUTES, "-o", implicit)).code, 0);
+    assertEquals(
+      await Deno.readTextFile(implicit),
+      await Deno.readTextFile(explicit),
+    );
+  } finally {
+    await Deno.remove(explicit);
+    await Deno.remove(implicit);
+  }
+});
+
+Deno.test("CLI --help prints the usage and exits 0", async () => {
+  const result = await runCli("--help");
+  assertEquals(result.code, 0);
+  assertEquals(result.stdout.includes("Usage:"), true);
+  assertEquals(result.stdout.includes("--format"), true);
+});
+
+Deno.test("CLI without --output fails", async () => {
+  const result = await runCli("-r", ROUTES);
+  assertEquals(result.code, 1);
+  assertEquals(result.stderr.includes("--output is required"), true);
+});
+
+Deno.test("CLI rejects an unknown format", async () => {
+  const result = await runCli("-r", ROUTES, "-o", "unused.ts", "-f", "yaml");
+  assertEquals(result.code, 1);
+  assertEquals(result.stderr.includes('Invalid format "yaml"'), true);
+});
+
+Deno.test("CLI rejects a misspelled option and writes nothing", async () => {
+  const dir = await Deno.makeTempDir();
+  const out = `${dir}/out.ts`;
+  try {
+    const result = await runCli("-r", ROUTES, "-o", out, "--formt", "client");
+    assertEquals(result.code, 1);
+    assertEquals(result.stderr.includes('Unknown argument "--formt"'), true);
+    assertEquals(
+      await Deno.stat(out).then(() => true, () => false),
+      false,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("CLI reports a routes directory that does not exist", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const result = await runCli("-r", "no/such/dir", "-o", `${dir}/out.ts`);
+    assertEquals(result.code, 1);
+    assertEquals(result.stderr.includes("Error generating types:"), true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

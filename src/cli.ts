@@ -11,7 +11,7 @@ Usage:
   typed-endpoints [options]
 
 Options:
-  -r, --routes <dir>    Routes directory (can be specified multiple times)
+  -r, --routes <dir>    Routes directory, repeatable (default: routes/api)
   -o, --output <file>   Output file path (required)
   -c, --config <file>   Path to deno.json (auto-detected if not provided)
   -f, --format <fmt>    Output format: types, client, routes, or protocol (default: types)
@@ -58,6 +58,12 @@ async function main() {
       f: "format",
       p: "protocol",
       h: "help",
+    },
+    // A misspelled option would otherwise be dropped and the defaults used.
+    unknown: (arg) => {
+      console.error(`Error: Unknown argument "${arg}"\n`);
+      console.log(help);
+      Deno.exit(1);
     },
   });
 
