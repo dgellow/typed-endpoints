@@ -1117,21 +1117,23 @@ failures, a DELETE body, a catch-all path, a recursive schema, event streams
 typed-endpoints -r routes/api -o server/src/api_generated.rs --format axum
 ```
 
-The module needs `axum`, `serde` (with `derive`), `serde_json` and `fancy-regex`
-(patterns with lookarounds), and Rust 1.80 or later; it builds under the 2021
-and 2024 editions. It holds:
+The module needs `axum` 0.8, `serde` (with `derive`), `serde_json`, `tracing`
+and `fancy-regex` (patterns with lookarounds). It is written as Rust is written:
+it passes `cargo fmt --check` under the 2021 and 2024 style editions and
+`cargo clippy -- -D warnings -W clippy::pedantic`. It holds, in this order:
 
 - a serde type for every request part, response and declared error body
+- `InternalError`, and an error type per operation that declares errors: one
+  variant per status, named as the status is (`NotFound`), and `Internal`
 - `Handlers`, a trait with one method per operation. A method that is missing or
   no longer fits the routes does not compile
-- an error enum per operation that declares errors, one variant per status: a
-  status the operation does not declare cannot be written
 - `router(handlers)`, an `axum::Router` that checks each request, calls the
   handler and checks what it returns
+- two private modules: the contract as static data, and the runtime that checks
+  values against it
 
 ```rust
-mod api_generated;
-use api_generated as api;
+use my_crate::api_generated as api;
 
 struct Notes { /* ... */ }
 
@@ -1140,10 +1142,8 @@ impl api::Handlers for Notes {
         &self,
         params: api::NotesRetrieveParams,
     ) -> Result<api::NotesRetrieveResponse, api::NotesRetrieveError> {
-        self.find(&params.id).ok_or(api::NotesRetrieveError::Status404(api::NotFound {
-            error: api::NotFoundError::NotFound,
-            id: params.id,
-        }))
+        let row = self.db.find(&params.id).await?; // any error: a 500
+        row.ok_or_else(|| api::NotFound { id: params.id }.into()) // the declared 404
     }
 
     // ...
@@ -1152,58 +1152,77 @@ impl api::Handlers for Notes {
 let app = api::router(Notes::new());
 ```
 
+Every method returns a `Result`. A declared error is a variant of the
+operation's error type, and its body converts into it. Anything else is an
+`InternalError`, which every error and every message converts into, so `?` works
+on whatever a handler calls; it is answered as a 500 that says nothing about the
+cause and reported through `tracing`.
+
 Rust was added to see where the design gives way under a language with nominal
 types, value types and no `null`. What it took:
 
-| TypeScript says                                         | Rust needs                                                   | What the generator does                                                                                                                                                                  |
-| ------------------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| a union or a set of literals, written in place          | a name for every type                                        | names them after the place they are in (`ShapesCreateBodyUnit`); the same values in a second place are the same type under another name                                                  |
-| `{ a: string }` twice is one type                       | two structs are two types                                    | recognises the same object and writes `pub type B = A`                                                                                                                                   |
-| a type that contains itself                             | indirection, or the type has no size                         | `Box` where a cycle closes, none behind a `Vec` or a map                                                                                                                                 |
-| `type Json = string \| null \| Json[] \| ...`           | a recursive type has to be nominal                           | an enum of its own name, with a `Null` variant                                                                                                                                           |
-| `x?: T \| null`: absent, null and a value               | `Option` has two states                                      | `Option<Option<T>>`, read and written so that null and absent stay apart                                                                                                                 |
-| one `number`                                            | `i64` and `f64`                                              | `2.0` is accepted for an integer, as in JavaScript, and reaches the handler as `2`                                                                                                       |
-| a pattern is a JavaScript `RegExp`                      | another regex dialect: `\d` matches every Unicode digit      | rewrites `\d`, `\w`, `\b` to what they mean in JavaScript                                                                                                                                |
-| every issue of a request, with its path                 | `serde` stops at the first, and knows no lengths or patterns | does not validate with `serde`: checks the JSON against the contract's schema first, then builds the typed value (a value the schema accepts and the type does not is a 500, and logged) |
-| `fail(404, body)`, the status checked against a literal | no literal types                                             | an enum per operation: `NotesRetrieveError::Status404(NotFound)`                                                                                                                         |
+| TypeScript says                                         | Rust needs                                                   | What the generator does                                                                                                                 |
+| ------------------------------------------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| a union or a set of literals, written in place          | a name for every type                                        | names them after the place they are in (`ShapesCreateBodyUnit`); the same values in a second place are the same type under another name |
+| `{ a: string }` twice is one type                       | two structs are two types                                    | recognises the same object, whatever document it is in, and writes `pub type B = A`                                                     |
+| what goes in and what comes out are one schema          | a type for each side would make a handler copy between them  | one type for both sides: a default is filled in when a request leaves it out, and the runtime refuses unknown members                   |
+| a union told apart by a member                          | an enum, and a way to tell its variants apart                | `#[serde(tag = "kind")]`; the variants are structs without that member                                                                  |
+| a member that is always one string                      | no literal types                                             | serde writes it (`#[serde(tag = "error", rename = "not_found")]`); the struct has no field for it                                       |
+| a type that contains itself                             | indirection, or the type has no size                         | `Box` where a cycle closes, none behind a `Vec` or a map                                                                                |
+| `type Json = string \| null \| Json[] \| ...`           | a recursive type has to be nominal                           | an enum of its own name, with a `Null` variant                                                                                          |
+| `x?: T \| null`: absent, null and a value               | `Option` has two states                                      | `MaybeAbsent<T>`: `Absent`, `Null`, `Value(T)`                                                                                          |
+| one `number`                                            | `i64`, `u64` and `f64`                                       | `u64` for an integer that is not negative; `2.0` is accepted for an integer, as in JavaScript, and reaches the handler as `2`           |
+| a pattern is a JavaScript `RegExp`                      | another regex dialect: `\d` matches every Unicode digit      | rewrites `\d`, `\w`, `\b` to what they mean in JavaScript; each pattern is compiled once, when the router is built                      |
+| every issue of a request, with its path                 | `serde` stops at the first, and knows no lengths or patterns | does not validate with `serde`: checks the JSON against the contract first, then builds the typed value                                 |
+| `fail(404, body)`, the status checked against a literal | no literal types                                             | an enum per operation: `NotesRetrieveError::NotFound(NotFound)`                                                                         |
+| a handler may throw                                     | a function that can fail says so in its type                 | every method returns a `Result`; `InternalError` takes any error                                                                        |
 
-The validator in the module interprets the JSON Schema of the contract and words
-its issues as Zod does. That turned out closer to the TypeScript handlers than
-mapping the schema onto the validation library of the language, which is what
-the Python generator does. The conformance suite sends 27 requests that have to
-be refused (`e2e_tests/conformance/refusals.json` records what the TypeScript
-handlers answer):
+The contract is in the module as data the compiler checks (`static` values of a
+`Schema` type), not as text parsed when the server starts, and the runtime
+interprets it and words its issues as Zod does. That turned out closer to the
+TypeScript handlers than mapping the schema onto the validation library of the
+language, which is what the Python generator does. The conformance suite sends
+27 requests that have to be refused (`e2e_tests/conformance/refusals.json`
+records what the TypeScript handlers answer). Compared as JSON values:
 
-|                                      | axum | FastAPI |
-| ------------------------------------ | ---- | ------- |
-| Same status, same issues, same words | 27   | 1       |
-| Same status and same paths           | 27   | 19      |
-| Same status                          | 27   | 26      |
-| Differences the suite declares       | 0    | 8       |
+|                                                 | axum | FastAPI |
+| ----------------------------------------------- | ---- | ------- |
+| Same status, same issues, same words            | 27   | 1       |
+| Same status, same issue paths in the same order | 27   | 19      |
+| Same status                                     | 27   | 26      |
+| Differences the suite declares                  | 0    | 8       |
 
-Issues come in the order of the schema when `serde_json` is built with its
-`preserve_order` feature, and in alphabetical order of the members without it.
+As text the axum answers differ from the TypeScript ones in 25 of the 27: the
+members of an object are written in alphabetical order.
 
 What does not cross, or not yet:
 
-- The body and the response of an operation are different types also where the
-  schema is the same one: a request type is the input side of the schema (a
-  default may be absent, unknown members are ignored) and a response type the
-  output side. A handler that gives back what it received copies it
-- A handler returns a value or a declared error. There is no third case for a
-  response written by hand
+- A handler gets the path parameters, the query and the body, and nothing else
+  of the request: no header, no cookie, nothing a layer put into the request's
+  extensions
+- A success is always a 200 or, without a response schema, a 204. There are no
+  response headers and no response written by hand
 - A constant that is not a string (`z.literal(2)`) is an `i64` in the type; the
-  check against the schema still refuses 3
+  check against the contract still refuses 3
 - The contract does not say whether a query member is coerced
   (`z.coerce.number()`) or not (`z.number()`, which no query text satisfies in
   TypeScript): every number and boolean of a query or a path is read from text
+- A request that axum's own extractors refuse (a path that is not UTF-8, a body
+  over the size limit) is answered in plain text, not in the shape of a 400
+- A 500 is reported through `tracing`: an application without a subscriber
+  writes nothing
 - Not generated yet: event streams (listed in a comment in the module), a
   client, request-dependent responses, protocols
 
 How it is checked (`./scripts/test-rust`): the generated module and a
-hand-written implementation of `Handlers` pass `cargo clippy` with warnings
-denied; the server runs; and the conformance tests of the Python section, minus
-the event streams, hold for it with no declared difference.
+hand-written implementation of `Handlers` are formatted as rustfmt formats and
+have nothing for clippy to report, its pedantic lints included; the server runs;
+and the conformance tests of the Python section, minus the event streams, hold
+for it with no declared difference. Among them: three bodies nested 40 levels
+deep are checked in milliseconds, a handler that fails outside the contract is a
+500 that does not say why, and `2.0` is accepted where the contract says `2`.
+One behaviour has no permanent test, because the fixture cannot hold it: a
+pattern that does not compile stops the server when the router is built.
 
 ## API
 

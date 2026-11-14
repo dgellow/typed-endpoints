@@ -32,9 +32,12 @@ permissions):
   pyright in strict mode over the generated module and the hand-written
   handlers, then the conformance tests against the generated FastAPI
   application. Python is always run through `uv`
-- `./scripts/test-rust` — run `e2e_tests/rust` (needs `cargo`): `cargo clippy`
-  with warnings denied over the generated module and the hand-written handlers,
-  then the conformance tests against the generated axum server
+- `./scripts/test-rust` — run `e2e_tests/rust` (needs `cargo`):
+  `cargo fmt
+  --check` (the generated module under the 2021 and 2024 style
+  editions) and `cargo clippy -- -D warnings -W clippy::pedantic` over the
+  generated module and the hand-written handlers, then the conformance tests
+  against the generated axum server
 
 ## Project Structure
 
@@ -78,7 +81,7 @@ src/
 ├── contract/       # generateContract(): the routes as data, JSON Schema per part
 │   └── types.ts    # TypeGraph: schemas as named, shared types with cycles marked
 ├── python/         # Pydantic models (models.ts), a FastAPI module (fastapi.ts), an httpx client (client.ts)
-├── rust/           # serde types (models.ts), a schema-checking runtime (runtime.ts), an axum module (axum.ts)
+├── rust/           # serde types (models.ts), the contract as statics (contract.ts), the runtime that checks against it (runtime.ts), the axum module (axum.ts)
 ├── cli.ts          # CLI entry point
 └── mod.ts          # Main module exports
 e2e_tests/          # End-to-end tests (protocol flows, Fresh server, CLI, Vite)
@@ -208,15 +211,33 @@ Python client (`test_client.py`) is run against the TypeScript and the FastAPI
 server; logic it carries that the fixture does not reach (pagination styles
 other than cursor) has Python unit tests (`test_pagination.py`).
 
+Generated code is not just code that works: it is written as a person would
+write it in that language, and the language's own tools say so. For Rust that is
+enforced (`./scripts/test-rust` runs rustfmt and clippy's pedantic lints over
+the generated module); for Python it is not yet. A property of generated code is
+claimed after it was measured, with the same metric for every server compared.
+
 The Rust generator reads the contract through `TypeGraph`
 (`src/contract/types.ts`), which decides what a nominal language needs decided:
-a name for every object, union and set of literals, the same object recognised
-as one type, a reference that closes a cycle marked (`cyclic`), a non-object
-type that refers to itself made a definition (`named`). The module it writes
-does not validate with `serde`: its runtime (`src/rust/runtime.ts`, Rust source
-in a `String.raw` template, so no backtick and no `${` in it) checks JSON
-against the contract's schema, words issues as Zod does, and only then builds
-the typed value. Python's models do not use `TypeGraph` yet.
+a name for every object, union and set of literals; the same object recognised
+as one type whatever document it is in (`canonical()`); with `mergeSides`, the
+request side and the response side of a schema as one type; a reference that
+closes a cycle marked (`cyclic`); a non-object type that refers to itself made a
+definition (`named`); the member that decides a union's alternative
+(`discriminatorOf()`, which the types and the checker both use).
+
+The module it writes has the API first and two private modules after it:
+`contract` (the schemas as `static` Rust data, also when one refers to itself,
+and each pattern compiled once) and `runtime` (`src/rust/runtime.ts`: Rust
+source in `String.raw` templates, so no backtick and no `${` in it, kept as
+rustfmt writes it). The runtime does not validate with `serde`: it checks JSON
+against the contract, words issues as Zod does, and only then builds the typed
+value. Checking reads the value and never copies it; numbers are read as
+JavaScript reads them once, before. Every handler returns a `Result`: a declared
+error is a variant of the operation's error type, anything else an
+`InternalError`. serde writes a struct's string constant, except for a variant
+of a union, where it would not be read. Python's models do not use `TypeGraph`
+yet.
 
 ## Key Concepts (Request-Dependent Responses)
 
