@@ -6,7 +6,7 @@ import { parseArgs } from "node:util";
 import { ROUTE_CONVENTIONS, type RouteConvention } from "./core/routes.ts";
 import { generateContract } from "./contract/index.ts";
 import { generateFastApi, generatePythonClient } from "./python/index.ts";
-import { generateAxum } from "./rust/index.ts";
+import { generateAxum, generateRustClient } from "./rust/index.ts";
 import { generateTypes } from "./tsgen/mod.ts";
 import { generateProtocolTypesFromModule } from "./protocol/typegen.ts";
 
@@ -20,6 +20,7 @@ const FORMATS = [
   "fastapi",
   "python-client",
   "axum",
+  "rust-client",
 ] as const;
 
 const help = `
@@ -33,7 +34,8 @@ Options:
   -o, --output <file>   Output file path (required)
   -c, --config <file>   Path to deno.json (auto-detected if not provided)
   -f, --format <fmt>    Output format: types, client, routes, protocol, contract,
-                        fastapi, python-client or axum (default: types)
+                        fastapi, python-client, axum or rust-client
+                        (default: types)
   --convention <name>   Route file layout: fresh, next, sveltekit, astro, or nitro
                         (default: fresh; also the layout for Bun, Hono and fetch)
   -p, --protocol <file> Protocol module path (required when --format protocol)
@@ -51,6 +53,7 @@ Formats:
              FastAPI router
   python-client - A Python module: Pydantic models and an httpx client
   axum     - A Rust module: serde types, a Handlers trait and an axum router
+  rust-client - A Rust module: serde types and a reqwest client
 
 Examples:
   typed-endpoints -r routes/api -o src/api-types.ts
@@ -61,6 +64,7 @@ Examples:
   typed-endpoints -r routes/api -o server/api_generated.py --format fastapi
   typed-endpoints -r routes/api -o client/api_client.py --format python-client
   typed-endpoints -r routes/api -o server/src/api_generated.rs --format axum
+  typed-endpoints -r routes/api -o client/src/api_client.rs --format rust-client
 `;
 
 /**
@@ -131,6 +135,7 @@ async function main() {
     | "fastapi"
     | "python-client"
     | "axum"
+    | "rust-client"
     | undefined;
   if (format && !FORMATS.includes(format)) {
     fail(`Invalid format "${format}". Must be: ${FORMATS.join(", ")}`);
@@ -199,6 +204,14 @@ async function main() {
     } else if (format === "axum") {
       // A Rust module: serde types and an axum router.
       await generateAxum({
+        routesDirs,
+        output: args.output,
+        config,
+        convention,
+      });
+    } else if (format === "rust-client") {
+      // A Rust module: serde types and a reqwest client.
+      await generateRustClient({
         routesDirs,
         output: args.output,
         config,

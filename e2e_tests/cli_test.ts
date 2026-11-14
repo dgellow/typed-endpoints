@@ -255,6 +255,28 @@ Deno.test("CLI --format axum writes the checked-in Rust module", async () => {
   }
 });
 
+Deno.test("CLI --format rust-client writes the checked-in Rust client", async () => {
+  const output = await Deno.makeTempFile({ suffix: ".rs" });
+  try {
+    const result = await runCli(
+      "-r",
+      "e2e_tests/fixtures/conformance/routes",
+      "-o",
+      output,
+      "--format",
+      "rust-client",
+    );
+    assertEquals(result.code, 0, result.stderr);
+    // The module whose tests `./scripts/test-rust` runs against two servers.
+    assertEquals(
+      await Deno.readTextFile(output),
+      await Deno.readTextFile("e2e_tests/rust/src/client_generated.rs"),
+    );
+  } finally {
+    await Deno.remove(output);
+  }
+});
+
 Deno.test("CLI defaults to the types format", async () => {
   const explicit = await Deno.makeTempFile({ suffix: ".ts" });
   const implicit = await Deno.makeTempFile({ suffix: ".ts" });

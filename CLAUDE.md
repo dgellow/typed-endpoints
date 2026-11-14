@@ -36,9 +36,10 @@ permissions):
 - `./scripts/test-rust` — run `e2e_tests/rust` (needs `cargo` and `rustup`):
   `cargo fmt --check` (the generated module under the 2021 and 2024 style
   editions) and `cargo clippy -- -D warnings -W clippy::pedantic` over the
-  generated module and the hand-written handlers, `cargo test` (unit tests, and
-  the samples in the generated module's documentation), then the conformance
-  tests against the generated axum server. The toolchain is the one
+  generated modules and the hand-written handlers, `cargo test` (unit tests, and
+  the samples in the generated modules' documentation), then the conformance
+  tests against the generated axum server and the generated client's tests
+  against that server and the TypeScript handlers. The toolchain is the one
   `e2e_tests/rust/rust-toolchain.toml` pins: pedantic lints are added with every
   Rust release, so a newer clippy is a change of its own
 
@@ -113,7 +114,7 @@ src/
 ├── contract/       # generateContract(): the routes as data, JSON Schema per part
 │   └── types.ts    # TypeGraph: schemas as named, shared types with cycles marked
 ├── python/         # Pydantic models (models.ts), a FastAPI module (fastapi.ts), an httpx client (client.ts), layout as ruff formats (format.ts)
-├── rust/           # serde types (models.ts), the contract as statics (contract.ts), the runtime that checks against it (runtime.ts), the axum module (axum.ts)
+├── rust/           # serde types (models.ts), the contract as statics (contract.ts), the runtime that checks against it (runtime.ts), the axum module (axum.ts), a reqwest client (client.ts, client_runtime.ts)
 ├── cli.ts          # CLI entry point
 └── mod.ts          # Main module exports
 e2e_tests/          # End-to-end tests (protocol flows, Fresh server, CLI, Vite)
@@ -277,6 +278,13 @@ error is a variant of the operation's error type, anything else an
 `InternalError`. serde writes a struct's string constant, except for a variant
 of a union, where it would not be read. Python's models do not use `TypeGraph`
 yet.
+
+The Rust client (`src/rust/client.ts`) has the same types and no contract: a
+response is read by serde into its type. Its fixed part
+(`src/rust/client_runtime.ts`) carries its own unit tests in a `#[cfg(test)]`
+module, which run in whatever crate the module is put in. A template is kept as
+rustfmt writes it by formatting a generated module and writing the fixed parts
+back.
 
 An API with an event stream gets a third private module, `streams`, and two
 public types: the handler of a stream returns an `EventStream<T>` (a boxed

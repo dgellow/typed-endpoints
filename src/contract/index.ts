@@ -160,3 +160,35 @@ export async function generateContract(
   }
   return contract;
 }
+
+/**
+ * The schema of the items of a paginated response.
+ *
+ * @param response The schema of the response.
+ * @param path Where the items are in it: a field, or a dotted path.
+ */
+export function itemsSchema(
+  response: JsonSchema,
+  path: string,
+): JsonSchema | undefined {
+  const defs = (response.$defs ?? {}) as Record<string, JsonSchema>;
+  const resolve = (schema: JsonSchema | undefined): JsonSchema | undefined => {
+    if (schema && typeof schema.$ref === "string") {
+      return schema.$ref === "#"
+        ? response
+        : defs[schema.$ref.replace(/^#\/\$defs\//, "")];
+    }
+    return schema;
+  };
+
+  let current = resolve(response);
+  for (const key of path.split(".")) {
+    const properties = current?.properties as
+      | Record<string, JsonSchema>
+      | undefined;
+    current = resolve(properties?.[key]);
+  }
+  const items = current?.items;
+  if (!items || typeof items !== "object") return undefined;
+  return { ...(items as JsonSchema), $defs: defs };
+}
