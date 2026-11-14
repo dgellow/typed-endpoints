@@ -4,7 +4,7 @@ import type { ApiDef } from "@/core/types.ts";
 const UserSchema = z.object({
   id: z.string(),
   name: z.string(),
-  email: z.string().email(),
+  email: z.email(),
 });
 
 const apiDef: ApiDef = {

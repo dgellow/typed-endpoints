@@ -666,12 +666,12 @@ function recordingFetch(response: unknown = {}) {
     contentType: string | undefined;
   }[] = [];
   const fetchFn: typeof fetch = (input, init) => {
-    const headers = (init?.headers ?? {}) as Record<string, string>;
+    const opts = init as MockRequestInit | undefined;
     calls.push({
-      method: init?.method ?? "GET",
+      method: opts?.method ?? "GET",
       url: String(input),
-      body: typeof init?.body === "string" ? JSON.parse(init.body) : init?.body,
-      contentType: headers["Content-Type"],
+      body: opts?.body === undefined ? undefined : JSON.parse(opts.body),
+      contentType: opts?.headers?.["Content-Type"],
     });
     return Promise.resolve(Response.json(response));
   };

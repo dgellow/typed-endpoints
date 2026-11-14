@@ -42,7 +42,7 @@ export const handler = createApiHandlers({
     summary: "Update user",
     params: z.object({ id: z.string() }),
     body: z.object({
-      email: z.string().email(),
+      email: z.email(),
       name: z.string().optional(),
     }),
     response: z.object({ success: z.boolean() }),
@@ -166,7 +166,7 @@ import { z } from "zod";
 const UserSchema = z.object({
   id: z.string(),
   name: z.string(),
-  email: z.string().email(),
+  email: z.email(),
 });
 
 export const handler = createApiHandlers({
@@ -568,7 +568,7 @@ const authorizeStep = step({
   request: z.object({
     response_type: z.literal("code"),
     client_id: z.string(),
-    redirect_uri: z.string().url().optional(),
+    redirect_uri: z.url().optional(),
     scope: z.string().optional(),
     state: z.string(),
   }),
@@ -1225,7 +1225,7 @@ of validated and unvalidated data. See
 [Branded Types in TypeScript](https://tigerabrodi.blog/branded-types-in-typescript).
 
 ```typescript
-const Email = z.string().email().brand<"ValidEmail">();
+const Email = z.email().brand<"ValidEmail">();
 const UserId = z.string().uuid().brand<"UserId">();
 
 function sendEmail(to: z.infer<typeof Email>) { ... }

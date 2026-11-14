@@ -29,7 +29,7 @@ export const OAuthErrorSchema = z.object({
     "temporarily_unavailable",
   ]),
   error_description: z.string().optional(),
-  error_uri: z.string().url().optional(),
+  error_uri: z.url().optional(),
   state: z.string().optional(),
 });
 
@@ -37,7 +37,7 @@ export const OAuthErrorSchema = z.object({
 export const AuthorizeRequestSchema = z.object({
   response_type: z.literal("code"),
   client_id: z.string(),
-  redirect_uri: z.string().url().optional(),
+  redirect_uri: z.url().optional(),
   scope: z.string().optional(),
   state: z.string(),
 });
@@ -50,8 +50,8 @@ export const AuthorizeSuccessSchema = z.object({
 
 /** Authorization Response - discriminated union */
 export const AuthorizeResponseSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("success") }).merge(AuthorizeSuccessSchema),
-  z.object({ type: z.literal("error") }).merge(OAuthErrorSchema),
+  z.object({ type: z.literal("success") }).extend(AuthorizeSuccessSchema.shape),
+  z.object({ type: z.literal("error") }).extend(OAuthErrorSchema.shape),
 ]);
 
 /** Token Response (for both exchange and refresh) */
@@ -74,13 +74,13 @@ export const TokenErrorSchema = z.object({
     "invalid_scope",
   ]),
   error_description: z.string().optional(),
-  error_uri: z.string().url().optional(),
+  error_uri: z.url().optional(),
 });
 
 /** Token Exchange Response - discriminated union */
 export const ExchangeResponseSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("success") }).merge(TokenResponseSchema),
-  z.object({ type: z.literal("error") }).merge(TokenErrorSchema),
+  z.object({ type: z.literal("success") }).extend(TokenResponseSchema.shape),
+  z.object({ type: z.literal("error") }).extend(TokenErrorSchema.shape),
 ]);
 
 // =============================================================================
@@ -125,7 +125,7 @@ export const exchangeStep = dependentStep({
     return z.object({
       grant_type: z.literal("authorization_code"),
       code: z.literal(prev.code), // THE KEY: code comes from authorize response
-      redirect_uri: z.string().url().optional(),
+      redirect_uri: z.url().optional(),
       client_id: z.string(),
       client_secret: z.string(),
     });

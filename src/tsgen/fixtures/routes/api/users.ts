@@ -5,12 +5,12 @@ import { cursor } from "@/pagination/index.ts";
 const UserSchema = z.object({
   id: z.string(),
   name: z.string(),
-  email: z.string().email(),
+  email: z.email(),
 });
 
 const CreateUserSchema = z.object({
   name: z.string(),
-  email: z.string().email(),
+  email: z.email(),
 });
 
 // Use cursor pagination for list endpoint
