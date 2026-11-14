@@ -286,3 +286,143 @@ Deno.test("validateRequest: an error at the root has no empty path prefix", asyn
     );
   }
 });
+
+// =============================================================================
+// Bodies outside POST, PUT and PATCH; issues; content types
+// =============================================================================
+
+Deno.test("validateRequest validates a body declared on DELETE", async () => {
+  const def = { body: z.object({ ids: z.array(z.string()) }) };
+  const request = (body: unknown) => ({
+    json: () => Promise.resolve(body),
+    url: "http://example.com",
+    params: {},
+  });
+
+  const valid = await validateRequest(request({ ids: ["1"] }), def, "DELETE");
+  assertEquals(valid.success, true);
+  if (valid.success) assertEquals(valid.data.body, { ids: ["1"] });
+
+  const invalid = await validateRequest(request({ x: 1 }), def, "DELETE");
+  assertEquals(invalid.success, false);
+  if (!invalid.success) assertEquals(invalid.type, "body");
+});
+
+Deno.test("validateRequest reports each issue with its path and code", async () => {
+  const result = await validateRequest(
+    {
+      json: () => Promise.resolve({ name: 1, tags: ["a", 2] }),
+      url: "http://example.com?limit=0",
+      params: { id: "x" },
+    },
+    {
+      body: z.object({ name: z.string(), tags: z.array(z.string()) }),
+      query: z.object({ limit: z.coerce.number().min(1) }),
+    },
+    "POST",
+  );
+
+  assertEquals(result.success, false);
+  if (result.success) return;
+  // The body is validated first, and all of its issues are reported.
+  assertEquals(result.type, "body");
+  assertEquals(
+    result.issues.map((issue) => [issue.path, issue.code]),
+    [[["name"], "invalid_type"], [["tags", 1], "invalid_type"]],
+  );
+  assertEquals(
+    result.error,
+    "Validation error: name: Invalid input: expected string, received number, tags.1: Invalid input: expected string, received number",
+  );
+
+  const query = await validateRequest(
+    { json: () => Promise.resolve({}), url: "http://example.com?limit=0" },
+    { query: z.object({ limit: z.coerce.number().min(1) }) },
+    "GET",
+  );
+  assertEquals(query.success, false);
+  if (query.success) return;
+  assertEquals(query.type, "query");
+  assertEquals(query.issues.map((issue) => [issue.path, issue.code]), [
+    [["limit"], "too_small"],
+  ]);
+});
+
+Deno.test("validateRequest reads a missing body as undefined when it can read the text", async () => {
+  const request = (text: string) => ({
+    json: () => Promise.reject(new Error("text is read, not json")),
+    text: () => Promise.resolve(text),
+    url: "http://example.com",
+  });
+
+  // A schema that allows no body accepts a request without one.
+  const optional = z.object({ reason: z.string() }).optional();
+  const none = await validateRequest(request(""), { body: optional }, "DELETE");
+  assertEquals(none.success, true);
+  if (none.success) assertEquals(none.data.body, undefined);
+
+  const some = await validateRequest(
+    request('{"reason":"spam"}'),
+    { body: optional },
+    "DELETE",
+  );
+  assertEquals(some.success && some.data.body, { reason: "spam" });
+
+  // A schema that requires one says what is missing.
+  const required = await validateRequest(
+    request("  "),
+    { body: z.object({ reason: z.string() }) },
+    "DELETE",
+  );
+  assertEquals(required.success, false);
+  if (required.success) return;
+  assertEquals(required.type, "body");
+  assertEquals(
+    required.error,
+    "Validation error: Invalid input: expected object, received undefined",
+  );
+});
+
+Deno.test("validateRequest tells a body that is not JSON from JSON that is malformed", async () => {
+  const def = { body: z.object({ id: z.string() }) };
+  const request = (text: string, contentType: string | null) => ({
+    json: () => Promise.resolve(JSON.parse(text)),
+    text: () => Promise.resolve(text),
+    contentType,
+    url: "http://example.com",
+  });
+  const outcome = async (text: string, contentType: string | null) => {
+    const result = await validateRequest(
+      request(text, contentType),
+      def,
+      "POST",
+    );
+    return result.success ? "ok" : `${result.type}: ${result.error}`;
+  };
+
+  // Not JSON, and the content type says so.
+  assertEquals(
+    await outcome("id=1", "application/x-www-form-urlencoded"),
+    'content-type: Unsupported content type "application/x-www-form-urlencoded": the body has to be JSON',
+  );
+  // Malformed JSON that claims to be JSON, or claims nothing.
+  assertEquals(
+    await outcome("{id:", "application/json; charset=utf-8"),
+    "json: Invalid JSON body",
+  );
+  assertEquals(await outcome("{id:", null), "json: Invalid JSON body");
+  // What `fetch()` sends for a string body when no header is set.
+  assertEquals(
+    await outcome("{id:", "text/plain;charset=UTF-8"),
+    "json: Invalid JSON body",
+  );
+  assertEquals(
+    await outcome("{id:", "application/merge-patch+json"),
+    "json: Invalid JSON body",
+  );
+
+  // JSON under another content type is read: `fetch()` sends a string
+  // body as text/plain unless told otherwise.
+  assertEquals(await outcome('{"id":"1"}', "text/plain;charset=UTF-8"), "ok");
+  assertEquals(await outcome('{"id":"1"}', "application/json"), "ok");
+});

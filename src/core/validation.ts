@@ -25,14 +25,29 @@ export interface ValidationResult<TBody, TQuery, TParams> {
   readonly data: ValidatedRequest<TBody, TQuery, TParams>;
 }
 
+/** One thing a request got wrong, as the schema reports it. */
+export interface ValidationIssue {
+  /** Where in the body, query or path parameters; empty for the root. */
+  readonly path: readonly (string | number)[];
+  /** What is wrong there. */
+  readonly message: string;
+  /** Zod's issue code, e.g. `invalid_type`, `too_small`. */
+  readonly code: string;
+}
+
 /** A request that failed validation. */
 export interface ValidationError {
   /** Discriminant: validation failed. */
   readonly success: false;
   /** Message that lists each failing field. */
   readonly error: string;
-  /** The part that failed. `"json"`: the body is not valid JSON. */
-  readonly type: "body" | "query" | "params" | "json";
+  /**
+   * The part that failed. `"json"`: the body is not valid JSON.
+   * `"content-type"`: the body is not JSON and its content type says so.
+   */
+  readonly type: "body" | "query" | "params" | "json" | "content-type";
+  /** Each failing field. Empty for `"json"` and `"content-type"`. */
+  readonly issues: readonly ValidationIssue[];
 }
 
 /** Result of `validateRequest()`. */
@@ -44,10 +59,43 @@ export type ValidationOutcome<TBody, TQuery, TParams> =
 export interface RawRequest {
   /** Reads and parses the JSON body. */
   readonly json: () => Promise<unknown>;
+  /**
+   * Reads the body as text. When given, it is used instead of `json`, and
+   * a request without a body is validated as `undefined`, which a schema
+   * that allows no body accepts.
+   */
+  readonly text?: () => Promise<string>;
+  /** Value of the `Content-Type` header, if the request has one. */
+  readonly contentType?: string | null;
   /** Full request URL. The query string is read from it. */
   readonly url: string;
   /** Path parameters, as the router extracted them. */
   readonly params?: Record<string, string>;
+}
+
+function issuesOf(error: z.ZodError): ValidationIssue[] {
+  return error.issues.map((issue) => ({
+    path: issue.path.filter((part) => typeof part !== "symbol") as (
+      | string
+      | number
+    )[],
+    message: issue.message,
+    code: issue.code ?? "custom",
+  }));
+}
+
+/**
+ * Whether a body with this `Content-Type` is taken to be meant as JSON.
+ *
+ * No value and `text/plain` count: `fetch()` sends a string body as
+ * `text/plain` unless told otherwise, so a client that forgot the header
+ * is told its JSON is malformed, not that its content type is wrong.
+ */
+function meantAsJson(contentType: string | null | undefined): boolean {
+  if (!contentType) return true;
+  const mediaType = contentType.split(";")[0].trim().toLowerCase();
+  return mediaType === "application/json" || mediaType.endsWith("+json") ||
+    mediaType === "text/plain";
 }
 
 /**
@@ -119,14 +167,35 @@ export async function validateRequest<
     TParamsSchema extends z.ZodType ? z.infer<TParamsSchema> : unknown
   >
 > {
-  // Validate body
+  // Validate body, for every method that can carry one. GET and HEAD
+  // requests cannot: a body schema there is not read.
   let body: unknown = undefined;
-  if (def.body && ["POST", "PUT", "PATCH"].includes(method)) {
+  if (def.body && method !== "GET" && method !== "HEAD") {
     let rawBody: unknown;
     try {
-      rawBody = await req.json();
+      if (req.text) {
+        const text = await req.text();
+        rawBody = text.trim() === "" ? undefined : JSON.parse(text);
+      } else {
+        rawBody = await req.json();
+      }
     } catch {
-      return { success: false, error: "Invalid JSON body", type: "json" };
+      // A body that is not JSON and does not claim to be: say which
+      // content type was sent, not that the JSON is malformed.
+      return meantAsJson(req.contentType)
+        ? {
+          success: false,
+          error: "Invalid JSON body",
+          type: "json",
+          issues: [],
+        }
+        : {
+          success: false,
+          error:
+            `Unsupported content type "${req.contentType}": the body has to be JSON`,
+          type: "content-type",
+          issues: [],
+        };
     }
 
     const result = def.body.safeParse(rawBody);
@@ -135,6 +204,7 @@ export async function validateRequest<
         success: false,
         error: `Validation error: ${formatZodErrors(result.error)}`,
         type: "body",
+        issues: issuesOf(result.error),
       };
     }
     body = result.data;
@@ -147,7 +217,12 @@ export async function validateRequest<
     try {
       url = new URL(req.url);
     } catch {
-      return { success: false, error: "Invalid request URL", type: "query" };
+      return {
+        success: false,
+        error: "Invalid request URL",
+        type: "query",
+        issues: [],
+      };
     }
     const rawQuery = shapeQueryBySchema(
       parseSearchParams(url.searchParams),
@@ -159,6 +234,7 @@ export async function validateRequest<
         success: false,
         error: `Query validation error: ${formatZodErrors(result.error)}`,
         type: "query",
+        issues: issuesOf(result.error),
       };
     }
     query = result.data;
@@ -173,6 +249,7 @@ export async function validateRequest<
         success: false,
         error: `Params validation error: ${formatZodErrors(result.error)}`,
         type: "params",
+        issues: issuesOf(result.error),
       };
     }
     params = result.data;

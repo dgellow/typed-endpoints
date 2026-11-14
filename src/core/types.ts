@@ -72,7 +72,10 @@ export interface ApiMethodDef<
   TResponseSchema extends z.ZodType | undefined = z.ZodType | undefined,
   TResponses extends ResponsesDef | undefined = ResponsesDef | undefined,
 > {
-  /** Schema of the JSON request body. Read for POST, PUT and PATCH only. */
+  /**
+   * Schema of the JSON request body. Read for every method except GET and
+   * HEAD, whose requests carry none.
+   */
   readonly body?: TBodySchema;
   /**
    * Schema of the query string. A field declared as an array or set

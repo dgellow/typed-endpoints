@@ -630,12 +630,16 @@ function generateClientFormat(
     const errors = endpoint.errors
       ? `, errors: [${Object.keys(endpoint.errors).join(", ")}]`
       : "";
+    // A `delete` that carries a body: the method name does not say so.
+    const body = methodName === "delete" && endpoint.request !== undefined
+      ? ", body: true"
+      : "";
     lines.push(
       `  ${JSON.stringify([...segments, methodName].join("."))}: { method: ${
         JSON.stringify(endpoint.method)
       }, path: ${
         JSON.stringify(apiPathToClientTemplate(endpoint.path))
-      }${errors}${pagination} },`,
+      }${body}${errors}${pagination} },`,
     );
   }
   lines.push("} as const;");

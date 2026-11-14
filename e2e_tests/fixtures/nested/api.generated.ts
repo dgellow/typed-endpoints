@@ -66,6 +66,14 @@ export interface Api {
         response: { via: string; post: { id: string; userId: string; title: string; }; };
       };
     };
+    tags: {
+      delete: {
+        path: "/api/users/{id}/tags";
+        params: { id: string; };
+        body: { tags: string[]; };
+        response: { remaining: string[]; };
+      };
+    };
   };
   health: {
     list: {
@@ -87,5 +95,6 @@ export const routes = {
   "users.posts.replace": { method: "PUT", path: "/api/users/{id}/posts/{postId}" },
   "users.posts.delete": { method: "DELETE", path: "/api/users/{id}/posts/{postId}" },
   "users.posts.update": { method: "PATCH", path: "/api/users/{id}/posts/{postId}" },
+  "users.tags.delete": { method: "DELETE", path: "/api/users/{id}/tags", body: true },
   "health.list": { method: "GET", path: "/health" },
 } as const;

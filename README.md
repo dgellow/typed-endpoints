@@ -435,19 +435,20 @@ const post = await client.users.posts.retrieve("42", { params: { id: "123" } });
 
 How a route becomes a method:
 
-| Route                            | Client call                                                               |
-| -------------------------------- | ------------------------------------------------------------------------- |
-| `GET /api/users`                 | `users.list(options?)`                                                    |
-| `GET /api/users/[id]`            | `users.retrieve(id, options?)`                                            |
-| `POST /api/users`                | `users.create(body, options?)`                                            |
-| `PATCH /api/users/[id]`          | `users.update(id, body, options?)`                                        |
-| `PUT /api/users/[id]`            | `users.update(...)`, or `users.replace(...)` when the path also has PATCH |
-| `DELETE /api/users/[id]`         | `users.delete(id, options?)`                                              |
-| `DELETE /api/session`            | `session.delete(options?)`: no id, the path does not end with a parameter |
-| `GET /api/users/[id]/posts`      | `users.posts.list({ params: { id } })`                                    |
-| `GET /api/files/[...path]`       | `files.retrieve("docs/a.md")`: a catch-all id keeps its slashes           |
-| `GET /health`                    | `health.list()`: routes need not be under `/api`                          |
-| SSE `GET /api/tasks/[id]/events` | `tasks.events.subscribe({ params: { id } })`                              |
+| Route                            | Client call                                                                |
+| -------------------------------- | -------------------------------------------------------------------------- |
+| `GET /api/users`                 | `users.list(options?)`                                                     |
+| `GET /api/users/[id]`            | `users.retrieve(id, options?)`                                             |
+| `POST /api/users`                | `users.create(body, options?)`                                             |
+| `PATCH /api/users/[id]`          | `users.update(id, body, options?)`                                         |
+| `PUT /api/users/[id]`            | `users.update(...)`, or `users.replace(...)` when the path also has PATCH  |
+| `DELETE /api/users/[id]`         | `users.delete(id, options?)`                                               |
+| `DELETE /api/session`            | `session.delete(options?)`: no id, the path does not end with a parameter  |
+| `DELETE /api/users/[id]/tags`    | `users.tags.delete(body, { params: { id } })` when the endpoint has a body |
+| `GET /api/users/[id]/posts`      | `users.posts.list({ params: { id } })`                                     |
+| `GET /api/files/[...path]`       | `files.retrieve("docs/a.md")`: a catch-all id keeps its slashes            |
+| `GET /health`                    | `health.list()`: routes need not be under `/api`                           |
+| SSE `GET /api/tasks/[id]/events` | `tasks.events.subscribe({ params: { id } })`                               |
 
 Without `routes`, the client derives the URL from the property names
 (`basePath/resource[/id]`, always PUT for `update`). That covers the first six
@@ -963,16 +964,48 @@ Creates Fresh route handlers with automatic request validation.
 
 Each method definition can include:
 
-- `body` - Zod schema for request body (POST/PUT/PATCH)
+- `body` - Zod schema for the JSON request body, for every method except GET and
+  HEAD (a DELETE that declares a body is validated like a POST)
 - `query` - Zod schema for query parameters
 - `params` - Zod schema for path parameters
-- `response` - Zod schema for response (OpenAPI only)
+- `response` - Zod schema for the response: types and parses what the handler
+  returns
 - `responses` - Additional response schemas by status code
 - `handler` - The request handler function
 - `public` - Include in OpenAPI spec (default: false)
 - `summary` - OpenAPI summary
 - `description` - OpenAPI description
 - `tags` - OpenAPI tags
+
+A request that fails validation does not reach the handler. The answer is a 400
+whose body names the part that failed and each issue, as Zod reports it:
+
+```json
+{
+  "error": "Validation error: name: Invalid input: expected string, received number",
+  "in": "body",
+  "issues": [
+    {
+      "path": ["name"],
+      "message": "Invalid input: expected string, received number",
+      "code": "invalid_type"
+    }
+  ]
+}
+```
+
+- `in` is `body`, `query`, `params`, or `json` for a body that is not valid JSON
+- A request without a body is validated as `undefined`: a body schema that is
+  `.optional()` accepts it, any other says what is missing
+- A body that is not JSON under a content type that is not JSON (a form post) is
+  a 415 with `in: "content-type"`. JSON under `text/plain`, which `fetch()`
+  sends for a string body when no header is set, is read
+- The OpenAPI spec declares this 400 (component `InvalidRequest`) for every
+  operation that has a `body`, `query` or `params` schema and does not declare a
+  400 of its own
+
+Limits: there is no schema for request headers or cookies (a handler reads them
+from the request), and a body is JSON or nothing (no form or multipart bodies).
 
 ### `sseEndpoint(def)`
 
@@ -1007,7 +1040,8 @@ Methods:
 - `update(id, body, options?)` - PATCH resource, or PUT when the route has no
   PATCH
 - `replace(id, body, options?)` - PUT resource, when the route has both
-- `delete(id, options?)` - DELETE resource
+- `delete(id, options?)` - DELETE resource; `delete(id, body, options?)` when
+  the endpoint declares a body (needs the generated route table)
 - `subscribe(id?, options?)` - SSE subscription (returns AsyncIterable)
 
 The `id` argument exists when the route's path ends with a parameter. Options:

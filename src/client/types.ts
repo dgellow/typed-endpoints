@@ -358,12 +358,13 @@ export type UpdateMethod<M extends MethodDef> = M["body"] extends undefined
   ? Method<M, IdArg<M>, ParentParams<M>>
   : Method<M, [...IdArg<M>, body: M["body"]], ParentParams<M>>;
 
-/** Delete method - the id, if the path ends with a parameter */
-export type DeleteMethod<M extends MethodDef> = Method<
-  M,
-  IdArg<M>,
-  ParentParams<M>
->;
+/**
+ * Delete method - the id, if the path ends with a parameter, and the body
+ * if the endpoint declares one
+ */
+export type DeleteMethod<M extends MethodDef> = "body" extends keyof M
+  ? Method<M, [...IdArg<M>, body: M["body"]], ParentParams<M>>
+  : Method<M, IdArg<M>, ParentParams<M>>;
 
 // =============================================================================
 // SSE Types

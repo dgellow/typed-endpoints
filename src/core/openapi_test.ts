@@ -220,6 +220,7 @@ Deno.test("generateOpenApiSpec leaves out route files without typed handlers", a
   assertEquals(Object.keys(spec.paths ?? {}).sort(), [
     "/api/reports",
     "/api/reports/{id}",
+    "/api/reports/{id}/tags",
   ]);
 });
 
@@ -278,6 +279,7 @@ Deno.test("generateOpenApiSpec registers named bodies and responses as component
   const create = spec.paths!["/api/reports"].post as any;
 
   assertEquals(Object.keys(spec.components?.schemas ?? {}).sort(), [
+    "InvalidRequest",
     "NewReport",
     "Report",
     "ValidationProblem",
@@ -307,7 +309,7 @@ Deno.test("generateOpenApiSpec registers named bodies and responses as component
   });
 });
 
-Deno.test("generateOpenApiSpec derives path parameters and omits a body outside POST, PUT, PATCH", async () => {
+Deno.test("generateOpenApiSpec derives path parameters and omits a body on GET", async () => {
   const spec = await generateOpenApiSpec({
     routesDir: DESCRIBED_DIR,
     strict: true,
@@ -346,4 +348,50 @@ Deno.test("generateOpenApiSpec can run twice over routes with named components",
   });
 
   assertEquals(second, first);
+});
+
+Deno.test("generateOpenApiSpec describes a body on DELETE and the 400 of a failed validation", async () => {
+  const spec = await generateOpenApiSpec({
+    routesDir: DESCRIBED_DIR,
+    strict: true,
+  });
+  // deno-lint-ignore no-explicit-any
+  const paths = spec.paths as any;
+  const invalid = { $ref: "#/components/schemas/InvalidRequest" };
+  // deno-lint-ignore no-explicit-any
+  const schemaOf = (response: any) =>
+    response.content["application/json"].schema;
+
+  // An operation that validates something answers 400 with the issues.
+  const create = paths["/api/reports"].post;
+  assertEquals(schemaOf(create.responses["400"]), invalid);
+  assertEquals(
+    create.responses["400"].description,
+    "The request failed validation",
+  );
+  assertEquals(
+    // deno-lint-ignore no-explicit-any
+    Object.keys((spec.components!.schemas!.InvalidRequest as any).properties),
+    ["error", "in", "issues"],
+  );
+
+  // A body declared on DELETE is described, as it is validated.
+  const untag = paths["/api/reports/{id}/tags"].delete;
+  assertEquals(
+    Object.keys(
+      untag.requestBody.content["application/json"].schema.properties,
+    ),
+    ["tags"],
+  );
+  // A 400 the operation declares itself is left as declared.
+  assertEquals(Object.keys(schemaOf(untag.responses["400"]).properties), [
+    "reason",
+  ]);
+
+  // An operation that validates nothing has no 400; a body on GET is not
+  // read, so it does not count.
+  const item = paths["/api/reports/{id}"];
+  assertEquals(Object.keys(item.delete.responses), ["200"]);
+  assertEquals(item.get.requestBody, undefined);
+  assertEquals(Object.keys(item.get.responses), ["200"]);
 });
