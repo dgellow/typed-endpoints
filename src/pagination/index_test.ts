@@ -1010,3 +1010,154 @@ Deno.test("page() stays out of a spread: endpoint() gets schemas and metadata on
   ]);
   assertEquals(typeof helper.page, "function");
 });
+
+// =============================================================================
+// Dot-notation field names, in every style
+// =============================================================================
+
+/** Each type is assignable to the other. */
+type Same<A, B> = [A] extends [B] ? [B] extends [A] ? true : false : false;
+function assertSame<_T extends true>(): void {}
+
+Deno.test("a dotted field name nests the response, in every style", async () => {
+  const Item = z.object({ id: z.string() });
+  type Item = { id: string };
+  const items = [{ id: "1" }];
+
+  // Fields that share a parent are merged under it.
+  const byCursor = cursor.paginated({
+    item: Item,
+    names: { items: "data.items", cursor: "data.next" },
+    extraResponse: { data: z.object({ took: z.number() }) },
+  });
+  assertSame<
+    Same<
+      z.infer<typeof byCursor.response>,
+      { data: { items: Item[]; next?: string; took: number } }
+    >
+  >();
+  assertEquals(Object.keys(byCursor.response.shape), ["data"]);
+  assertEquals(
+    byCursor.response.parse({ data: { items, next: "c", took: 3 } }),
+    { data: { items, next: "c", took: 3 } },
+  );
+  assertEquals(
+    byCursor.response.safeParse({ "data.items": items }).success,
+    false,
+  );
+
+  const byId = cursorId.paginated({
+    item: Item,
+    names: { items: "data.rows" },
+  });
+  assertSame<Same<z.infer<typeof byId.response>, { data: { rows: Item[] } }>>();
+  assertEquals(byId.response.parse({ data: { rows: items } }), {
+    data: { rows: items },
+  });
+
+  const byOffset = offset.paginated({
+    item: Item,
+    names: { items: "data.items", total: "meta.total" },
+  });
+  assertSame<
+    Same<
+      z.infer<typeof byOffset.response>,
+      { data: { items: Item[] }; meta: { total: number } }
+    >
+  >();
+  assertEquals(
+    byOffset.response.parse({ data: { items }, meta: { total: 1 } }),
+    { data: { items }, meta: { total: 1 } },
+  );
+
+  const byPage = page.paginated({
+    item: Item,
+    names: {
+      items: "results",
+      total: "meta.total",
+      totalPages: "meta.pages",
+    },
+  });
+  assertSame<
+    Same<
+      z.infer<typeof byPage.response>,
+      { results: Item[]; meta: { total: number; pages: number } }
+    >
+  >();
+  assertEquals(
+    byPage.response.parse({ results: items, meta: { total: 1, pages: 1 } }),
+    { results: items, meta: { total: 1, pages: 1 } },
+  );
+
+  const byUrl = url.paginated({
+    item: Item,
+    names: { items: "data", nextUrl: "links.next", prevUrl: "links.prev" },
+  });
+  assertSame<
+    Same<
+      z.infer<typeof byUrl.response>,
+      { data: Item[]; links: { next?: string; prev?: string } }
+    >
+  >();
+  // The URL style's response is an object schema like the others.
+  assertEquals(Object.keys(byUrl.response.shape), ["data", "links"]);
+
+  // What page() builds is what the schema accepts: before, the schema of
+  // the styles other than `url` had the literal key "data.items".
+  assertEquals(
+    byCursor.response.safeParse(
+      byCursor.page({ items, cursor: "c", extra: { data: { took: 3 } } }),
+    ).success,
+    true,
+  );
+  assertEquals(
+    byOffset.response.safeParse(byOffset.page({ items, total: 1 })).success,
+    true,
+  );
+  assertEquals(
+    byPage.response.safeParse(
+      byPage.page({ items, total: 1, totalPages: 1 }),
+    ).success,
+    true,
+  );
+  assertEquals(byId.response.safeParse(byId.page({ items })).success, true);
+
+  // Through a handler: the response is sent, not refused as a 500.
+  const { createApiHandlers, endpoint } = await import(
+    "../integrations/fetch.ts"
+  );
+  const { GET } = createApiHandlers({
+    GET: endpoint({
+      ...byOffset,
+      handler: () => byOffset.page({ items, total: 1 }),
+    }),
+  });
+  const response = await GET(new Request("http://x/items"));
+  assertEquals(response.status, 200);
+  assertEquals(await response.json(), {
+    data: { items },
+    meta: { total: 1 },
+  });
+});
+
+Deno.test("names without dots give the flat shapes they always did", () => {
+  const Item = z.object({ id: z.string() });
+  type Item = { id: string };
+
+  const flat = cursor.paginated({
+    item: Item,
+    names: { items: "data", cursor: "next" },
+    extraResponse: { took: z.number() },
+  });
+  assertSame<
+    Same<
+      z.infer<typeof flat.response>,
+      { data: Item[]; next?: string; took: number }
+    >
+  >();
+  assertEquals(Object.keys(flat.response.shape), ["data", "next", "took"]);
+
+  const defaults = page.paginated({ item: Item });
+  assertSame<Same<z.infer<typeof defaults.response>, { items: Item[] }>>();
+  assertEquals(Object.keys(defaults.response.shape), ["items"]);
+});

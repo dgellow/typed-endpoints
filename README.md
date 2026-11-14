@@ -614,9 +614,11 @@ Available pagination styles:
 Each style generates appropriate query params and response fields. Supports:
 
 - Custom field names (e.g., `items: "data"`, `cursor: "nextCursor"`)
-- Dot-notation for nested response structure, in `url.paginated()` only:
-  `nextUrl: "links.next"`
+- Dot-notation for nested response structure, in every style:
+  `items: "data.items"`, `total: "meta.total"`, `nextUrl: "links.next"`. Fields
+  that share a parent are merged under it, and so are `extraResponse` fields
 - Extra query/response fields via `extraQuery` and `extraResponse`
+- Page-size and position parameters are integers; a fraction is a 400
 
 Pagination metadata is included in:
 
