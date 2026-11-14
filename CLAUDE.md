@@ -9,7 +9,8 @@ Experimental does not mean sloppy.
 
 - **Runtime**: Deno (development, primary), Bun (supported, tested)
 - **Validation**: Zod v4
-- **Framework**: Fresh v2
+- **Frameworks**: Fresh v2, Bun.serve, Hono, Next.js, SvelteKit, Astro,
+  Nitro/h3, plain fetch handlers
 - **Package**: `@dgellow/typed-endpoints` on JSR
 
 ## Commands
@@ -23,7 +24,10 @@ permissions):
   and type-check (`deno check`)
 - `./scripts/format` — auto-format
 - `./scripts/test-bun` — run `e2e_tests/bun` under Bun, against the sources
-  installed as a package in a throwaway project (needs `bun`)
+  installed as a package in a throwaway project (needs `bun`). Runs the Hono and
+  h3 integrations inside the real frameworks
+- `./scripts/check-framework-types` — type-check the integrations against the
+  real Next.js, SvelteKit, Astro, Hono and h3 packages at pinned versions
 
 ## Project Structure
 
@@ -31,12 +35,14 @@ permissions):
 src/
 ├── core/           # Shared types, request validation, OpenAPI generation
 │   ├── routes.ts   # Route discovery, path conversion, operationId derivation
-│   ├── handlers.ts # buildHandlers(): validation + SSE for any framework's context
+│   ├── handlers.ts # buildHandlers(), defineIntegration(): validation + SSE for any framework
+│   ├── file_routes.ts # loadFileRoutes(), path formatting for routers
+│   ├── module_api.ts # readModuleApi(): handler object, per-method exports, default export
 │   ├── runtime.ts  # The only place that knows the runtime (Deno subprocess for import maps)
 │   ├── zod_internals.ts # The only reader of schema._zod (def, type, unwrap, optionality)
 │   ├── dependent.ts # projection(), expansion(): response type depends on the request
 │   └── dependent_types.ts # Type-level functions (ResponseFamily, Apply, Resolve); no imports
-├── integrations/   # Framework integrations (Fresh v2, Bun.serve, Vite build-time)
+├── integrations/   # fresh, bun, hono, next, sveltekit, astro, nitro, fetch; vite (build-time)
 ├── client/         # Typed HTTP client
 │   └── sse.ts      # Incremental text/event-stream parser
 ├── protocol/       # Multi-step protocol DSL (experimental)
@@ -60,6 +66,7 @@ src/
 └── mod.ts          # Main module exports
 e2e_tests/          # End-to-end tests (protocol flows, Fresh server, CLI, Vite)
 e2e_tests/bun/      # Tests run by Bun (`bun:test`); excluded from Deno's tools
+e2e_tests/framework-types/ # Compile-only check against the frameworks' types
 ```
 
 ## Testing
@@ -85,6 +92,17 @@ e2e_tests/bun/      # Tests run by Bun (`bun:test`); excluded from Deno's tools
   `node:child_process` and `fs.access`: they need `--allow-env` and
   `--allow-sys`
 - A framework integration is a thin wrapper around `core/handlers.ts`
+  (`defineIntegration()`). It describes the framework's handler argument by the
+  members it reads (no dependency on the framework) and offers a `with…<T>()`
+  factory for the framework's real type
+- Route modules expose definitions in one of three shapes
+  (`core/module_api.ts`): a `handler` object with `__apiDef`, per-method exports
+  carrying `__methodDef`, or a default export whose method is in the file name
+- Route file layouts are `RouteConvention`s (`core/routes.ts`); generators take
+  `convention`. A new integration needs: tests with the documented handler
+  arguments, a fixture in the framework's layout, an entry in
+  `e2e_tests/framework-types/check.ts`, and a real run if the framework is light
+  enough to install in `scripts/test-bun`
 - Protocol module: `dependentStep()` for dynamic schemas, `mappedStep()` for
   static literal forwarding
 - A dependent step names its dependency by reference (`dependsOn: stepObject`)
