@@ -26,6 +26,7 @@ export {
   select,
 } from "./core/dependent.ts";
 export type {
+  AllOf,
   Apply,
   CertainNames,
   Dependent,
@@ -37,10 +38,43 @@ export type {
   Projection,
   QueryList,
   ReadonlyDeep,
+  Requires,
+  RequiresIn,
   Resolve,
   ResolveIn,
   ResponseFamily,
 } from "./core/dependent_types.ts";
+
+// Selections written as one string: ?select=id,author(name)
+export {
+  applySelection,
+  parseSelect,
+  selection,
+  selectionIssues,
+  type SelectionSchema,
+  selectOf,
+  SelectSyntaxError,
+} from "./core/selection.ts";
+export type {
+  ChildrenOf,
+  ParseItem,
+  ParseItems,
+  ParseSelect,
+  PartialDeep,
+  QueryText,
+  SelectableIn,
+  SelectDelimiter,
+  Selected,
+  SelectedBy,
+  SelectError,
+  Selection,
+  SelectIssues,
+  SelectNode,
+  SelectProblem,
+  SelectRequirement,
+  TakeName,
+  TrimSpaces,
+} from "./core/selection_types.ts";
 
 // Values from schemas
 export {

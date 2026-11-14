@@ -36,6 +36,7 @@ import {
   type Expansion,
   type Projection,
 } from "./dependent_types.ts";
+import { applySelection, parseSelect } from "./selection.ts";
 import { unwrapSchema, zodDef } from "./zod_internals.ts";
 
 function carry<T extends z.ZodType>(
@@ -191,9 +192,10 @@ function namesIn(query: unknown, param: string): readonly string[] | undefined {
 /**
  * Apply the request-dependent rules in a response schema to a value.
  *
- * Wherever `schema` has a `projection()` or `expansion()` place, the
- * corresponding part of `value` is cut down to what the request asked for:
- * the listed properties, or the base object with the listed relations.
+ * Wherever `schema` has a `projection()`, `expansion()` or `selection()`
+ * place, the corresponding part of `value` is cut down to what the request
+ * asked for: the listed properties, the base object with the listed
+ * relations, or the properties a select string names.
  * The result is what the client's computed response type describes, so a
  * handler that returns the complete object cannot contradict it.
  *
@@ -213,6 +215,15 @@ export function applyDependentResponse(
   if (value === null || typeof value !== "object") return value;
 
   const dependent = dependentDescriptor(schema);
+  if (dependent?.kind === "selection") {
+    const text = typeof query === "object" && query !== null
+      ? (query as Record<string, unknown>)[dependent.param]
+      : undefined;
+    // The query schema (`selectOf()`) has validated the string.
+    return typeof text === "string"
+      ? applySelection(value, parseSelect(text))
+      : value;
+  }
   if (dependent) {
     const names = namesIn(query, dependent.param);
     const object = value as Record<string, unknown>;

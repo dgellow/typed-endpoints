@@ -234,6 +234,9 @@ function convertDependent(
   if (dependent.kind === "projection") {
     state.declarations.helpers.add("Projection");
     family = `Projection<${base}, ${param}>`;
+  } else if (dependent.kind === "selection") {
+    state.declarations.helpers.add("Selection");
+    family = `Selection<${base}, ${param}>`;
   } else {
     state.declarations.helpers.add("Expansion");
     const relations = Object.entries(dependent.relations ?? {}).map(
