@@ -47,6 +47,17 @@ class Answers(unittest.TestCase):
         # the response.
         self.assertIsInstance(raised.exception, api.ApiError)
 
+    def test_a_member_the_client_does_not_know_is_ignored(self) -> None:
+        # A server that is ahead of the client: the response has a member
+        # the client's model does not name.
+        ahead = client(200, b'{"path": "a", "segments": ["a"], "added": 1}')
+        echoed = ahead.echo_retrieve("a")
+        self.assertEqual(echoed.model_dump(), {"path": "a", "segments": ["a"]})
+        # A member it does know and that is something else is still refused.
+        wrong = client(200, b'{"path": "a", "segments": "a"}')
+        with self.assertRaises(api.ResponseError):
+            wrong.echo_retrieve("a")
+
     def test_items_of_something_that_is_not_a_page(self) -> None:
         wrong = client(200, b"[1, 2]")
         with self.assertRaises(api.ResponseError):
