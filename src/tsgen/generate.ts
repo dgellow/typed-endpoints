@@ -1,24 +1,21 @@
 import { toFileUrl } from "@std/path";
-import type { HttpMethod } from "@/core/types.ts";
 import type { AnyPaginationMeta } from "@/pagination/types.ts";
-import { collectRouteFiles } from "./files.ts";
-import { filePathToApiPath, pathToTypeName } from "./path.ts";
+import {
+  apiPathToTemplate,
+  collectRouteFiles,
+  deriveOperationId,
+  filePathToApiPath,
+  HTTP_METHODS,
+  httpMethodToResourceMethod,
+  pathToResourceSegments,
+} from "@/core/routes.ts";
+import { pathToTypeName } from "./path.ts";
 import {
   type ExtractedMethod,
   type Extraction,
   extractRoutes,
   type RouteSource,
 } from "./extract.ts";
-
-const HTTP_METHODS: HttpMethod[] = [
-  "GET",
-  "POST",
-  "PUT",
-  "DELETE",
-  "PATCH",
-  "HEAD",
-  "OPTIONS",
-];
 
 export interface TypeGenOptions {
   /** Directories containing route files. Defaults to ["routes/api"] */
@@ -316,60 +313,6 @@ function generateTypesFormat(
 // "routes" format
 // =============================================================================
 
-/** Whether the last path segment is a parameter, e.g. `/users/[id]`. */
-function endsWithParam(path: string): boolean {
-  const last = path.split("/").filter(Boolean).at(-1) ?? "";
-  return last.startsWith("[") || last.startsWith(":");
-}
-
-/**
- * Convert HTTP method + path pattern to resource method name.
- * - GET /users -> list
- * - GET /users/:id -> retrieve
- * - GET /users/:id/posts -> list
- * - POST /users -> create
- * - PUT/PATCH /users/:id -> update
- * - DELETE /users/:id -> delete
- */
-function httpMethodToResourceMethod(method: string, path: string): string {
-  switch (method) {
-    case "GET":
-      return endsWithParam(path) ? "retrieve" : "list";
-    case "POST":
-      return "create";
-    case "PUT":
-    case "PATCH":
-      return "update";
-    case "DELETE":
-      return "delete";
-    default:
-      return method.toLowerCase();
-  }
-}
-
-/**
- * Convert a path like /api/users/[id]/posts to resource segments.
- * Returns: ["users", "posts"] (strips /api prefix and param segments)
- */
-function pathToResourceSegments(path: string): string[] {
-  return path
-    .replace(/^\/api\//, "") // Remove /api/ prefix
-    .split("/")
-    .filter((seg) => seg && !seg.startsWith("[") && !seg.startsWith(":"));
-}
-
-/**
- * Derive an operationId from path and method.
- * E.g., POST /api/auth/login -> authLoginCreate
- * E.g., GET /api/users/[id] -> usersRetrieve
- */
-function deriveOperationId(path: string, method: string): string {
-  const baseName = pathToResourceSegments(path)
-    .map((seg, i) => (i === 0 ? seg : capitalize(seg)))
-    .join("");
-  return baseName + capitalize(httpMethodToResourceMethod(method, path));
-}
-
 /**
  * Generate runtime route metadata for use with createHttpExecutor().
  *
@@ -408,7 +351,7 @@ function generateRoutesFormat(endpoints: EndpointType[]): string {
 
   for (const [id, endpoint] of ids) {
     // Convert Fresh-style [param] to {param} for HTTP executor
-    const httpPath = endpoint.path.replace(/\[(\w+)\]/g, "{$1}");
+    const httpPath = apiPathToTemplate(endpoint.path);
     const key = isIdentifier(id) ? id : JSON.stringify(id);
 
     lines.push(

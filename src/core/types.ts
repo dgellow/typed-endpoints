@@ -96,6 +96,8 @@ export interface SseMethodDef<
   summary?: string;
   description?: string;
   tags?: string[];
+  /** Operation ID for protocol step mapping and route generation */
+  operationId?: string;
 }
 
 /** Typed SSE event for handlers - discriminated union of all event types */
