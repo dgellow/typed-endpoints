@@ -13,21 +13,13 @@ import type { ZodType } from "zod";
 import type { Protocol } from "./types.ts";
 import { isFieldMapping } from "./mapping.ts";
 import { topologicalSort } from "./dsl.ts";
-import { TypeDeclarations, zodToTypeString } from "../tsgen/zod.ts";
-
-// =============================================================================
-// Zod Internals (same pattern as src/tsgen/zod.ts)
-// =============================================================================
-
-function getDef(schema: unknown): Record<string, unknown> {
-  const s = schema as Record<string, unknown>;
-  const zod = s._zod as Record<string, unknown> | undefined;
-  return (zod?.def ?? s._def ?? {}) as Record<string, unknown>;
-}
-
-function getTypeName(def: Record<string, unknown>): string {
-  return (def.type ?? def.typeName ?? "unknown") as string;
-}
+import { isOptionalField, zodDef, zodType } from "../core/zod_internals.ts";
+import {
+  isIdentifier,
+  propertyKey,
+  TypeDeclarations,
+  zodToTypeString,
+} from "../tsgen/zod.ts";
 
 // =============================================================================
 // Helpers
@@ -36,8 +28,36 @@ function getTypeName(def: Record<string, unknown>): string {
 /** Converts a schema to type text, collecting named (recursive) types. */
 type ToType = (schema: unknown) => string;
 
-function toPascalCase(name: string): string {
-  return name.charAt(0).toUpperCase() + name.slice(1);
+/**
+ * The prefix of the type names generated for a step.
+ *
+ * A step name that is an identifier keeps its spelling with the first letter
+ * upper-cased (`exchange_code` -> `Exchange_code`). Any other name is split
+ * at the characters an identifier cannot hold and joined in PascalCase
+ * (`get-token` -> `GetToken`, `2fa` -> `_2fa`).
+ */
+export function stepTypeName(stepName: string): string {
+  if (isIdentifier(stepName)) {
+    return stepName.charAt(0).toUpperCase() + stepName.slice(1);
+  }
+  const joined = stepName
+    .split(/[^A-Za-z0-9_$]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join("");
+  if (joined === "") {
+    throw new Error(
+      `Cannot derive a type name from step name ${JSON.stringify(stepName)}`,
+    );
+  }
+  return /^[0-9]/.test(joined) ? `_${joined}` : joined;
+}
+
+/** A `StepOutput` brand for a value produced by `step` at `path`. */
+function brand(baseType: string, step: string, path: string): string {
+  return `StepOutput<${baseType}, ${JSON.stringify(step)}, ${
+    JSON.stringify(path)
+  }>`;
 }
 
 function hasDescendantBrand(
@@ -87,33 +107,31 @@ function generateBrandedObject(
   prefix: string,
   toType: ToType,
 ): string {
-  const def = getDef(schema);
-  const shape = def.shape as Record<string, unknown>;
+  const shape = zodDef(schema).shape as Record<string, unknown>;
   const entries = Object.entries(shape);
 
   if (entries.length === 0) return "{}";
 
   const props = entries.map(([key, fieldSchema]) => {
     const fullPath = prefix ? `${prefix}.${key}` : key;
-    const fieldDef = getDef(fieldSchema);
-    const fieldType = getTypeName(fieldDef);
-    const isOptional = fieldType === "optional";
-    const optionalMark = isOptional ? "?" : "";
-    const innerSchema = isOptional ? fieldDef.innerType : fieldSchema;
-    const innerDef = isOptional ? getDef(innerSchema) : fieldDef;
-    const innerType = isOptional ? getTypeName(innerDef) : fieldType;
+    // `.optional()` is peeled off so the brand applies to the value type.
+    const isOptionalWrapper = zodType(fieldSchema) === "optional";
+    const innerSchema = isOptionalWrapper
+      ? zodDef(fieldSchema).innerType
+      : fieldSchema;
+    const name = `${propertyKey(key)}${
+      isOptionalField(fieldSchema, "output") ? "?" : ""
+    }`;
+    const orUndefined = isOptionalWrapper ? " | undefined" : "";
 
     if (brandedPaths.has(fullPath)) {
-      const baseType = toType(innerSchema);
-      const branded = `StepOutput<${baseType}, "${stepName}", "${fullPath}">`;
-      if (isOptional) {
-        return `${key}${optionalMark}: ${branded} | undefined`;
-      }
-      return `${key}: ${branded}`;
+      return `${name}: ${
+        brand(toType(innerSchema), stepName, fullPath)
+      }${orUndefined}`;
     }
 
     if (
-      innerType === "object" &&
+      zodType(innerSchema) === "object" &&
       hasDescendantBrand(fullPath, brandedPaths)
     ) {
       const nested = generateBrandedObject(
@@ -123,14 +141,10 @@ function generateBrandedObject(
         fullPath,
         toType,
       );
-      if (isOptional) {
-        return `${key}${optionalMark}: ${nested} | undefined`;
-      }
-      return `${key}: ${nested}`;
+      return `${name}: ${nested}${orUndefined}`;
     }
 
-    const typeStr = toType(fieldSchema);
-    return `${key}${optionalMark}: ${typeStr}`;
+    return `${name}: ${toType(fieldSchema)}`;
   });
 
   return `{ ${props.join("; ")}; }`;
@@ -142,18 +156,15 @@ function generateResponseType(
   brandedPaths: Set<string>,
   toType: ToType,
 ): string {
-  const def = getDef(schema);
-  const typeName = getTypeName(def);
+  const typeName = zodType(schema);
 
   if (typeName === "union") {
-    const options = def.options as unknown[];
-    const variants = options.map((opt) => {
-      const optDef = getDef(opt);
-      if (getTypeName(optDef) === "object") {
-        return generateBrandedObject(opt, stepName, brandedPaths, "", toType);
-      }
-      return toType(opt);
-    });
+    const options = zodDef(schema).options as unknown[];
+    const variants = options.map((opt) =>
+      zodType(opt) === "object"
+        ? generateBrandedObject(opt, stepName, brandedPaths, "", toType)
+        : toType(opt)
+    );
     return variants.join("\n  | ");
   }
 
@@ -169,32 +180,28 @@ function generateMappedRequestType(
   requestMapping: Record<string, unknown>,
   toType: ToType,
 ): string {
-  const def = getDef(requestSchema);
-  const shape = def.shape as Record<string, unknown>;
+  const shape = zodDef(requestSchema).shape as Record<string, unknown>;
   const entries = Object.entries(shape);
 
   if (entries.length === 0) return "{}";
 
   const props = entries.map(([key, fieldSchema]) => {
-    const fieldDef = getDef(fieldSchema);
-    const fieldType = getTypeName(fieldDef);
-    const isOptional = fieldType === "optional";
-    const optionalMark = isOptional ? "?" : "";
+    const name = `${propertyKey(key)}${
+      isOptionalField(fieldSchema, "input") ? "?" : ""
+    }`;
 
     const mapping = requestMapping[key];
     if (isFieldMapping(mapping)) {
-      const innerSchema = isOptional ? fieldDef.innerType : fieldSchema;
-      const baseType = toType(innerSchema);
-      const branded =
-        `StepOutput<${baseType}, "${mapping.step}", "${mapping.path}">`;
-      if (isOptional) {
-        return `${key}${optionalMark}: ${branded} | undefined`;
-      }
-      return `${key}: ${branded}`;
+      const isOptionalWrapper = zodType(fieldSchema) === "optional";
+      const innerSchema = isOptionalWrapper
+        ? zodDef(fieldSchema).innerType
+        : fieldSchema;
+      return `${name}: ${
+        brand(toType(innerSchema), mapping.step, mapping.path)
+      }${isOptionalWrapper ? " | undefined" : ""}`;
     }
 
-    const typeStr = toType(fieldSchema);
-    return `${key}${optionalMark}: ${typeStr}`;
+    return `${name}: ${toType(fieldSchema)}`;
   });
 
   return `{ ${props.join("; ")}; }`;
@@ -218,8 +225,13 @@ export function generateProtocolTypes(proto: Protocol<string, any>): string {
   const sortedSteps = topologicalSort(proto as any);
 
   const declarations = new TypeDeclarations();
-  const toType: ToType = (schema) =>
-    zodToTypeString(schema as ZodType, { declarations });
+  // A request is what the caller passes (input side); a response is what the
+  // session hands back after parsing (output side).
+  const toRequestType: ToType = (schema) =>
+    zodToTypeString(schema as ZodType, { io: "input", declarations });
+  const toResponseType: ToType = (schema) =>
+    zodToTypeString(schema as ZodType, { io: "output", declarations });
+  const typeNames = new Map<string, string>();
 
   const lines: string[] = [];
 
@@ -245,17 +257,26 @@ export function generateProtocolTypes(proto: Protocol<string, any>): string {
       continue;
     }
 
-    const pascal = toPascalCase(stepName);
+    const pascal = stepTypeName(stepName);
+    const taken = typeNames.get(pascal);
+    if (taken !== undefined) {
+      throw new Error(
+        `Steps ${JSON.stringify(taken)} and ${
+          JSON.stringify(stepName)
+        } generate the same type names (${pascal}Request, ${pascal}Response). Rename one of them.`,
+      );
+    }
+    typeNames.set(pascal, stepName);
     lines.push(`// Step: ${stepName}`);
 
     if (kind === "step") {
-      const reqType = toType(step.request);
+      const reqType = toRequestType(step.request);
       lines.push(`export type ${pascal}Request = ${reqType};`);
     } else if (kind === "mapped_step") {
       const reqType = generateMappedRequestType(
         step.requestSchema,
         step.requestMapping as Record<string, unknown>,
-        toType,
+        toRequestType,
       );
       lines.push(`export type ${pascal}Request = ${reqType};`);
     }
@@ -265,7 +286,7 @@ export function generateProtocolTypes(proto: Protocol<string, any>): string {
       step.response,
       stepName,
       brands,
-      toType,
+      toResponseType,
     );
     lines.push(`export type ${pascal}Response = ${resType};`);
 
