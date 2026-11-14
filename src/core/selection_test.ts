@@ -188,6 +188,18 @@ Deno.test("select: types and runtime find the same problems in a selection", () 
   assertEquals(selectionIssues(Post, parseSelect("*,comments(*)")), []);
   // A string that is not a literal: nothing can be said at compile time.
   assertType<Equal<SelectProblem<Post, string>, never>>();
+
+  // A union of literals is checked member by member.
+  assertType<
+    Equal<SelectProblem<Post, "id" | "title,author(name)">, never>
+  >();
+  assertType<
+    Equal<
+      SelectProblem<Post, "id" | "nope" | "author(">,
+      | SelectError<'"nope" is not a field'>
+      | SelectError<'expected a field name at ""'>
+    >
+  >();
 });
 
 Deno.test("select: the selected type is what the selected value has", () => {
