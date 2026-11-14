@@ -7,7 +7,7 @@ Experimental does not mean sloppy.
 
 ## Tech
 
-- **Runtime**: Deno
+- **Runtime**: Deno (development, primary), Bun (supported, tested)
 - **Validation**: Zod v4
 - **Framework**: Fresh v2
 - **Package**: `@dgellow/typed-endpoints` on JSR
@@ -22,6 +22,8 @@ permissions):
 - `./scripts/lint` — check formatting (`deno fmt --check`), lint (`deno lint`),
   and type-check (`deno check`)
 - `./scripts/format` — auto-format
+- `./scripts/test-bun` — run `e2e_tests/bun` under Bun, against the sources
+  installed as a package in a throwaway project (needs `bun`)
 
 ## Project Structure
 
@@ -29,10 +31,12 @@ permissions):
 src/
 ├── core/           # Shared types, request validation, OpenAPI generation
 │   ├── routes.ts   # Route discovery, path conversion, operationId derivation
+│   ├── handlers.ts # buildHandlers(): validation + SSE for any framework's context
+│   ├── runtime.ts  # The only place that knows the runtime (Deno subprocess for import maps)
 │   ├── zod_internals.ts # The only reader of schema._zod (def, type, unwrap, optionality)
 │   ├── dependent.ts # projection(), expansion(): response type depends on the request
 │   └── dependent_types.ts # Type-level functions (ResponseFamily, Apply, Resolve); no imports
-├── integrations/   # Framework integrations (Fresh v2 runtime, Vite build-time)
+├── integrations/   # Framework integrations (Fresh v2, Bun.serve, Vite build-time)
 ├── client/         # Typed HTTP client
 │   └── sse.ts      # Incremental text/event-stream parser
 ├── protocol/       # Multi-step protocol DSL (experimental)
@@ -55,6 +59,7 @@ src/
 ├── cli.ts          # CLI entry point
 └── mod.ts          # Main module exports
 e2e_tests/          # End-to-end tests (protocol flows, Fresh server, CLI, Vite)
+e2e_tests/bun/      # Tests run by Bun (`bun:test`); excluded from Deno's tools
 ```
 
 ## Testing
@@ -74,6 +79,12 @@ e2e_tests/          # End-to-end tests (protocol flows, Fresh server, CLI, Vite)
 - `// deno-lint-ignore no-explicit-any` where variance compatibility requires it
 - Schema introspection goes through `src/core/zod_internals.ts`; no other file
   reads `schema._zod`
+- Published sources run on Deno and Bun: file access through `node:` modules,
+  the `Deno` API only in `src/core/runtime.ts`, imports by relative path (no
+  `@/` alias, no `@std/`). `src/portability_test.ts` enforces it. On Deno, avoid
+  `node:child_process` and `fs.access`: they need `--allow-env` and
+  `--allow-sys`
+- A framework integration is a thin wrapper around `core/handlers.ts`
 - Protocol module: `dependentStep()` for dynamic schemas, `mappedStep()` for
   static literal forwarding
 - A dependent step names its dependency by reference (`dependsOn: stepObject`)
