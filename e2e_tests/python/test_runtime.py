@@ -92,5 +92,42 @@ class Respond(unittest.TestCase):
         self.assertEqual(respond({"any": 1}, response=None), (200, {"any": 1}))
 
 
+class Description(unittest.TestCase):
+    """What FastAPI's own OpenAPI document says about the application."""
+
+    def setUp(self) -> None:
+        import app
+
+        self.paths: dict[str, Any] = app.app.openapi()["paths"]
+
+    def schema(self, path: str, method: str, status: str) -> Any:
+        response = self.paths[path][method]["responses"][status]
+        return response["content"]["application/json"]["schema"]
+
+    def test_an_operation_lists_what_it_answers(self) -> None:
+        retrieve = self.paths["/api/notes/{id}"]["get"]["responses"]
+        # The success, the 400 of a failed validation, the declared error;
+        # not the 422 FastAPI would send by itself, which is never sent.
+        self.assertEqual(sorted(retrieve), ["200", "400", "404"])
+        self.assertEqual(
+            self.schema("/api/notes/{id}", "get", "404"),
+            {"$ref": "#/components/schemas/NotFound"},
+        )
+        self.assertEqual(
+            self.schema("/api/notes/{id}", "get", "400"),
+            {"$ref": "#/components/schemas/InvalidRequest"},
+        )
+        self.assertIn("$ref", self.schema("/api/notes/{id}", "get", "200"))
+        self.assertEqual(
+            sorted(self.paths["/api/notes"]["post"]["responses"]),
+            ["200", "400", "409"],
+        )
+
+    def test_no_operation_documents_a_422(self) -> None:
+        for path in self.paths.values():
+            for operation in path.values():
+                self.assertNotIn("422", operation["responses"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -31,6 +31,24 @@ class Fail(Generic[StatusT, BodyT]):
     body: BodyT
 
 
+class InvalidRequestIssue(BaseModel):
+    """One thing a request got wrong."""
+
+    path: list[str | int]
+    message: str
+    code: str
+
+
+class InvalidRequest(BaseModel):
+    """The body of the 400 that answers a request that fails validation."""
+
+    error: str
+    part: Literal["body", "query", "params", "json"] = Field(
+        validation_alias="in", serialization_alias="in"
+    )
+    issues: list[InvalidRequestIssue]
+
+
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 
@@ -290,6 +308,7 @@ def create_router(handlers: Handlers) -> APIRouter:
     @router.get(
         "/api/echo/{path:path}",
         operation_id="echoRetrieve", response_model=None,
+        responses={200: {"model": EchoRetrieveResponse}, 400: {"model": InvalidRequest}},
     )
     async def echo_retrieve(path: str) -> Response:
         params = _parse(EchoRetrieveParams, {"path": path}, "path")
@@ -303,6 +322,7 @@ def create_router(handlers: Handlers) -> APIRouter:
     @router.get(
         "/api/notes",
         operation_id="notesList", response_model=None,
+        responses={200: {"model": NotesListResponse}, 400: {"model": InvalidRequest}},
     )
     async def notes_list(query: Annotated[NotesListQuery, Query()]) -> Response:
         return await _respond(
@@ -315,6 +335,7 @@ def create_router(handlers: Handlers) -> APIRouter:
     @router.post(
         "/api/notes",
         operation_id="notesCreate", response_model=None,
+        responses={200: {"model": NotesCreateResponse}, 400: {"model": InvalidRequest}, 409: {"model": NotesCreateError409}},
     )
     async def notes_create(body: Annotated[NotesCreateBody, Body()]) -> Response:
         return await _respond(
@@ -327,6 +348,7 @@ def create_router(handlers: Handlers) -> APIRouter:
     @router.delete(
         "/api/notes/{id}",
         operation_id="notesDelete", response_model=None,
+        responses={200: {"model": NotesDeleteResponse}, 400: {"model": InvalidRequest}, 404: {"model": NotFound}},
     )
     async def notes_delete(id: str, body: Annotated[NotesDeleteBody, Body()]) -> Response:
         params = _parse(NotesDeleteParams, {"id": id}, "path")
@@ -340,6 +362,7 @@ def create_router(handlers: Handlers) -> APIRouter:
     @router.get(
         "/api/notes/{id}",
         operation_id="notesRetrieve", response_model=None,
+        responses={200: {"model": NotesRetrieveResponse}, 400: {"model": InvalidRequest}, 404: {"model": NotFound}},
     )
     async def notes_retrieve(id: str) -> Response:
         params = _parse(NotesRetrieveParams, {"id": id}, "path")
@@ -353,6 +376,7 @@ def create_router(handlers: Handlers) -> APIRouter:
     @router.put(
         "/api/notes/{id}",
         operation_id="notesUpdate", response_model=None,
+        responses={200: {"model": NotesUpdateResponse}, 400: {"model": InvalidRequest}},
     )
     async def notes_update(id: str, body: Annotated[NotesUpdateBody, Body()]) -> Response:
         params = _parse(NotesUpdateParams, {"id": id}, "path")
@@ -366,6 +390,7 @@ def create_router(handlers: Handlers) -> APIRouter:
     @router.post(
         "/api/shapes",
         operation_id="shapesCreate", response_model=None,
+        responses={200: {"model": ShapesCreateResponse}, 400: {"model": InvalidRequest}},
     )
     async def shapes_create(body: Annotated[ShapesCreateBody, Body()]) -> Response:
         return await _respond(
@@ -378,6 +403,7 @@ def create_router(handlers: Handlers) -> APIRouter:
     @router.post(
         "/api/trees",
         operation_id="treesCreate", response_model=None,
+        responses={200: {"model": TreesCreateResponse}, 400: {"model": InvalidRequest}},
     )
     async def trees_create(body: Annotated[TreesCreateBody, Body()]) -> Response:
         return await _respond(
@@ -513,6 +539,22 @@ def install_error_handlers(app: FastAPI) -> None:
         return _invalid_request(list(error.errors()))
 
     app.add_exception_handler(RequestValidationError, invalid_request)
+
+    # The description FastAPI gives of the application says the same: no
+    # operation answers the 422 FastAPI would send by itself.
+    describe = app.openapi
+
+    def openapi() -> dict[str, Any]:
+        schema = describe()
+        for path in schema.get("paths", {}).values():
+            for operation in path.values():
+                if isinstance(operation, dict):
+                    responses = cast("dict[str, Any]", operation).get("responses")
+                    if isinstance(responses, dict):
+                        cast("dict[str, Any]", responses).pop("422", None)
+        return schema
+
+    setattr(app, "openapi", openapi)
 
 
 def create_app(handlers: Handlers) -> FastAPI:

@@ -1021,6 +1021,11 @@ What is kept the same on both sides:
 | A field name Python cannot use (`from`, `data-id`)  | as written                                             | a Python attribute (`from_`) with the wire name as alias |
 | The same object in two operations                   | one type                                               | one class, with a name per operation                     |
 
+The description FastAPI serves of the application (`/openapi.json`, `/docs`)
+says what the application answers: for each operation the response model, the
+declared errors and the 400 of a failed validation, and not the 422 that FastAPI
+would send by itself.
+
 What differs, and what does not cross:
 
 - The message and the code of a validation issue are Pydantic's

@@ -57,6 +57,24 @@ class Fail(Generic[StatusT, BodyT]):
 
     status: StatusT
     body: BodyT
+
+
+class InvalidRequestIssue(BaseModel):
+    """One thing a request got wrong."""
+
+    path: list[str | int]
+    message: str
+    code: str
+
+
+class InvalidRequest(BaseModel):
+    """The body of the 400 that answers a request that fails validation."""
+
+    error: str
+    part: Literal["body", "query", "params", "json"] = Field(
+        validation_alias="in", serialization_alias="in"
+    )
+    issues: list[InvalidRequestIssue]
 `.trimStart();
 
 /** Fixed part of the module: what runs around every handler. */
@@ -184,6 +202,22 @@ def install_error_handlers(app: FastAPI) -> None:
         return _invalid_request(list(error.errors()))
 
     app.add_exception_handler(RequestValidationError, invalid_request)
+
+    # The description FastAPI gives of the application says the same: no
+    # operation answers the 422 FastAPI would send by itself.
+    describe = app.openapi
+
+    def openapi() -> dict[str, Any]:
+        schema = describe()
+        for path in schema.get("paths", {}).values():
+            for operation in path.values():
+                if isinstance(operation, dict):
+                    responses = cast("dict[str, Any]", operation).get("responses")
+                    if isinstance(responses, dict):
+                        cast("dict[str, Any]", responses).pop("422", None)
+        return schema
+
+    setattr(app, "openapi", openapi)
 
 
 def create_app(handlers: Handlers) -> FastAPI:
@@ -412,6 +446,16 @@ function route(item: Rendered): string[] {
     passed.push("body=body");
   }
 
+  // What the operation answers, for the description FastAPI serves: the
+  // success, the declared errors, and the 400 of a failed validation.
+  const documented = [
+    ...(item.response ? [`200: {"model": ${item.response}}`] : []),
+    ...(taken.length > 0 ? ['400: {"model": InvalidRequest}'] : []),
+    ...[...item.errors].map(([status, type]) =>
+      `${status}: {"model": ${type}}`
+    ),
+  ];
+
   const tags = operation.tags && operation.tags.length > 0
     ? `, tags=${JSON.stringify(operation.tags)}`
     : "";
@@ -425,6 +469,7 @@ function route(item: Rendered): string[] {
     `        operation_id=${
       JSON.stringify(operation.operationId)
     }, response_model=None${summary}${tags},`,
+    `        responses={${documented.join(", ")}},`,
     "    )",
     `    async def ${item.method}(${taken.join(", ")}) -> Response:`,
     ...before,
