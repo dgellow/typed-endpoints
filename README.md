@@ -1019,7 +1019,7 @@ class Note(_ClosedJson):
 
     title: str = Field(min_length=1, max_length=40)
     tags: list[Annotated[str, Field(min_length=1)]] = Field(max_length=4)
-    pinned: bool | None = None
+    pinned: bool | None = Field(default=None, exclude_if=_is_none)
     id: str
     likes: SafeInt
 ```
@@ -1033,6 +1033,10 @@ class Note(_ClosedJson):
 - A long pattern (a UUID, a date-time) is a constant with a name
 - Every class has a docstring: the description of its schema, or the operations
   that use it and as what
+- `None` is how Python says that a member is left out, and a model does not
+  write it (`exclude_if`): a handler passes `pinned=body.pinned` and an absent
+  `pinned` stays absent. Only where null is a value of the member does `None`
+  mean null
 
 The handler of a server-sent event stream is an async generator of typed events:
 
@@ -1091,7 +1095,7 @@ What is kept the same on both sides:
 | What is a JSON body                                 | what parses, also as `text/plain`; else a 400 or a 415 | the same, and `NaN`, `Infinity` and `1e999` do not parse                                                                                                                            |
 | Query and path parameters                           | coerced from text where the schema says so             | read as JavaScript reads text (`0x10` is 16, blank is 0, `Infinity` is refused by that name); a key given twice is a list, and a list that has to be there is empty without its key |
 | Lengths, bounds, patterns, literals, closed objects | Zod                                                    | the contract's schema, checked by the module; the Pydantic fields state the same constraints                                                                                        |
-| An optional field that was not set                  | absent from the response                               | absent (`exclude_unset`), never `null`                                                                                                                                              |
+| A member that may be left out                       | `undefined`, absent from the response                  | `None`, which is not written. Where the member may also be null, `None` is `null` when it was set and absent when it was not                                                        |
 | What a handler returns or yields                    | parsed by the schema before it is sent                 | validated again as plain data, also when it is a model instance: Pydantic trusts an instance, and one built with `model_construct()` or changed afterwards may not fit its model    |
 | A request that fails validation                     | 400 `{ error, in, issues: [{ path, message, code }] }` | the same answer, word for word: the 27 recorded refusals                                                                                                                            |
 | A field name that is not a Python attribute name    | as written (`from`, `data-id`, `createdAt`)            | a snake-case attribute (`from_`, `data_id`, `created_at`) with the wire name as alias; a request is read by wire names only                                                         |
@@ -1128,8 +1132,10 @@ What differs, and what does not cross:
   ASCII, and `$` is the end of the text (Python's `$` is also before a last line
   break). An independent review found that the generated module accepted
   `"123\n"` for `/^\d+$/`; the suite has the case now, for every server
-- The modules need Python 3.12: generic classes and `type` statements are
-  written as that version writes them
+- The modules need Python 3.12 (generic classes and `type` statements are
+  written as that version writes them) and Pydantic 2.12. Measured: Pydantic
+  2.11 accepts `exclude_if` and ignores it, so `None` is written as null, and
+  2.10 cannot read a request by wire names only
 - A response is still validated by its Pydantic model, not against the contract,
   and a model is written per side of a schema
 - Not generated yet: request-dependent responses (`projection()`,

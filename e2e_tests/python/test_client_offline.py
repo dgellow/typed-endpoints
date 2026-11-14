@@ -4,6 +4,7 @@
 answers come from something else: a proxy, a framework's own error page.
 """
 
+import json
 import unittest
 
 import httpx
@@ -80,6 +81,34 @@ class Paths(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(api.PathError):
                 self.client.echo_retrieve(value)
         self.assertEqual(self.requested, [])
+
+
+class Bodies(unittest.TestCase):
+    def setUp(self) -> None:
+        self.sent: list[object] = []
+
+        def record(request: httpx.Request) -> httpx.Response:
+            self.sent.append(json.loads(request.content))
+            # Not what the operation answers: the test is about the request.
+            return httpx.Response(500)
+
+        self.client = api.Client(
+            "http://api", http=httpx.Client(transport=httpx.MockTransport(record))
+        )
+
+    def test_none_is_a_member_left_out_unless_null_is_a_value_of_it(self) -> None:
+        # `pinned` may be left out and is never null: None is not sent.
+        with self.assertRaises(api.ApiError):
+            self.client.notes_create(
+                api.NotesCreateBody(title="t", tags=[], pinned=None)
+            )
+        # `maybe` may be left out or be null: None is sent as null when it
+        # was set, and not at all when it was not.
+        with self.assertRaises(api.ApiError):
+            self.client.edges_create(api.EdgesCreateBody(maybe=None, flag=None))
+        with self.assertRaises(api.ApiError):
+            self.client.edges_create(api.EdgesCreateBody())
+        self.assertEqual(self.sent, [{"title": "t", "tags": []}, {"maybe": None}, {}])
 
 
 class Lifecycle(unittest.TestCase):

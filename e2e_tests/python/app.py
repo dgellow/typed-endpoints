@@ -39,10 +39,9 @@ class Notes:
             key=lambda note: note.id,
         )
         items = matching[: query.limit]
-        # The cursor stays unset on the last page: absent, not null.
-        if len(matching) > len(items):
-            return api.NotesListResponse(items=items, cursor=items[-1].id)
-        return api.NotesListResponse(items=items)
+        # No cursor on the last page: None, which is not written.
+        more = len(matching) > len(items)
+        return api.NotesListResponse(items=items, cursor=items[-1].id if more else None)
 
     async def notes_create(self, body: api.NotesCreateBody) -> api.NotesCreateResult:
         """Create a note; a title is taken once."""
@@ -100,9 +99,9 @@ class Notes:
             area=area,
             kind=shape.kind,
             from_=body.from_,
-            # Only what the request set: an absent `class` stays absent.
-            meta=api.ShapesCreateResponseMeta.model_validate(
-                body.meta.model_dump(by_alias=True, exclude_unset=True)
+            # A `class` the request left out is None, and is left out.
+            meta=api.ShapesCreateResponseMeta(
+                data_id=body.meta.data_id, class_=body.meta.class_
             ),
             unit=body.unit,
             note=body.note,
@@ -162,9 +161,13 @@ class Notes:
         return api.EdgesCreateResponse.model_validate(answer)
 
     def _store(self, note_id: str, likes: int, body: api.NotesCreateBody) -> Note:
-        # Only the fields the body set: an absent `pinned` stays absent.
-        note = Note.model_validate(
-            {"id": note_id, "likes": likes, **body.model_dump(exclude_unset=True)}
+        # A `pinned` the body left out is None, and the note leaves it out.
+        note = Note(
+            id=note_id,
+            likes=likes,
+            title=body.title,
+            tags=body.tags,
+            pinned=body.pinned,
         )
         self.notes[note_id] = note
         return note

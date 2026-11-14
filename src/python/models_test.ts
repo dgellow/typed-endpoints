@@ -57,6 +57,16 @@ const MODEL = `class _Model(BaseModel):
         use_attribute_docstrings=True,
     )`;
 
+const IS_NONE = `def _is_none(value: object) -> bool:
+    """Whether a member that may be left out is left out.
+
+    None is how Python says that it is, and such a member is not written.
+    Where null is a value of a member, None is that value: the member is
+    written as null when it was set to None, and not at all when it was
+    not set.
+    """
+    return value is None`;
+
 const JSON_MODEL = `class _Json(_Model):
     """A model of JSON: a value keeps the type it has there."""
 
@@ -144,7 +154,10 @@ Deno.test("python models: an object is a class; what a member has to satisfy is 
     python(schema, { name: "UserBody" }),
     {
       type: "UserBody",
-      source: `${MODEL}
+      source: `${IS_NONE}
+
+
+${MODEL}
 
 
 ${JSON_MODEL}
@@ -154,7 +167,7 @@ class UserBody(_Json):
     """An object of the API."""
 
     id: str
-    nickname: str | None = Field(default=None, min_length=2)
+    nickname: str | None = Field(default=None, min_length=2, exclude_if=_is_none)
     role: Literal["admin", "member"] = "member"
     tags: list[Annotated[str, Field(min_length=1)]] = Field(
         default_factory=list, max_length=4
@@ -168,8 +181,9 @@ class UserBody(_Json):
   // What a response carries: the default was applied, the field is there,
   // and the object is closed.
   assertEquals(
+    // After `_is_none()` and the two base classes above.
     python(schema, { name: "User", io: "output" }).source.split("\n\n\n")
-      .slice(2).join("\n\n\n").split("\n").slice(0, 12),
+      .slice(3).join("\n\n\n").split("\n").slice(0, 12),
     [
       ...CLOSED_JSON_MODEL.split("\n"),
       "",
@@ -178,7 +192,7 @@ class UserBody(_Json):
       '    """An object of the API."""',
       "",
       "    id: str",
-      "    nickname: str | None = Field(default=None, min_length=2)",
+      "    nickname: str | None = Field(default=None, min_length=2, exclude_if=_is_none)",
       '    role: Literal["admin", "member"]',
     ],
   );
@@ -193,6 +207,31 @@ class UserBody(_Json):
     ).split("\n")[0],
     "class Query(_Model):",
   );
+});
+
+Deno.test("python models: None for a member that may be left out is not written, unless null is a value of it", () => {
+  const lines = classes(
+    python(
+      z.object({
+        // Left out or there: None is how Python says "left out".
+        pinned: z.boolean().optional(),
+        // Left out, null or there: three states, and None is null.
+        note: z.string().nullable().optional(),
+        // Anything, null included.
+        extra: z.unknown().optional(),
+        kind: z.union([z.literal("a"), z.null()]).optional(),
+        // Not left out by a client that says nothing: it has a default.
+        limit: z.number().default(2),
+      }),
+    ).source,
+  ).split("\n").slice(3);
+  assertEquals(lines, [
+    "    pinned: bool | None = Field(default=None, exclude_if=_is_none)",
+    "    note: str | None = None",
+    "    extra: Any | None = None",
+    '    kind: Literal["a"] | None = None',
+    "    limit: float = 2",
+  ]);
 });
 
 Deno.test("python models: an attribute is in snake case, with an alias for its name on the wire", () => {
@@ -217,7 +256,10 @@ Deno.test("python models: an attribute is in snake case, with an alias for its n
 
     from_: str = Field(validation_alias="from", serialization_alias="from")
     data_id: str | None = Field(
-        default=None, validation_alias="data-id", serialization_alias="data-id"
+        default=None,
+        exclude_if=_is_none,
+        validation_alias="data-id",
+        serialization_alias="data-id",
     )
     private: float = Field(validation_alias="_private", serialization_alias="_private")
     model_name_: str = Field(
@@ -529,7 +571,9 @@ _PATTERN_1 = "^(alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa)-[0-9]{
       "    id: str = Field(pattern=_pattern(_UUID_PATTERN))",
       '    code: str = Field(pattern=_pattern(r"^[a-z]+\\d$"))',
       "    plan: str = Field(pattern=_pattern(_PATTERN_1))",
-      "    again: str | None = Field(default=None, pattern=_pattern(_UUID_PATTERN))",
+      "    again: str | None = Field(",
+      "        default=None, pattern=_pattern(_UUID_PATTERN), exclude_if=_is_none",
+      "    )",
     ],
   );
 });

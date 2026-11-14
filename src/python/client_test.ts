@@ -28,8 +28,10 @@ for (const [name, api] of Object.entries(PARTIAL_APIS)) {
 }
 
 Deno.test("python client module: a module has the functions its operations call", () => {
+  // After the models, which have helpers of their own.
   const defined = (source: string) =>
-    [...source.matchAll(/^def (_\w+)/gm)].map((match) => match[1]);
+    [...source.slice(source.indexOf("\n# Client\n")).matchAll(/^def (_\w+)/gm)]
+      .map((match) => match[1]);
 
   // A list without parameters: a response is read, and nothing else.
   assertEquals(defined(renderPythonClient(PARTIAL_APIS.nothing_read)), [
