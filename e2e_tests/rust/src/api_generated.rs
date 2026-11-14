@@ -131,8 +131,8 @@ pub type NotesCreateResponse = NotesListResponseItem;
 
 /// The 409 body of `POST /api/notes`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "error", rename = "conflict")]
 pub struct NotesCreateError409 {
-    pub error: NotesCreateError409Error,
     pub title: String,
 }
 
@@ -157,8 +157,8 @@ pub struct NotesDeleteResponse {
 
 /// The 404 body of `DELETE /api/notes/{id}`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "error", rename = "not_found")]
 pub struct NotFound {
-    pub error: NotFoundError,
     pub id: String,
 }
 
@@ -318,22 +318,6 @@ pub type TreesCreateResponseRoot = TreesCreateBody;
 pub struct TreesCreateResponse {
     pub depth: i64,
     pub root: TreesCreateResponseRoot,
-}
-
-/// The value `"conflict"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-pub enum NotesCreateError409Error {
-    #[default]
-    #[serde(rename = "conflict")]
-    Conflict,
-}
-
-/// The value `"not_found"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-pub enum NotFoundError {
-    #[default]
-    #[serde(rename = "not_found")]
-    NotFound,
 }
 
 /// The value `"neg"`.

@@ -276,6 +276,8 @@ export class RustModels {
   private references: Map<string, number> | undefined;
   /** Structs that are the variants of a tagged enum: the tag they omit. */
   private readonly tagged = new Map<string, string>();
+  /** Structs that are a variant of some union. */
+  private readonly variants = new Set<string>();
   /** Whether a definition can derive `Eq` and `Hash`. */
   private readonly comparable = new Map<string, boolean>();
 
@@ -632,6 +634,14 @@ export class RustModels {
           return walk(node.values);
         case "union":
           unions.push(node);
+          for (const variant of node.variants) {
+            // By the struct's own name, whatever name the union has for it.
+            if (variant.kind === "ref") {
+              this.variants.add(
+                this.graph.object(variant.name)?.name ?? variant.name,
+              );
+            }
+          }
           return node.variants.forEach(walk);
       }
     };
@@ -745,7 +755,10 @@ export class RustModels {
 
   private struct(definition: ObjectDefinition): string[] {
     const tag = this.tagged.get(definition.name);
-    const fields = definition.fields.filter((field) => field.name !== tag);
+    const constant = this.constantOf(definition);
+    const fields = definition.fields.filter((field) =>
+      field.name !== tag && field !== constant?.field
+    );
 
     const used = new Set<string>();
     const names = fields.map((field) => {
@@ -782,7 +795,15 @@ export class RustModels {
     const plain = fields.every((field) => !field.default);
     // Not `deny_unknown_fields`: the runtime refuses members a closed
     // object does not name, and reports them with every other issue.
-    const attributes = rule ? [`rename_all = "${rule}"`] : [];
+    const attributes = [
+      ...(constant
+        ? [
+          `tag = ${rustString(constant.field.name)}`,
+          `rename = ${rustString(constant.value)}`,
+        ]
+        : []),
+      ...(rule ? [`rename_all = "${rule}"`] : []),
+    ];
 
     const described = definition.description ??
       this.described.get(definition.name);
@@ -815,6 +836,35 @@ export class RustModels {
     }
     if (defaults.length > 0) lines.push("", ...defaults);
     return lines;
+  }
+
+  /**
+   * The member of a struct that is one string and always there, if serde
+   * can write it for the struct: `#[serde(tag = ..., rename = ...)]`, and
+   * no field for it.
+   *
+   * serde writes such a tag and does not read it: any value, or none, is
+   * accepted. That is safe for a struct that stands alone, where the
+   * runtime has checked the constant before the struct is built. It is
+   * not for a variant of a union: two variants that differ in the
+   * constant only would both read as the first. A variant keeps a field
+   * of a type with one value (or, in a tagged enum, leaves the tag to
+   * the enum).
+   */
+  private constantOf(
+    definition: ObjectDefinition,
+  ): { field: FieldNode; value: string } | undefined {
+    if (this.variants.has(definition.name)) return undefined;
+    for (const field of definition.fields) {
+      const { type } = field;
+      if (
+        field.required && type.kind === "literal" &&
+        type.values.length === 1 && typeof type.values[0] === "string"
+      ) {
+        return { field, value: type.values[0] };
+      }
+    }
+    return undefined;
   }
 
   private field(

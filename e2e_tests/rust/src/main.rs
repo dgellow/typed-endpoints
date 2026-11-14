@@ -40,10 +40,7 @@ impl Notes {
     }
 
     fn not_found(id: String) -> api::NotFound {
-        api::NotFound {
-            error: api::NotFoundError::NotFound,
-            id,
-        }
+        api::NotFound { id }
     }
 }
 
@@ -78,7 +75,6 @@ impl api::Handlers for Notes {
     ) -> Result<api::NotesCreateResponse, api::NotesCreateError> {
         if self.notes().values().any(|note| note.title == body.title) {
             return Err(api::NotesCreateError::Conflict(api::NotesCreateError409 {
-                error: api::NotesCreateError409Error::Conflict,
                 title: body.title,
             }));
         }
