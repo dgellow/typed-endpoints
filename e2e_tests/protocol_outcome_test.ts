@@ -13,6 +13,7 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { z } from "zod";
 
+import { fail } from "../src/core/handlers.ts";
 import { createApiHandlers, endpoint } from "../src/integrations/fresh.ts";
 import {
   branch,
@@ -58,7 +59,7 @@ function service(defects: { reusableCodes?: boolean } = {}) {
       public: true,
       handler: (_ctx, { body }) => {
         if (body.scope === "admin") {
-          return Response.json({ error: "access_denied" }, { status: 403 });
+          return fail(403, { error: "access_denied" });
         }
         const code = crypto.randomUUID();
         codes.set(code, false);
@@ -77,7 +78,7 @@ function service(defects: { reusableCodes?: boolean } = {}) {
       handler: (_ctx, { body }) => {
         const used = codes.get(body.code);
         if (used === undefined || (used && !defects.reusableCodes)) {
-          return Response.json({ error: "invalid_grant" }, { status: 400 });
+          return fail(400, { error: "invalid_grant" });
         }
         codes.set(body.code, true);
         return { access_token: `token-for-${body.code}` };

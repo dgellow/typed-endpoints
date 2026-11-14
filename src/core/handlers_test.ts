@@ -12,6 +12,7 @@ import { z } from "zod";
 
 import { applyDependentResponse, expansion, projection } from "./dependent.ts";
 import { createApiHandlers, endpoint } from "../integrations/fetch.ts";
+import { fail } from "./handlers.ts";
 
 const User = z.object({
   id: z.string(),
@@ -249,4 +250,169 @@ Deno.test("applyDependentResponse: nested places, wrappers, and what it leaves a
     applyDependentResponse(schema, { ...value, list: null }, query),
     { first: { id: "1" }, list: null, plain: item, either: item },
   );
+});
+
+// =============================================================================
+// Declared error responses: fail()
+// =============================================================================
+
+const NotFound = z.object({ error: z.literal("not_found"), id: z.string() });
+const Conflict = z.object({
+  error: z.literal("conflict"),
+  current: z.number(),
+  holders: z.array(z.string()).default([]),
+});
+
+Deno.test("fail(): a declared error is parsed by its schema and sent with its status", async () => {
+  const { GET } = createApiHandlers({
+    GET: endpoint({
+      response: User,
+      responses: { 404: NotFound, 409: { schema: Conflict, name: "Conflict" } },
+      handler: (request) => {
+        const id = new URL(request.url).searchParams.get("id") ?? "";
+        if (id === "1") return ada;
+        if (id === "busy") {
+          // `holders` has a default and may be left out.
+          return fail(409, { error: "conflict", current: 3 });
+        }
+        return fail(404, { error: "not_found", id, extra: "not sent" });
+      },
+    }),
+  });
+
+  const found = await GET(new Request("http://x/users?id=1"));
+  assertEquals(found.status, 200);
+
+  const missing = await GET(new Request("http://x/users?id=nope"));
+  assertEquals(missing.status, 404);
+  assertEquals(missing.headers.get("Content-Type"), "application/json");
+  // Parsed with the schema declared for 404: the unknown key is stripped.
+  assertEquals(await missing.json(), { error: "not_found", id: "nope" });
+
+  const busy = await GET(new Request("http://x/users?id=busy"));
+  assertEquals(busy.status, 409);
+  // The schema given as `{ schema, name }`; its default is applied.
+  assertEquals(await busy.json(), {
+    error: "conflict",
+    current: 3,
+    holders: [],
+  });
+});
+
+Deno.test("fail(): the status and the body are checked at compile time", () => {
+  const never = false as boolean;
+  if (never) {
+    createApiHandlers({
+      GET: endpoint({
+        response: User,
+        responses: { 404: NotFound, 409: Conflict },
+        // @ts-expect-error 500 is not a status the endpoint declares
+        handler: () => fail(500, { error: "boom" }),
+      }),
+    });
+    createApiHandlers({
+      GET: endpoint({
+        response: User,
+        responses: { 404: NotFound, 409: Conflict },
+        // @ts-expect-error the body declared for 404 has `error: "not_found"`
+        handler: () => fail(404, { error: "gone", id: "1" }),
+      }),
+    });
+    createApiHandlers({
+      GET: endpoint({
+        response: User,
+        responses: { 404: NotFound, 409: Conflict },
+        // @ts-expect-error the body of another status
+        handler: () => fail(409, { error: "not_found", id: "1" }),
+      }),
+    });
+    createApiHandlers({
+      GET: endpoint({
+        response: User,
+        responses: { 404: NotFound },
+        // @ts-expect-error `id` is missing
+        handler: () => fail(404, { error: "not_found" }),
+      }),
+    });
+    createApiHandlers({
+      GET: endpoint({
+        response: User,
+        // @ts-expect-error the endpoint declares no error response
+        handler: () => fail(404, { error: "not_found", id: "1" }),
+      }),
+    });
+    createApiHandlers({
+      GET: endpoint({
+        response: User,
+        // A success entry is not an error to fail with.
+        responses: { 201: User, 404: NotFound },
+        // @ts-expect-error 201 is not an error status
+        handler: () => fail(201, ada),
+      }),
+    });
+  }
+});
+
+Deno.test("fail(): a body the declared schema rejects is a 500, logged, not sent", async () => {
+  const { GET } = createApiHandlers({
+    GET: endpoint({
+      response: User,
+      responses: { 404: NotFound },
+      // Past the types.
+      // deno-lint-ignore no-explicit-any
+      handler: () => fail(404, { error: "not_found", id: 7 }) as any,
+    }),
+  });
+
+  const { result: response, errors } = await captureErrors(() =>
+    GET(new Request("http://x/users/7"))
+  );
+
+  assertEquals(response.status, 500);
+  assertEquals(await response.json(), { error: "Internal Server Error" });
+  assertEquals(errors.length, 1);
+  assertEquals(
+    errors[0][0],
+    "GET /users/7: the handler failed with a body that does not match the schema declared for 404:",
+  );
+});
+
+Deno.test("fail(): a status the endpoint does not declare is a 500, logged", async () => {
+  const { GET } = createApiHandlers({
+    GET: endpoint({
+      response: User,
+      responses: { 404: NotFound },
+      // Past the types.
+      // deno-lint-ignore no-explicit-any
+      handler: () => fail(403, { error: "forbidden" }) as any,
+    }),
+  });
+
+  const { result: response, errors } = await captureErrors(() =>
+    GET(new Request("http://x/users/7"))
+  );
+
+  assertEquals(response.status, 500);
+  assertEquals(errors, [[
+    "GET /users/7: the handler failed with status 403, which the endpoint does not declare in `responses`",
+  ]]);
+});
+
+Deno.test("fail(): an async handler, and a Response next to it", async () => {
+  const { DELETE } = createApiHandlers({
+    DELETE: endpoint({
+      responses: { 404: NotFound },
+      handler: async (request) => {
+        await Promise.resolve();
+        return new URL(request.url).pathname.endsWith("/1")
+          ? new Response(null, { status: 204 })
+          : fail(404, { error: "not_found", id: "2" });
+      },
+    }),
+  });
+
+  assertEquals((await DELETE(new Request("http://x/users/1"))).status, 204);
+  const missing = await DELETE(new Request("http://x/users/2"));
+  assertEquals(missing.status, 404);
+  assertEquals(await missing.json(), { error: "not_found", id: "2" });
 });
