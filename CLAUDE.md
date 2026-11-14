@@ -74,6 +74,10 @@ e2e_tests/          # End-to-end tests (protocol flows, Fresh server, CLI, Vite)
   reads `schema._zod`
 - Protocol module: `dependentStep()` for dynamic schemas, `mappedStep()` for
   static literal forwarding
+- A dependent step names its dependency by reference (`dependsOn: stepObject`)
+  and states the responses it can follow with `when`, not with `z.never()`
+- Type-level guarantees are tested with `@ts-expect-error`; an unused directive
+  fails the type-check
 
 ## Key Concepts (Protocol Module)
 
@@ -81,5 +85,9 @@ Based on André Videla's container morphisms research. The sequential product
 (`>>`) means the request type of step N+1 is a function of the response of step
 N. TypeScript can't express dependent types, so:
 
-- **Compile-time**: tracks which step _names_ are done (union type `TDone`)
-- **Runtime**: enforces actual value constraints via Zod (`z.literal()`)
+- **Compile-time**: tracks which step _names_ are done (union type `TDone`) and
+  what is known about their responses (`TSeen`: which variant came back, which
+  optional fields have a value). A step that follows one variant is available
+  only after `session.ready(step)` or `session.narrow(step, guard)`
+- **Runtime**: enforces actual value constraints via Zod (`z.literal()`), and
+  the same variant conditions (`when`) for callers that bypass the types
