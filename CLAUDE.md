@@ -59,12 +59,14 @@ not a result.
 | Rust crates            | `e2e_tests/rust/Cargo.lock`                                                                                                       | `cargo --locked`                                                                                                    |
 | Frameworks             | exact versions in `scripts/check-framework-types` (Next.js, SvelteKit, Astro, TypeScript) and `scripts/bun-package.ts` (Hono, h3) | the scripts install them                                                                                            |
 | npm packages under Bun | `e2e_tests/bun/bun.lock`, `e2e_tests/framework-types/bun.lock`; the library's own dependencies at the versions `deno.lock` has    | `bun install --frozen-lockfile`; `UPDATE_LOCK=1` writes the lockfile again                                          |
+| GitHub Actions         | a commit after `uses:` in `.github/workflows`, the tag as a comment                                                               | GitHub                                                                                                              |
 | CI runner              | `runs-on: ubuntu-24.04`                                                                                                           | GitHub                                                                                                              |
 
 Raising a version is a change of its own: change the file, run the checks, fix
 what the new version finds. A new tool gets a row here before it gets a check.
-Not pinned: the GitHub Actions themselves, which are named by major tag, not by
-commit.
+Not pinned: the build of the runner image. `ubuntu-24.04` names the release, and
+GitHub chooses the build (two builds were seen within one run); the checks take
+from it the shell, `git`, `rustup` and Node for the actions.
 
 ## Project Structure
 
