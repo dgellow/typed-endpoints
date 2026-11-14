@@ -438,6 +438,12 @@ function isFatalSseError(error: unknown): boolean {
  * The iteration ends when the server closes the stream: an SSE endpoint
  * signals completion by returning from its handler. Network failures and 5xx
  * responses are retried; 4xx responses and undecodable events are not.
+ *
+ * A stream that is cut (the handler failed, or the network did) is a
+ * failure, not an end: the client reconnects with the id of the last
+ * event it saw. The count of attempts starts over once an event arrives;
+ * `maxReconnectAttempts` connections in a row without one reject the
+ * iteration with the last error.
  */
 async function* createSseSubscription<TEvents extends SseEventsDef>(
   fetchFn: typeof fetch,
@@ -480,7 +486,6 @@ async function* createSseSubscription<TEvents extends SseEventsDef>(
         throw new Error("SSE response has no body");
       }
 
-      attempts = 0; // Reset on successful connection
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       const parser = createSseParser();
@@ -499,6 +504,12 @@ async function* createSseSubscription<TEvents extends SseEventsDef>(
           }
 
           for (const raw of events) {
+            // An event arrived: the connection made progress, so a later
+            // failure starts counting reconnects afresh. A connection
+            // that fails before its first event keeps counting, which is
+            // what ends the retries against a server that always fails.
+            attempts = 0;
+
             // An event with empty data carries no JSON value (some servers
             // use it as a keep-alive). It is skipped.
             if (raw.data === "") continue;

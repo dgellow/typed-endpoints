@@ -174,8 +174,15 @@ export interface HandlerSseMethodDef<
 > extends SseMethodDef<TQuerySchema, TParamsSchema, TEvents> {
   /**
    * Produces the events. Receives the framework's context, the validated
-   * query and path parameters, and a signal that aborts when the client
-   * disconnects or the response body is cancelled.
+   * query and path parameters with the id of the last event the client
+   * saw, and a signal that aborts when the client disconnects or the
+   * response body is cancelled.
+   *
+   * Each yielded event is parsed with the schema of its name before it is
+   * sent. An event the schema rejects, an event the endpoint does not
+   * declare, and an exception all end the stream with an error: the
+   * connection is cut, not closed, so the client can tell a failure from
+   * the end of the events. The cause is logged.
    */
   readonly handler: (
     context: TContext,
@@ -183,6 +190,11 @@ export interface HandlerSseMethodDef<
       query: TQuerySchema extends z.ZodType ? z.infer<TQuerySchema> : unknown;
       params: TParamsSchema extends z.ZodType ? z.infer<TParamsSchema>
         : unknown;
+      /**
+       * The `Last-Event-ID` header: the id of the last event the client
+       * received before it reconnected. `undefined` on a first connection.
+       */
+      lastEventId: string | undefined;
     },
     signal: AbortSignal,
   ) => AsyncGenerator<SseEvent<TEvents>, void, unknown>;
@@ -283,20 +295,42 @@ function formatSseEvent<TEvents extends SseEventDef>(
   return message + `data: ${JSON.stringify(event.data)}\n\n`;
 }
 
+/** What `createSseResponse()` needs to know about the endpoint. */
+interface SseStreamOptions {
+  /** Data schema of each event, by event name. */
+  readonly events: SseEventDef;
+  /** Milliseconds without an event after which a comment is sent. */
+  readonly keepAlive?: number;
+  /** Method and path, for the log. */
+  readonly where: string;
+}
+
+/** A comment line: ignored by clients, seen by intermediaries. */
+const KEEP_ALIVE = ": keep-alive\n\n";
+
 /**
  * Create SSE response from async generator.
  *
  * The generator is advanced only when the consumer reads, and it stops
  * when the response body is cancelled or `abort` fires, whichever is first:
  * the handler's signal aborts and its `finally` blocks run.
+ *
+ * Each event is parsed with its schema before it is sent. A handler that
+ * throws, or yields an event its endpoint does not declare or its schema
+ * rejects, errors the stream: the events sent so far stay sent, and the
+ * connection is cut where a normal end would close it.
  */
 function createSseResponse<TEvents extends SseEventDef>(
   generator: AsyncGenerator<SseEvent<TEvents>, void, unknown>,
   abort: AbortController,
+  options: SseStreamOptions,
 ): Response {
   const encoder = new TextEncoder();
   const { signal } = abort;
   let finished = false;
+  // The step of the generator that is under way. It outlives a `pull`
+  // that sent a keep-alive instead of an event.
+  let pending: Promise<IteratorResult<SseEvent<TEvents>, void>> | undefined;
 
   // Ends the generator once. A handler that throws while it winds down has
   // nowhere to report to, so the error is logged.
@@ -304,16 +338,68 @@ function createSseResponse<TEvents extends SseEventDef>(
     if (finished) return;
     finished = true;
     generator.return(undefined).catch((error) => {
-      console.error("SSE stream error:", error);
+      console.error(`${options.where}: SSE stream error:`, error);
     });
+  };
+
+  /** The event as it goes on the wire, its data parsed by its schema. */
+  const checked = (event: SseEvent<TEvents>): string => {
+    const name = String(event.event);
+    const schema = Object.hasOwn(options.events, name)
+      ? options.events[name]
+      : undefined;
+    if (!schema) {
+      throw new Error(
+        `the handler yielded the event "${name}", which the endpoint does not declare`,
+      );
+    }
+    const parsed = schema.safeParse(event.data);
+    if (!parsed.success) {
+      throw new Error(
+        `the handler yielded an event "${name}" whose data does not match its schema: ${parsed.error.message}`,
+      );
+    }
+    return formatSseEvent({ ...event, data: parsed.data });
+  };
+
+  /** Resolves to `"idle"` after the keep-alive interval; can be cleared. */
+  const idle = (): { promise: Promise<"idle">; clear: () => void } => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return {
+      promise: new Promise((resolve) => {
+        timer = setTimeout(() => resolve("idle"), options.keepAlive);
+      }),
+      clear: () => clearTimeout(timer),
+    };
   };
 
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
-        const next = signal.aborted
-          ? { done: true as const }
-          : await generator.next();
+        if (signal.aborted) {
+          finish();
+          controller.close();
+          return;
+        }
+
+        pending ??= generator.next();
+        let next: IteratorResult<SseEvent<TEvents>, void>;
+        if (options.keepAlive === undefined) {
+          next = await pending;
+        } else {
+          const timer = idle();
+          const first = await Promise.race([pending, timer.promise]);
+          timer.clear();
+          if (first === "idle") {
+            // Nothing to send yet: a comment answers this read, and the
+            // next read waits for the same step of the generator.
+            if (!finished) controller.enqueue(encoder.encode(KEEP_ALIVE));
+            return;
+          }
+          next = first;
+        }
+        pending = undefined;
+
         // The body was cancelled while the handler was working.
         if (finished) return;
         if (next.done || signal.aborted) {
@@ -321,14 +407,20 @@ function createSseResponse<TEvents extends SseEventDef>(
           controller.close();
           return;
         }
-        controller.enqueue(encoder.encode(formatSseEvent(next.value)));
+        controller.enqueue(encoder.encode(checked(next.value)));
       } catch (error) {
         if (finished) return;
-        finished = true;
-        if (!signal.aborted) {
-          console.error("SSE stream error:", error);
+        if (signal.aborted) {
+          finished = true;
+          controller.close();
+          return;
         }
-        controller.close();
+        console.error(`${options.where}: SSE stream error:`, error);
+        // The handler may still be running (an event it yielded was
+        // rejected): stop it, then cut the stream.
+        abort.abort();
+        finish();
+        controller.error(error);
       }
     },
     cancel() {
@@ -458,11 +550,19 @@ export function buildHandlers<
 
         const generator = sseDef.handler(
           context,
-          { query: result.data.query, params: result.data.params },
+          {
+            query: result.data.query,
+            params: result.data.params,
+            lastEventId: request.headers.get("Last-Event-ID") ?? undefined,
+          },
           abortController.signal,
         );
 
-        return createSseResponse(generator, abortController);
+        return createSseResponse(generator, abortController, {
+          events: sseDef.events,
+          keepAlive: sseDef.keepAlive,
+          where: `${method} ${new URL(request.url).pathname}`,
+        });
       };
     } else {
       // Handle regular REST endpoints

@@ -11,6 +11,7 @@ function createMockContext(options: {
   body?: unknown;
   params?: Record<string, string>;
   signal?: AbortSignal;
+  headers?: Record<string, string>;
   // deno-lint-ignore no-explicit-any
 }): any {
   const controller = new AbortController();
@@ -18,6 +19,7 @@ function createMockContext(options: {
     req: {
       url: options.url ?? "http://localhost:3000/api/test",
       method: options.method ?? "GET",
+      headers: new Headers(options.headers),
       json: () => Promise.resolve(options.body),
       signal: options.signal ?? controller.signal,
     },
@@ -597,31 +599,226 @@ Deno.test("sseEndpoint: the handler is advanced only as the body is read", async
   await reader.cancel();
 });
 
-Deno.test("sseEndpoint: a handler error ends the stream after the events sent so far", async () => {
-  const errors: unknown[][] = [];
-  const originalError = console.error;
-  console.error = (...args: unknown[]) => errors.push(args);
-
+/** Read a response body chunk by chunk; the error that cut it, if any. */
+async function readStream(
+  response: Response,
+): Promise<{ text: string; error?: unknown }> {
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
   try {
-    const handlers = createApiHandlers({
-      GET: sseEndpoint({
-        events: { tick: z.object({ n: z.number() }) },
-        async *handler() {
-          yield { event: "tick", data: { n: 0 } };
-          throw new Error("boom");
-        },
-      }),
-    });
-
-    const response = await handlers.GET(createMockContext({}));
-
-    assertEquals(await response.text(), 'event: tick\ndata: {"n":0}\n\n');
-    assertEquals(errors.length, 1);
-    assertEquals(errors[0][0], "SSE stream error:");
-    assertEquals((errors[0][1] as Error).message, "boom");
-  } finally {
-    console.error = originalError;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return { text };
+      text += decoder.decode(value, { stream: true });
+    }
+  } catch (error) {
+    return { text, error };
   }
+}
+
+/** Run with `console.error` captured. */
+async function capturingErrors<T>(
+  fn: () => Promise<T>,
+): Promise<{ result: T; errors: unknown[][] }> {
+  const errors: unknown[][] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => errors.push(args);
+  try {
+    return { result: await fn(), errors };
+  } finally {
+    console.error = original;
+  }
+}
+
+Deno.test("sseEndpoint: a handler error cuts the stream after the events sent so far", async () => {
+  const handlers = createApiHandlers({
+    GET: sseEndpoint({
+      events: { tick: z.object({ n: z.number() }) },
+      async *handler() {
+        yield { event: "tick", data: { n: 0 } };
+        throw new Error("boom");
+      },
+    }),
+  });
+
+  const { result, errors } = await capturingErrors(async () =>
+    readStream(await handlers.GET(createMockContext({})))
+  );
+
+  // The event that was sent stays sent. The stream then fails where a
+  // normal end would close it: a reader can tell the two apart.
+  assertEquals(result.text, 'event: tick\ndata: {"n":0}\n\n');
+  assertEquals((result.error as Error).message, "boom");
+  assertEquals(errors.length, 1);
+  assertEquals(errors[0][0], "GET /api/test: SSE stream error:");
+  assertEquals((errors[0][1] as Error).message, "boom");
+});
+
+Deno.test("sseEndpoint: a handler that returns ends the stream normally", async () => {
+  const handlers = createApiHandlers({
+    GET: sseEndpoint({
+      events: { tick: z.object({ n: z.number() }) },
+      async *handler() {
+        yield { event: "tick", data: { n: 0 } };
+      },
+    }),
+  });
+  const result = await readStream(await handlers.GET(createMockContext({})));
+  assertEquals(result, { text: 'event: tick\ndata: {"n":0}\n\n' });
+});
+
+Deno.test("sseEndpoint: an event is parsed by its schema before it is sent", async () => {
+  const handlers = createApiHandlers({
+    GET: sseEndpoint({
+      events: {
+        tick: z.object({ n: z.number(), unit: z.string().default("s") }),
+      },
+      async *handler() {
+        // The default is applied and the unknown key is stripped, as for
+        // a value a REST handler returns.
+        yield { event: "tick", data: { n: 1, secret: "not sent" } as never };
+      },
+    }),
+  });
+  const result = await readStream(await handlers.GET(createMockContext({})));
+  assertEquals(result, {
+    text: 'event: tick\ndata: {"n":1,"unit":"s"}\n\n',
+  });
+});
+
+Deno.test("sseEndpoint: an event its schema rejects is not sent and cuts the stream", async () => {
+  let cleanedUp = false;
+  let aborted = false;
+  const handlers = createApiHandlers({
+    GET: sseEndpoint({
+      events: { tick: z.object({ n: z.number() }) },
+      async *handler(_ctx, _validated, signal) {
+        try {
+          yield { event: "tick", data: { n: 0 } };
+          // Past the types: data from an untyped source.
+          yield { event: "tick", data: { n: "one" } as never };
+          yield { event: "tick", data: { n: 2 } };
+        } finally {
+          cleanedUp = true;
+          aborted = signal.aborted;
+        }
+      },
+    }),
+  });
+
+  const { result, errors } = await capturingErrors(async () =>
+    readStream(await handlers.GET(createMockContext({})))
+  );
+
+  assertEquals(result.text, 'event: tick\ndata: {"n":0}\n\n');
+  assertEquals(
+    (result.error as Error).message.startsWith(
+      'the handler yielded an event "tick" whose data does not match its schema',
+    ),
+    true,
+  );
+  assertEquals(errors.length, 1);
+  // The handler is stopped where it stands: its `finally` runs and its
+  // signal is aborted.
+  assertEquals(cleanedUp, true);
+  assertEquals(aborted, true);
+});
+
+Deno.test("sseEndpoint: an event the endpoint does not declare cuts the stream", async () => {
+  const handlers = createApiHandlers({
+    GET: sseEndpoint({
+      events: { tick: z.object({ n: z.number() }) },
+      async *handler() {
+        yield { event: "tock", data: {} } as never;
+      },
+    }),
+  });
+
+  const { result, errors } = await capturingErrors(async () =>
+    readStream(await handlers.GET(createMockContext({})))
+  );
+  assertEquals(result.text, "");
+  assertEquals(
+    (result.error as Error).message,
+    'the handler yielded the event "tock", which the endpoint does not declare',
+  );
+  assertEquals(errors.length, 1);
+});
+
+Deno.test("sseEndpoint: the handler receives the id of the last event the client saw", async () => {
+  const handlers = createApiHandlers({
+    GET: sseEndpoint({
+      events: { tick: z.object({ n: z.number() }) },
+      async *handler(_ctx, { lastEventId }) {
+        // Resume after the event the client has.
+        const from = lastEventId === undefined ? 0 : Number(lastEventId) + 1;
+        for (let n = from; n < 3; n++) {
+          yield { event: "tick", data: { n }, id: String(n) };
+        }
+      },
+    }),
+  });
+
+  const first = await readStream(await handlers.GET(createMockContext({})));
+  assertEquals(first.text.match(/"n":\d/g), ['"n":0', '"n":1', '"n":2']);
+
+  const resumed = await readStream(
+    await handlers.GET(
+      createMockContext({ headers: { "Last-Event-ID": "1" } }),
+    ),
+  );
+  assertEquals(resumed.text, 'event: tick\nid: 2\ndata: {"n":2}\n\n');
+});
+
+Deno.test("sseEndpoint: keepAlive sends a comment while the handler has nothing to say", async () => {
+  let release: () => void = () => {};
+  const waiting = new Promise<void>((resolve) => release = resolve);
+  const handlers = createApiHandlers({
+    GET: sseEndpoint({
+      events: { tick: z.object({ n: z.number() }) },
+      keepAlive: 10,
+      async *handler() {
+        yield { event: "tick", data: { n: 0 } };
+        await waiting;
+        yield { event: "tick", data: { n: 1 } };
+      },
+    }),
+  });
+
+  const response = await handlers.GET(createMockContext({}));
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  const read = async () => decoder.decode((await reader.read()).value);
+
+  assertEquals(await read(), 'event: tick\ndata: {"n":0}\n\n');
+  // The handler is waiting: comments arrive, one per read.
+  assertEquals(await read(), ": keep-alive\n\n");
+  assertEquals(await read(), ": keep-alive\n\n");
+  release();
+  // The event the handler was working on is not lost.
+  let next = await read();
+  while (next === ": keep-alive\n\n") next = await read();
+  assertEquals(next, 'event: tick\ndata: {"n":1}\n\n');
+  assertEquals((await reader.read()).done, true);
+});
+
+Deno.test("sseEndpoint: without keepAlive nothing is sent between events", async () => {
+  const handlers = createApiHandlers({
+    GET: sseEndpoint({
+      events: { tick: z.object({ n: z.number() }) },
+      async *handler() {
+        yield { event: "tick", data: { n: 0 } };
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        yield { event: "tick", data: { n: 1 } };
+      },
+    }),
+  });
+  const result = await readStream(await handlers.GET(createMockContext({})));
+  assertEquals(
+    result.text,
+    'event: tick\ndata: {"n":0}\n\nevent: tick\ndata: {"n":1}\n\n',
+  );
 });
 
 Deno.test("sseEndpoint: a request aborted before the first read produces no events", async () => {

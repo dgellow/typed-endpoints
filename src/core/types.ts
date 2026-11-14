@@ -155,8 +155,17 @@ export interface SseMethodDef<
   readonly query?: TQuerySchema;
   /** Schema of the path parameters. */
   readonly params?: TParamsSchema;
-  /** Data schema of each event, by event name. */
+  /**
+   * Data schema of each event, by event name. What the handler yields is
+   * parsed with it before it is sent.
+   */
   readonly events: TEvents;
+  /**
+   * Send a comment line after this many milliseconds without an event, so
+   * that an intermediary with an idle timeout keeps the connection open.
+   * Clients ignore comments. Default: none.
+   */
+  readonly keepAlive?: number;
   /** Include this method in the OpenAPI spec. Default: false. */
   readonly public?: boolean;
   /** Summary of the OpenAPI operation. */
@@ -173,7 +182,8 @@ export interface SseMethodDef<
 export type SseEvent<TEvents extends SseEventDef> = {
   [K in keyof TEvents]: {
     event: K;
-    data: z.infer<TEvents[K]>;
+    // The input side: the data is parsed by the event's schema.
+    data: z.input<TEvents[K]>;
     id?: string;
     retry?: number;
   };
