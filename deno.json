@@ -34,7 +34,8 @@
   },
   "tasks": {
     "check": "deno check",
-    "test": "deno test"
+    "lint": "./scripts/lint",
+    "test": "./scripts/test"
   },
   "license": "MIT",
   "imports": {
