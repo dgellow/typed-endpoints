@@ -132,10 +132,28 @@ describe("typed client against Bun.serve", () => {
       seen.push(event);
     }
     expect(seen).toEqual([
-      { event: "tick", data: { n: 0 } },
-      { event: "tick", data: { n: 1 } },
-      { event: "tick", data: { n: 2 } },
+      { event: "tick", data: { n: 0 }, id: "0" },
+      { event: "tick", data: { n: 1 }, id: "1" },
+      { event: "tick", data: { n: 2 }, id: "2" },
     ]);
+  });
+
+  test("a handler that throws cuts the stream, and the client resumes", async () => {
+    // deno-lint-ignore no-explicit-any
+    const client = createClient<any>(base);
+    const seen: number[] = [];
+    for await (
+      const event of client.ticks.subscribe({
+        query: { count: 4, failAt: 2 },
+        reconnectDelay: 5,
+      })
+    ) {
+      seen.push(event.data.n);
+    }
+    // The first connection failed before event 2. A normal end would have
+    // left the client with [0, 1]; a cut stream made it reconnect with
+    // Last-Event-ID: 1, and the second connection continued from there.
+    expect(seen).toEqual([0, 1, 2, 3]);
   });
 });
 

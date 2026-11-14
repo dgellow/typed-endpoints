@@ -32,7 +32,24 @@ export interface SseParser {
   readonly lastEventId: string | undefined;
   /** Last valid `retry` value seen on the stream, in milliseconds. */
   readonly retry: number | undefined;
+  /**
+   * Whether the stream carried the comment a server writes when it ends a
+   * stream because its handler failed (`SSE_FAILURE_COMMENT`). The stream
+   * then closes like any other; this tells the two endings apart.
+   */
+  readonly failed: boolean;
 }
+
+/**
+ * The comment line an SSE endpoint of this library writes before it closes
+ * a stream whose handler failed.
+ *
+ * A stream has no status code once it has begun, and a stream that is
+ * simply cut loses, on some runtimes, the events that were sent just
+ * before. A comment is delivered in order, is ignored by every other
+ * event-stream client, and cannot collide with an event name.
+ */
+export const SSE_FAILURE_COMMENT = ": error";
 
 /** Create a parser for one event stream. */
 export function createSseParser(): SseParser {
@@ -42,6 +59,7 @@ export function createSseParser(): SseParser {
   let eventId: string | undefined;
   let lastEventId: string | undefined;
   let retry: number | undefined;
+  let failed = false;
 
   function processLine(line: string, out: RawSseEvent[]): void {
     if (line === "") {
@@ -59,7 +77,11 @@ export function createSseParser(): SseParser {
       return;
     }
 
-    if (line.startsWith(":")) return; // comment
+    if (line.startsWith(":")) {
+      // A comment. One of them says the server gave up on the stream.
+      if (line === SSE_FAILURE_COMMENT) failed = true;
+      return;
+    }
 
     const colon = line.indexOf(":");
     const field = colon === -1 ? line : line.slice(0, colon);
@@ -114,6 +136,9 @@ export function createSseParser(): SseParser {
     },
     get retry() {
       return retry;
+    },
+    get failed() {
+      return failed;
     },
   };
 }

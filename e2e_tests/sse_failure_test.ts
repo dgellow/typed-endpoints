@@ -2,17 +2,17 @@
  * E2E: an SSE handler that fails is a failure for the client.
  *
  * A stream has no status code once it has begun. A handler that throws,
- * or yields an event its schema rejects, cuts the connection where a
- * normal end would close it. Over real HTTP the client then sees a failed
- * read, not the end of the events: it reconnects with the id of the last
- * event it received, and gives up after `maxReconnectAttempts` connections
- * in a row that brought no event.
+ * or yields an event its schema rejects, ends the stream with a comment
+ * line that says so. Over real HTTP the client then sees a failure, not
+ * the end of the events: it reconnects with the id of the last event it
+ * received, and gives up after `maxReconnectAttempts` connections in a
+ * row that brought no event.
  */
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { z } from "zod";
 
-import { createClient } from "../src/client/index.ts";
+import { createClient, SseStreamError } from "../src/client/index.ts";
 import { createApiHandlers, sseEndpoint } from "../src/integrations/fresh.ts";
 
 type Api = {
@@ -65,7 +65,7 @@ function serve(
   };
 }
 
-Deno.test("E2E SSE: a handler that throws is a failed read, and the client resumes", async () => {
+Deno.test("E2E SSE: a handler that throws is a failure for the client, which resumes", async () => {
   const { client, connections, errors, close } = serve(
     async function* (lastEventId, connection) {
       const from = lastEventId === undefined ? 0 : Number(lastEventId) + 1;
@@ -104,16 +104,20 @@ Deno.test("E2E SSE: a handler that always fails ends the subscription with an er
   );
   try {
     const seen: number[] = [];
-    await assertRejects(async () => {
-      for await (
-        const event of client.ticks.subscribe({
-          reconnectDelay: 5,
-          maxReconnectAttempts: 3,
-        })
-      ) {
-        seen.push(event.data.n);
-      }
-    });
+    await assertRejects(
+      async () => {
+        for await (
+          const event of client.ticks.subscribe({
+            reconnectDelay: 5,
+            maxReconnectAttempts: 3,
+          })
+        ) {
+          seen.push(event.data.n);
+        }
+      },
+      SseStreamError,
+      "The server ended the event stream after a failure",
+    );
     assertEquals(seen, []);
     // Three connections, none of which brought an event.
     assertEquals(connections.length, 3);

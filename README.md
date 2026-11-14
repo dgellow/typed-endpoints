@@ -843,10 +843,11 @@ What the server does with what the handler yields:
 - Each event is parsed with the schema of its name before it is sent: defaults
   are applied and unknown keys stripped, as for a value a REST handler returns
 - A handler that throws, or yields an event its schema rejects or the endpoint
-  does not declare, cuts the stream: the events sent so far stay sent, the bad
-  one is not sent, and the connection is ended with an error instead of being
-  closed. The cause is logged. A stream has no status code once it has begun;
-  this is how a failure is told apart from the end of the events
+  does not declare, fails the stream: the events sent so far stay sent, the bad
+  one is not sent, and the stream ends with the comment line `: error` before it
+  closes. The cause is logged. A stream has no status code once it has begun;
+  the comment is how a failure is told apart from the end of the events. Other
+  event-stream clients ignore comments
 - A handler that returns ends the stream normally
 - `keepAlive: 15000` sends a comment line after that many milliseconds without
   an event, for intermediaries with an idle timeout. Clients ignore comments
@@ -865,11 +866,11 @@ async *handler(_ctx, { params, lastEventId }, signal) {
 What the client does:
 
 - A stream the server closes ends the iteration
-- A stream that is cut (the handler failed, or the network did) and a 5xx
-  response are retried: the client reconnects with the id of the last event it
-  received. `maxReconnectAttempts` (default 5) connections in a row that bring
-  no event reject the iteration with the last error; the count starts over when
-  an event arrives
+- A stream the server ended as a failure (`SseStreamError`), a dropped
+  connection and a 5xx response are retried: the client reconnects with the id
+  of the last event it received. `maxReconnectAttempts` (default 5) connections
+  in a row that bring no event reject the iteration with the last error; the
+  count starts over when an event arrives
 - A 4xx response and an event whose data is not JSON reject the iteration at
   once
 

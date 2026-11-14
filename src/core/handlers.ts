@@ -25,6 +25,7 @@ import type {
 } from "./types.ts";
 import { applyDependentResponse } from "./dependent.ts";
 import type { ReadonlyDeep } from "./dependent_types.ts";
+import { SSE_FAILURE_COMMENT } from "../client/sse.ts";
 import { validateRequest } from "./validation.ts";
 
 /** Property that marks a `Failure`, shared by every copy of this module. */
@@ -180,9 +181,9 @@ export interface HandlerSseMethodDef<
    *
    * Each yielded event is parsed with the schema of its name before it is
    * sent. An event the schema rejects, an event the endpoint does not
-   * declare, and an exception all end the stream with an error: the
-   * connection is cut, not closed, so the client can tell a failure from
-   * the end of the events. The cause is logged.
+   * declare, and an exception all end the stream as a failure: a comment
+   * line (`: error`) is written before the stream closes, so the client
+   * can tell a failure from the end of the events. The cause is logged.
    */
   readonly handler: (
     context: TContext,
@@ -309,6 +310,13 @@ interface SseStreamOptions {
 const KEEP_ALIVE = ": keep-alive\n\n";
 
 /**
+ * The comment written before a stream is closed because its handler
+ * failed. The client of this library reads it as a failure; any other
+ * event-stream client ignores it.
+ */
+const STREAM_FAILED = `${SSE_FAILURE_COMMENT}\n\n`;
+
+/**
  * Create SSE response from async generator.
  *
  * The generator is advanced only when the consumer reads, and it stops
@@ -317,8 +325,12 @@ const KEEP_ALIVE = ": keep-alive\n\n";
  *
  * Each event is parsed with its schema before it is sent. A handler that
  * throws, or yields an event its endpoint does not declare or its schema
- * rejects, errors the stream: the events sent so far stay sent, and the
- * connection is cut where a normal end would close it.
+ * rejects, fails the stream: the events sent so far stay sent, a comment
+ * that says so is written, and the stream closes.
+ *
+ * The stream is closed, not errored: a response body that errors resets
+ * the connection, and on some runtimes (Bun) that drops the events that
+ * were sent just before it.
  */
 function createSseResponse<TEvents extends SseEventDef>(
   generator: AsyncGenerator<SseEvent<TEvents>, void, unknown>,
@@ -417,10 +429,11 @@ function createSseResponse<TEvents extends SseEventDef>(
         }
         console.error(`${options.where}: SSE stream error:`, error);
         // The handler may still be running (an event it yielded was
-        // rejected): stop it, then cut the stream.
+        // rejected): stop it, then end the stream as a failure.
         abort.abort();
         finish();
-        controller.error(error);
+        controller.enqueue(encoder.encode(STREAM_FAILED));
+        controller.close();
       }
     },
     cancel() {
