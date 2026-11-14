@@ -17,24 +17,36 @@ function formatZodErrors(error: z.ZodError): string {
     .join(", ");
 }
 
+/** A request that passed validation. */
 export interface ValidationResult<TBody, TQuery, TParams> {
+  /** Discriminant: validation passed. */
   readonly success: true;
+  /** The parsed body, query and path parameters. */
   readonly data: ValidatedRequest<TBody, TQuery, TParams>;
 }
 
+/** A request that failed validation. */
 export interface ValidationError {
+  /** Discriminant: validation failed. */
   readonly success: false;
+  /** Message that lists each failing field. */
   readonly error: string;
+  /** The part that failed. `"json"`: the body is not valid JSON. */
   readonly type: "body" | "query" | "params" | "json";
 }
 
+/** Result of `validateRequest()`. */
 export type ValidationOutcome<TBody, TQuery, TParams> =
   | ValidationResult<TBody, TQuery, TParams>
   | ValidationError;
 
+/** The parts of a request that validation reads. Not tied to a framework. */
 export interface RawRequest {
+  /** Reads and parses the JSON body. */
   readonly json: () => Promise<unknown>;
+  /** Full request URL. The query string is read from it. */
   readonly url: string;
+  /** Path parameters, as the router extracted them. */
   readonly params?: Record<string, string>;
 }
 

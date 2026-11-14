@@ -79,45 +79,71 @@ export type PaginationStyle =
 
 /** Base pagination metadata attached to endpoints */
 export interface PaginationMeta {
+  /** Pagination style. */
   readonly style: PaginationStyle;
+  /** Name of the response field that holds the items. */
   readonly items: string;
+  /** Name of the query parameter that sets the page size. */
   readonly limitParam?: string;
 }
 
 /** Cursor-based pagination metadata */
 export interface CursorPaginationMeta extends PaginationMeta {
+  /** Pagination style. */
   readonly style: "cursor";
+  /** Name of the response field that holds the next cursor. */
   readonly cursor: string;
+  /** Name of the query parameter that takes the cursor. */
   readonly cursorParam: string;
 }
 
 /** Cursor ID pagination (last item ID becomes cursor) */
 export interface CursorIdPaginationMeta extends PaginationMeta {
+  /** Pagination style. */
   readonly style: "cursorId";
+  /** Name of the query parameter that takes the id of the last item seen. */
   readonly cursorIdParam: string;
+  /** Name of the item field that holds its id. */
   readonly idField: string;
 }
 
 /** Offset-based pagination metadata */
 export interface OffsetPaginationMeta extends PaginationMeta {
+  /** Pagination style. */
   readonly style: "offset";
+  /** Name of the response field that holds the total item count. */
   readonly total: string;
+  /** Name of the query parameter that takes the offset. */
   readonly offsetParam: string;
 }
 
 /** Page number pagination metadata */
 export interface PagePaginationMeta extends PaginationMeta {
+  /** Pagination style. */
   readonly style: "page";
+  /** Name of the response field that holds the total item count. */
   readonly total?: string;
+  /** Name of the response field that holds the page count. */
   readonly totalPages?: string;
+  /** Name of the query parameter that takes the page number. */
   readonly pageParam: string;
+  /** Name of the query parameter that sets the page size. */
   readonly perPageParam?: string;
 }
 
 /** URL-based pagination (like GitHub API) */
 export interface UrlPaginationMeta extends PaginationMeta {
+  /** Pagination style. */
   readonly style: "url";
+  /**
+   * Path of the response field that holds the next page URL. Dot-notation
+   * for a nested field.
+   */
   readonly nextUrl: string;
+  /**
+   * Path of the response field that holds the previous page URL.
+   * Dot-notation for a nested field.
+   */
   readonly prevUrl?: string;
 }
 
@@ -288,7 +314,13 @@ export interface PaginatedEndpointDef<
   TResponse extends z.ZodType,
   TMeta extends AnyPaginationMeta,
 > {
+  /** Query schema with the pagination parameters. */
   readonly query: TQuery;
+  /** Response schema with the items and the pagination fields. */
   readonly response: TResponse;
+  /**
+   * Pagination metadata. Emitted as `x-pagination` in the OpenAPI spec and
+   * as `pagination` in the generated client types.
+   */
   readonly __pagination: TMeta;
 }

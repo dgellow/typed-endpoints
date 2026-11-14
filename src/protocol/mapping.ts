@@ -32,8 +32,11 @@ export interface FieldMapping<
   TStep extends string = string,
   TPath extends string = string,
 > {
+  /** Discriminant of a field mapping. */
   readonly __kind: "field_mapping";
+  /** Name of the step whose response holds the value. */
   readonly step: TStep;
+  /** Dot-notation path of the value in that response. */
   readonly path: TPath;
 }
 

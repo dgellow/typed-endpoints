@@ -25,6 +25,13 @@ export type ValidationIssues = z.ZodError["issues"];
 
 /** Base class of the errors a protocol session raises. */
 export class ProtocolError extends Error {
+  /**
+   * Create the error.
+   *
+   * @param message Error message.
+   * @param protocol Name of the protocol.
+   * @param step Name of the step that was being executed.
+   */
   constructor(
     message: string,
     /** Name of the protocol. */
@@ -39,6 +46,12 @@ export class ProtocolError extends Error {
 
 /** The protocol has no step of that name. */
 export class UnknownStepError extends ProtocolError {
+  /**
+   * Create the error.
+   *
+   * @param protocol Name of the protocol.
+   * @param step The step name that was asked for.
+   */
   constructor(protocol: string, step: string) {
     super(`Unknown step: ${step}`, protocol, step);
   }
@@ -46,6 +59,14 @@ export class UnknownStepError extends ProtocolError {
 
 /** A step this one depends on has not been executed yet. */
 export class StepNotAvailableError extends ProtocolError {
+  /**
+   * Create the error.
+   *
+   * @param message Error message.
+   * @param protocol Name of the protocol.
+   * @param step Name of the step that was being executed.
+   * @param requires The step that has to run first.
+   */
   constructor(
     message: string,
     protocol: string,
@@ -65,6 +86,14 @@ export class StepNotAvailableError extends ProtocolError {
  * Typical case: `exchange` after `authorize` returned its error variant.
  */
 export class StepRefusedError extends ProtocolError {
+  /**
+   * Create the error.
+   *
+   * @param message Error message.
+   * @param protocol Name of the protocol.
+   * @param step Name of the step that was being executed.
+   * @param because The step whose response rules this one out.
+   */
   constructor(
     message: string,
     protocol: string,
@@ -78,6 +107,14 @@ export class StepRefusedError extends ProtocolError {
 
 /** The request does not match the step's request schema. */
 export class InvalidRequestError extends ProtocolError {
+  /**
+   * Create the error.
+   *
+   * @param message Error message.
+   * @param protocol Name of the protocol.
+   * @param step Name of the step that was being executed.
+   * @param issues What the request schema rejected.
+   */
   constructor(
     message: string,
     protocol: string,
@@ -90,6 +127,14 @@ export class InvalidRequestError extends ProtocolError {
 
 /** The executor returned something that is not the step's response. */
 export class InvalidResponseError extends ProtocolError {
+  /**
+   * Create the error.
+   *
+   * @param message Error message.
+   * @param protocol Name of the protocol.
+   * @param step Name of the step that was being executed.
+   * @param issues What the response schema rejected.
+   */
   constructor(
     message: string,
     protocol: string,

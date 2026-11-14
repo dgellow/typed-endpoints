@@ -45,10 +45,15 @@ export interface Step<
   TRequest extends z.ZodType = z.ZodType,
   TResponse extends z.ZodType = z.ZodType,
 > {
+  /** Discriminant. */
   readonly __kind: "step";
+  /** Step name. */
   readonly name: TName;
+  /** Request schema. */
   readonly request: TRequest;
+  /** Response schema. */
   readonly response: TResponse;
+  /** Human-readable description. */
   readonly description?: string;
   /** Operation ID for mapping to HTTP routes */
   readonly operationId?: string;
@@ -71,12 +76,17 @@ export interface DependentStep<
   TResponse extends z.ZodType = z.ZodType,
   TDependsOn extends string = string,
 > {
+  /** Discriminant. */
   readonly __kind: "dependent_step";
+  /** Step name. */
   readonly name: TName;
   /** Request schema is derived from previous step's response */
   readonly request: (prev: TPrevResponse) => TRequest;
+  /** Response schema. */
   readonly response: TResponse;
+  /** The step whose response the request function receives. */
   readonly dependsOn: TDependsOn;
+  /** Human-readable description. */
   readonly description?: string;
   /** Operation ID for mapping to HTTP routes */
   readonly operationId?: string;
@@ -101,15 +111,19 @@ export interface MappedStep<
   TDependsOn extends string = string,
   TMapping extends Record<string, FieldMapping> = Record<string, FieldMapping>,
 > {
+  /** Discriminant. */
   readonly __kind: "mapped_step";
+  /** Step name. */
   readonly name: TName;
   /** Static Zod schema for the request (before literal replacement) */
   readonly requestSchema: TRequest;
   /** Declarative field-to-step mappings */
   readonly requestMapping: TMapping;
+  /** Response schema. */
   readonly response: TResponse;
   /** Primary dependency */
   readonly dependsOn: TDependsOn;
+  /** Human-readable description. */
   readonly description?: string;
   /** Operation ID for mapping to HTTP routes */
   readonly operationId?: string;
@@ -132,7 +146,9 @@ export interface MappedStep<
 export interface Sequence<
   TSteps extends readonly AnyStep[] = readonly AnyStep[],
 > {
+  /** Discriminant. */
   readonly __kind: "sequence";
+  /** Steps in execution order. */
   readonly steps: TSteps;
 }
 
@@ -145,9 +161,13 @@ export interface Sequence<
  * Used for: pagination, retries, write-many-then-close patterns.
  */
 export interface Repeat<TStep extends AnyStep = AnyStep> {
+  /** Discriminant. */
   readonly __kind: "repeat";
+  /** The repeated step. */
   readonly step: TStep;
+  /** Minimum number of repetitions. */
   readonly min?: number;
+  /** Maximum number of repetitions. Unbounded when omitted. */
   readonly max?: number;
 }
 
@@ -160,7 +180,9 @@ export interface Repeat<TStep extends AnyStep = AnyStep> {
 export interface Choice<
   TSteps extends readonly AnyStep[] = readonly AnyStep[],
 > {
+  /** Discriminant. */
   readonly __kind: "choice";
+  /** The alternatives. */
   readonly steps: TSteps;
 }
 
@@ -174,9 +196,13 @@ export interface Branch<
   TThen extends AnyStep = AnyStep,
   TElse extends AnyStep = AnyStep,
 > {
+  /** Discriminant. */
   readonly __kind: "branch";
+  /** Decides the branch from the previous response. */
   readonly predicate: TPredicate;
+  /** Step taken when the predicate holds. */
   readonly then: TThen;
+  /** Step taken otherwise. */
   readonly else: TElse;
 }
 
@@ -189,7 +215,9 @@ export interface Branch<
 export interface Parallel<
   TSteps extends readonly AnyStep[] = readonly AnyStep[],
 > {
+  /** Discriminant. */
   readonly __kind: "parallel";
+  /** Steps that run concurrently. */
   readonly steps: TSteps;
 }
 
@@ -211,11 +239,17 @@ export interface Protocol<
     AnyStep | AnyComposition
   >,
 > {
+  /** Discriminant. */
   readonly __kind: "protocol";
+  /** Protocol name. */
   readonly name: TName;
+  /** Steps by name. */
   readonly steps: TSteps;
+  /** The entry step. A session does not require it to run first. */
   readonly initial: keyof TSteps;
+  /** Steps that end the protocol. A session does not stop there. */
   readonly terminal?: readonly (keyof TSteps)[];
+  /** Human-readable description. */
   readonly description?: string;
 }
 
@@ -317,9 +351,13 @@ export interface ProtocolState<
   TProtocol extends Protocol,
   TCurrentStep extends keyof TProtocol["steps"] = keyof TProtocol["steps"],
 > {
+  /** Name of the protocol. */
   readonly protocol: TProtocol["name"];
+  /** The step the protocol is at. */
   readonly currentStep: TCurrentStep;
+  /** Results of the executed steps, in order. */
   readonly history: readonly StepResult[];
+  /** Values collected so far. */
   readonly data: Record<string, unknown>;
 }
 
@@ -327,8 +365,11 @@ export interface ProtocolState<
  * Result of executing a step.
  */
 export interface StepResult<TResponse = unknown> {
+  /** Name of the executed step. */
   readonly step: string;
+  /** When the step completed. */
   readonly timestamp: number;
+  /** The step's response. */
   readonly response: TResponse;
 }
 
@@ -347,9 +388,14 @@ export interface ProtocolMorphism<
   TSource extends Protocol = Protocol,
   TTarget extends Protocol = Protocol,
 > {
+  /** Discriminant. */
   readonly __kind: "morphism";
+  /** Protocol the morphism maps from. */
   readonly source: TSource;
+  /** Protocol the morphism maps to. */
   readonly target: TTarget;
+  /** Transforms a request of the source into a request of the target. */
   readonly forward: (req: unknown) => unknown;
+  /** Transforms a response of the target into a response of the source. */
   readonly backward: (res: unknown) => unknown;
 }

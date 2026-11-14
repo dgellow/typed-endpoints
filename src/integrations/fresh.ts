@@ -22,6 +22,8 @@ import type {
 } from "../core/types.ts";
 import { validateRequest } from "../core/validation.ts";
 
+export type { SseEvent, SseEventDef, SseMethodDef } from "../core/types.ts";
+
 /** JSON error response */
 function jsonError(error: string, status: number): Response {
   return new Response(JSON.stringify({ error }), {
@@ -39,6 +41,10 @@ export interface FreshApiMethodDef<
   TResponseSchema extends z.ZodType | undefined = z.ZodType | undefined,
 > extends
   ApiMethodDef<TBodySchema, TQuerySchema, TParamsSchema, TResponseSchema> {
+  /**
+   * Handles the request. Receives the Fresh context and the validated
+   * body, query and path parameters.
+   */
   readonly handler: (
     ctx: Context<TState>,
     validated: ValidatedRequest<
@@ -94,6 +100,11 @@ export interface FreshSseMethodDef<
   TParamsSchema extends z.ZodType | undefined = undefined,
   TEvents extends SseEventDef = SseEventDef,
 > extends SseMethodDef<TQuerySchema, TParamsSchema, TEvents> {
+  /**
+   * Produces the events. Receives the Fresh context, the validated query
+   * and path parameters, and a signal that aborts when the client
+   * disconnects or the response body is cancelled.
+   */
   readonly handler: (
     ctx: Context<TState>,
     validated: {

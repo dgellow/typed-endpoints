@@ -20,6 +20,7 @@ import {
   type RouteSource,
 } from "./extract.ts";
 
+/** Options of `generateTypes()`. */
 export interface TypeGenOptions {
   /** Directories containing route files. Defaults to ["routes/api"] */
   readonly routesDirs?: string[];

@@ -13,6 +13,7 @@ import type { Plugin } from "vite";
 import { generateOpenApiSpec, type GeneratorOptions } from "../core/openapi.ts";
 import { generateProtocolTypesFromModule } from "../protocol/typegen.ts";
 
+/** Options of `openApiPlugin()`. */
 export interface OpenApiPluginOptions extends GeneratorOptions {
   /** Output path for the spec file. Default: static/openapi.json */
   readonly outputPath?: string;
@@ -24,6 +25,7 @@ export interface OpenApiPluginOptions extends GeneratorOptions {
   readonly failOnError?: boolean;
 }
 
+/** Options of `protocolTypesPlugin()`. */
 export interface ProtocolTypesPluginOptions {
   /** Path to the protocol module file */
   readonly protocolModule: string;

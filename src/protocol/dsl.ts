@@ -41,9 +41,13 @@ export interface StepConfig<
   TRequest extends z.ZodType,
   TResponse extends z.ZodType,
 > {
+  /** Step name. Must equal the step's key in `protocol({ steps })`. */
   readonly name: TName;
+  /** Request schema. */
   readonly request: TRequest;
+  /** Response schema. */
   readonly response: TResponse;
+  /** Human-readable description. */
   readonly description?: string;
   /** Operation ID for mapping to HTTP routes */
   readonly operationId?: string;
@@ -88,12 +92,15 @@ export interface DependentStepConfig<
   TResponse extends z.ZodType,
   TDependsOn extends string,
 > {
+  /** Step name. Must equal the step's key in `protocol({ steps })`. */
   readonly name: TName;
   /** The step this depends on */
   readonly dependsOn: TDependsOn;
   /** Request schema derived from previous response */
   readonly request: (prev: TPrevResponse) => TRequest;
+  /** Response schema. */
   readonly response: TResponse;
+  /** Human-readable description. */
   readonly description?: string;
   /** Operation ID for mapping to HTTP routes */
   readonly operationId?: string;
@@ -145,7 +152,7 @@ export function dependentStep<
 }
 
 /** Keys of every member of a union. */
-type KeysOfUnion<T> = T extends unknown ? keyof T : never;
+export type KeysOfUnion<T> = T extends unknown ? keyof T : never;
 
 /**
  * A mapping whose keys are all fields of the request schema.
@@ -172,6 +179,7 @@ export interface MappedStepConfig<
   TDependsOn extends string,
   TMapping extends Record<string, FieldMapping>,
 > {
+  /** Step name. Must equal the step's key in `protocol({ steps })`. */
   readonly name: TName;
   /** Primary dependency */
   readonly dependsOn: TDependsOn;
@@ -179,7 +187,9 @@ export interface MappedStepConfig<
   readonly requestMapping: TMapping;
   /** Static request schema (before literal replacement) */
   readonly requestSchema: TRequest;
+  /** Response schema. */
   readonly response: TResponse;
+  /** Human-readable description. */
   readonly description?: string;
   /** Operation ID for mapping to HTTP routes */
   readonly operationId?: string;
@@ -373,7 +383,7 @@ export function parallel<TSteps extends readonly AnyStep[]>(
  * from the key is a compile error. Names typed as plain `string` and
  * composition nodes (which have no name) are accepted.
  */
-type NamedByKey<TSteps> = {
+export type NamedByKey<TSteps> = {
   readonly [K in keyof TSteps]: TSteps[K] extends { readonly name: infer N }
     ? string extends N ? TSteps[K]
     : K extends N ? TSteps[K]
@@ -389,10 +399,21 @@ export interface ProtocolConfig<
   // Use minimal constraint to avoid widening literal types in steps
   TSteps extends Record<string, { readonly __kind: string }>,
 > {
+  /** Protocol name. Appears in error messages and generated output. */
   readonly name: TName;
+  /** Steps by name. Each key must equal the `name` of its step. */
   readonly steps: TSteps;
+  /**
+   * The entry step. It must not depend on another step. A session does
+   * not require it to run first.
+   */
   readonly initial: keyof TSteps;
+  /**
+   * Steps that end the protocol. `session.isTerminal()` reports whether
+   * the last executed step is one of them; a session does not stop there.
+   */
   readonly terminal?: readonly (keyof TSteps)[];
+  /** Human-readable description. */
   readonly description?: string;
 }
 
@@ -437,11 +458,16 @@ export function protocol<
 // =============================================================================
 
 /** Minimal protocol shape for introspection functions */
-interface ProtocolLike {
+export interface ProtocolLike {
+  /** Discriminant. */
   readonly __kind: "protocol";
+  /** Protocol name. */
   readonly name: string;
+  /** Steps by name. */
   readonly steps: Record<string, AnyStep | AnyComposition>;
+  /** Name of the entry step. */
   readonly initial: string;
+  /** Names of the steps that end the protocol. */
   readonly terminal?: readonly string[];
 }
 

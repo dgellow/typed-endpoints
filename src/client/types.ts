@@ -30,9 +30,13 @@ export type ResourceMethod =
 
 /** Definition for a single method */
 export interface MethodDef {
+  /** Path parameter types. */
   readonly params?: Record<string, string>;
+  /** Query parameter types. */
   readonly query?: Record<string, unknown>;
+  /** Request body type. */
   readonly body?: unknown;
+  /** Response body type. */
   readonly response?: unknown;
 }
 
@@ -50,7 +54,9 @@ export type ApiSchema = Record<string, any>;
 
 /** Options that can be passed to any method */
 export interface RequestOptions {
+  /** Query parameters, serialised into the URL. */
   readonly query?: Record<string, unknown>;
+  /** Aborts the request. */
   readonly signal?: AbortSignal;
 }
 
@@ -106,19 +112,25 @@ export type DeleteMethod<M extends MethodDef> = (
 
 /** SSE events definition for generated types */
 export interface SseEventsDef {
+  /** Data type of each event, by event name. */
   readonly [eventName: string]: unknown;
 }
 
 /** SSE method definition in generated Api interface */
 export interface SseMethodDef {
+  /** Path parameter types. */
   readonly params?: Record<string, string>;
+  /** Query parameter types. */
   readonly query?: Record<string, unknown>;
+  /** Event data types, by event name. */
   readonly events: SseEventsDef;
 }
 
 /** Options for SSE subscription */
 export interface SubscribeOptions {
+  /** Query parameters, serialised into the URL. */
   readonly query?: Record<string, unknown>;
+  /** Ends the subscription and closes the connection. */
   readonly signal?: AbortSignal;
   /**
    * Reconnect after a network failure or a 5xx response. Default: true.
@@ -157,8 +169,9 @@ export type SubscribeMethod<M extends SseMethodDef> = M["params"] extends
 // Resource to Client type mapping
 // =============================================================================
 
+/** A type with no keys: what a method or resource that is absent adds. */
 // deno-lint-ignore ban-types
-type Empty = {};
+export type Empty = {};
 
 /** Convert a ResourceDef to client methods */
 export type ResourceClient<R extends ResourceDef> =
