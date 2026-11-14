@@ -13,6 +13,7 @@
 
 import type { z } from "zod";
 import type {
+  AbandonStep,
   AnyComposition,
   AnyStep,
   Branch,
@@ -30,6 +31,11 @@ import type {
 import type { FieldMapping } from "./mapping.ts";
 import { isFieldMapping } from "./mapping.ts";
 import { lookupPath, primitiveKind, schemasAtPath } from "./introspect.ts";
+import {
+  isOptionalField,
+  unwrapSchema,
+  zodDef,
+} from "../core/zod_internals.ts";
 
 // =============================================================================
 // Step Builders
@@ -846,6 +852,16 @@ export interface ProtocolConfig<
    * the last executed step is one of them; a session does not stop there.
    */
   readonly terminal?: readonly (keyof TSteps)[];
+  /**
+   * The step that releases what a session holds. A session that is ended
+   * before a terminal step (`await using`, `session.abandon()`) runs it
+   * once, if it can run in the state the session is in.
+   *
+   * The session supplies the request, so the step has to be one it can
+   * fill in (`AbandonStep`): a mapped step whose required fields are all
+   * forwarded, or a step without required fields.
+   */
+  readonly onAbandon?: keyof TSteps;
   /** Human-readable description. */
   readonly description?: string;
 }
@@ -882,6 +898,7 @@ export function protocol<
       & RevokesKnown<TSteps>
       & RenewsKnown<TSteps>
     >;
+    readonly onAbandon?: NoInfer<AbandonStep<TSteps>>;
   },
 ): Protocol<TName, TSteps> {
   return {
@@ -890,6 +907,7 @@ export function protocol<
     steps: config.steps,
     initial: config.initial,
     terminal: config.terminal,
+    ...(config.onAbandon !== undefined && { onAbandon: config.onAbandon }),
     description: config.description,
   };
 }
@@ -910,6 +928,36 @@ export interface ProtocolLike {
   readonly initial: string;
   /** Names of the steps that end the protocol. */
   readonly terminal?: readonly string[];
+  /** Name of the step a session runs when it is ended early. */
+  readonly onAbandon?: string;
+}
+
+/** Why a session could not run this step by itself, if it could not. */
+function abandonProblem(
+  step: AnyStep | AnyComposition | undefined,
+): string | undefined {
+  if (!step) return "not found in steps";
+  if (step.__kind === "step") {
+    return step.request.safeParse({}).success
+      ? undefined
+      : "has required request fields; a session can only run it with an empty request";
+  }
+  if (step.__kind !== "mapped_step") {
+    return "is not a step or a mapped step; a session cannot derive its request";
+  }
+  const def = zodDef(unwrapSchema(step.requestSchema, "input"));
+  const shape = (def.type === "object" ? def.shape : {}) as Record<
+    string,
+    unknown
+  >;
+  const missing = Object.keys(shape).filter((field) =>
+    !(field in step.requestMapping) && !isOptionalField(shape[field], "input")
+  );
+  return missing.length === 0
+    ? undefined
+    : `requires ${
+      missing.map((field) => `"${field}"`).join(", ")
+    }, which no mapping fills in`;
 }
 
 /**
@@ -1016,6 +1064,15 @@ export function validateProtocol<T extends ProtocolLike>(proto: T): {
       if (!(term in proto.steps)) {
         errors.push(`Terminal step "${String(term)}" not found in steps`);
       }
+    }
+  }
+
+  // The abandon step is run by the session, which has to be able to fill
+  // in its request.
+  if (proto.onAbandon !== undefined) {
+    const problem = abandonProblem(proto.steps[proto.onAbandon]);
+    if (problem) {
+      errors.push(`onAbandon step "${proto.onAbandon}" ${problem}`);
     }
   }
 

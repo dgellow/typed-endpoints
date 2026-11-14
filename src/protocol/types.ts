@@ -369,9 +369,41 @@ export interface Protocol<
   readonly initial: keyof TSteps;
   /** Steps that end the protocol. A session does not stop there. */
   readonly terminal?: readonly (keyof TSteps)[];
+  /**
+   * The step a session runs when it is ended before a terminal step
+   * (`await using`, `session.abandon()`).
+   */
+  readonly onAbandon?: AbandonStep<TSteps>;
   /** Human-readable description. */
   readonly description?: string;
 }
+
+/** The keys of an object type that have to be present. */
+type RequiredKeys<T> = {
+  // deno-lint-ignore ban-types
+  [K in keyof T]-?: {} extends Pick<T, K> ? never : K;
+}[keyof T];
+
+/**
+ * The steps a session can run by itself, without a request from the
+ * caller: a mapped step whose required fields are all forwarded from
+ * earlier responses, and a step whose request has no required field.
+ * These are the steps `onAbandon` can name.
+ */
+export type AbandonStep<TSteps> = {
+  [K in keyof TSteps]: TSteps[K] extends {
+    readonly __kind: "mapped_step";
+    readonly requestMapping: infer M;
+    readonly requestSchema: infer Q extends z.ZodType;
+  } ? [RequiredKeys<z.input<Q>>] extends [keyof M] ? K : never
+    : TSteps[K] extends {
+      readonly __kind: "step";
+      readonly request: infer Q extends z.ZodType;
+    }
+    // deno-lint-ignore ban-types
+      ? {} extends z.input<Q> ? K : never
+    : never;
+}[keyof TSteps];
 
 // =============================================================================
 // Union Types

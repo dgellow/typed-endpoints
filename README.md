@@ -1722,6 +1722,63 @@ await granted.execute("exchange", request); // throws SessionSpentError
 Each session value then executes one step; a failed `execute()` does not spend
 it.
 
+#### Sessions that end early
+
+A client can leave a protocol half-way: a lock is acquired and the work throws,
+a file is opened and the function returns early. The types cannot forbid that in
+TypeScript (a value may always be dropped), so the protocol says what happens
+instead. It names the step that releases what a session holds, and a session
+that is ended before a terminal step runs it:
+
+```typescript
+const locking = protocol({
+  name: "Locking",
+  initial: "acquire",
+  terminal: ["release"],
+  onAbandon: "release",
+  steps: { acquire, renew, release },
+});
+
+{
+  await using session = createSession(locking, executor);
+  const acquired = await session.execute("acquire", { resource: "db" });
+  await work(); // throws, or the block returns early
+} // "release" has run, with the token "acquire" returned
+```
+
+- The session fills in the request, so `onAbandon` accepts only a step it can
+  run by itself: a mapped step whose required fields are all forwarded
+  (`fromStep()`), or a step without required fields. Another step is a compile
+  error on `onAbandon`, and an error of `validateProtocol()`
+- Every value `execute()` returns belongs to the session `createSession()`
+  started. Ending any of them (`await using`, `session.abandon()`) ends the
+  session, on the state its most recent step reached
+- Nothing runs when no step was executed, when the last step is a terminal one,
+  or when the `onAbandon` step cannot run in the state reached (its dependency
+  did not run)
+- A session ends once. Afterwards `execute()` on any of its values throws
+  `SessionEndedError`
+- `createSession(protocol, executor, { linear: true })`: the session has to
+  reach a terminal step. Ending it earlier still runs the `onAbandon` step and
+  then throws `SessionAbandonedError` (`history`, `released`). If the block was
+  left by an exception, both are reported in a `SuppressedError`
+- `abandon()` returns the step that ran with its request and response, or
+  `undefined`
+
+Limits:
+
+- A fork (two steps executed on the same session value) is followed along the
+  value that ran last; what the other branch holds is not released. `singleUse`
+  refuses forks
+- An `onAbandon` step that fails is not retried; its error is the error of the
+  block
+- `runPlan()` has no session: a plan that fails half-way releases nothing
+
+Against a live server (a lock service; the block is left by a return and by an
+exception): `e2e_tests/protocol_abandon_test.ts`. The distinction is the one
+between affine and linear session types: an affine session may be dropped, with
+a defined effect (Lagaillardie, Neykova, Yoshida, ECOOP 2022).
+
 #### Renewal
 
 A dependent step reads the latest response of the one step it depends on. Some
@@ -1815,6 +1872,8 @@ Key features:
   | `InvalidResponseError`  | The response does not match the step's schema (`issues`)              |
   | `UnknownStepError`      | The protocol has no such step                                         |
   | `SessionSpentError`     | Single-use session: this value already executed a step (`spentBy`)    |
+  | `SessionEndedError`     | The session was ended (`await using`, `abandon()`)                    |
+  | `SessionAbandonedError` | Linear session: ended before a terminal step (`history`, `released`)  |
 
 ### HTTP Executor
 

@@ -61,6 +61,8 @@ export interface XProtocol {
   readonly initial: string;
   /** Terminal step names */
   readonly terminal?: readonly string[];
+  /** The step a client runs when it gives up before a terminal step */
+  readonly onAbandon?: string;
   /** Protocol steps with dependencies and transitions */
   readonly steps: readonly XProtocolStep[];
 }
@@ -76,6 +78,7 @@ interface ProtocolLike {
   readonly steps: Record<string, AnyStep | AnyComposition>;
   readonly initial: string;
   readonly terminal?: readonly string[];
+  readonly onAbandon?: string;
   readonly description?: string;
 }
 
@@ -171,6 +174,9 @@ export function protocolToOpenApi<
     ...(proto.terminal &&
       proto.terminal.length > 0 && {
       terminal: proto.terminal.map((t) => t as string),
+    }),
+    ...(proto.onAbandon !== undefined && {
+      onAbandon: proto.onAbandon as string,
     }),
     steps,
   };

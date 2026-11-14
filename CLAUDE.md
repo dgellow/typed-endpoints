@@ -220,3 +220,9 @@ N. TypeScript can't express dependent types, so:
 - **Revocation**: `revoking(step, names)` removes steps from `TDone`/`TSeen` and
   their responses from the session. The types follow the returned session;
   `createSession(..., { singleUse: true })` refuses the earlier value at runtime
+- **Abandonment**: `protocol({ onAbandon: "close" })` names the step that
+  releases what a session holds; it has to be one the session can fill in
+  (`AbandonStep`). The values `execute()` returns share one lineage (`#line` in
+  `client.ts`); `await using` or `abandon()` on any of them ends the session
+  once, running the step on the latest state unless that state is terminal.
+  `{ linear: true }` then throws `SessionAbandonedError`
