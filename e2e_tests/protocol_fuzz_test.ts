@@ -84,10 +84,14 @@ function sessionService(defects: Defects = {}) {
 // only read the endpoint definitions.
 const definitions = sessionService();
 
-const login = fromEndpoint(definitions.session, "POST", { name: "login" });
+const login = fromEndpoint(definitions.session, "POST", {
+  name: "login",
+  path: "/api/session",
+});
 
 const whoami = fromEndpointMapped(definitions.me, "GET", {
   name: "whoami",
+  path: "/api/me",
   dependsOn: "login",
   requestMapping: { token: fromStep("login", "token") },
 });
@@ -95,6 +99,7 @@ const whoami = fromEndpointMapped(definitions.me, "GET", {
 const logout = revoking(
   fromEndpointMapped(definitions.session, "DELETE", {
     name: "logout",
+    path: "/api/session",
     dependsOn: "login",
     requestMapping: { token: fromStep("login", "token") },
   }),
@@ -106,12 +111,6 @@ const sessions = protocol({
   initial: "login",
   steps: { login, whoami, logout },
 });
-
-const routes = {
-  login: { method: "POST", path: "/api/session" },
-  whoami: { method: "GET", path: "/api/me" },
-  logout: { method: "DELETE", path: "/api/session" },
-} as const;
 
 function serve(defects: Defects = {}): {
   readonly baseUrl: string;
@@ -146,7 +145,7 @@ function serve(defects: Defects = {}): {
 function fuzz(baseUrl: string) {
   return fuzzProtocol(
     sessions,
-    createHttpExecutor(sessions, { baseUrl, routes }),
+    createHttpExecutor(sessions, { baseUrl }),
     {
       seed: 3,
       runs: 15,
@@ -225,7 +224,6 @@ Deno.test("E2E fuzz: an HTTP error status is a refusal", async () => {
   try {
     const executor = createHttpExecutor(sessions, {
       baseUrl: server.baseUrl,
-      routes,
     });
     let status = 0;
     try {

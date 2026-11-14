@@ -4,7 +4,12 @@
  * Tests protocol composition from endpoints using fromEndpoint/fromEndpointDependent.
  */
 
-import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { z } from "zod";
 
 import { createApiHandlers, endpoint } from "../integrations/fresh.ts";
@@ -12,7 +17,12 @@ import { createHttpExecutor, HttpError } from "./http.ts";
 import { createSession } from "./client.ts";
 import { InvalidResponseError } from "./errors.ts";
 import { protocol } from "./dsl.ts";
-import { fromEndpoint, fromEndpointDependent } from "./compose.ts";
+import {
+  fromEndpoint,
+  fromEndpointDependent,
+  fromEndpointMapped,
+} from "./compose.ts";
+import { fromStep } from "./mapping.ts";
 
 // =============================================================================
 // Test Endpoint Handlers (simulating route files)
@@ -592,29 +602,180 @@ Deno.test("HttpError contains status and body", async () => {
   }
 });
 
-Deno.test("createHttpExecutor throws when route not found", async () => {
-  const mockFetch: typeof fetch = () => {
-    return Promise.resolve(new Response("{}", { status: 200 }));
-  };
+Deno.test("createHttpExecutor fails when a step has no route, naming every such step", () => {
+  // Missing the routes of both steps: the protocol cannot be served, and
+  // that is known before the first request.
+  const error = assertThrows(
+    () =>
+      createHttpExecutor(authProtocol, {
+        baseUrl: "https://api.example.com",
+        routes: {
+          usersProfile: { method: "GET", path: "/api/users/profile" },
+        },
+      }),
+    Error,
+    "No route found for step",
+  );
+  assertStringIncludes(error.message, '"login" (operationId: authLogin)');
+  assertStringIncludes(error.message, '"logout" (operationId: logout)');
+  assertEquals(error.message.includes("getProfile"), false);
+});
 
+Deno.test("createHttpExecutor: steps handled elsewhere need no route", async () => {
+  const urls: string[] = [];
   const executor = createHttpExecutor(authProtocol, {
     baseUrl: "https://api.example.com",
-    routes: {
-      // Missing the authLogin route
-      usersProfile: { method: "GET", path: "/api/users/profile" },
+    routes: { authLogin: { method: "POST", path: "/api/auth/login" } },
+    // Performed by another executor.
+    except: ["getProfile", "logout"],
+    fetch: (input) => {
+      urls.push(String(input));
+      return Promise.resolve(Response.json({ accessToken: "t", userId: "u" }));
     },
-    fetch: mockFetch,
   });
 
-  const session = createSession(authProtocol, executor);
-
+  const context = { protocol: "Auth", history: [], responses: {} };
+  await executor.execute("login", { username: "x", password: "y" }, context);
+  assertEquals(urls, ["https://api.example.com/api/auth/login"]);
   await assertRejects(
-    async () => {
-      await session.execute("login", { username: "x", password: "y" });
-    },
+    () => executor.execute("logout", {}, context),
     Error,
-    'No route found for step "login"',
+    "this executor does not perform it",
   );
+});
+
+// =============================================================================
+// Steps that know their route
+// =============================================================================
+
+const itemHandlers = {
+  __apiDef: {
+    GET: {
+      params: z.object({ id: z.string() }),
+      query: z.object({ expand: z.string().optional() }),
+      response: z.object({ id: z.string() }),
+    },
+    PUT: {
+      params: z.object({ id: z.string() }),
+      body: z.object({ title: z.string() }),
+      response: z.object({ id: z.string() }),
+    },
+    PATCH: {
+      params: z.object({ id: z.string() }),
+      body: z.object({ title: z.string().optional() }),
+      response: z.object({ id: z.string() }),
+    },
+  },
+};
+
+Deno.test("fromEndpoint with a path: the step carries its route and the generators' operationId", () => {
+  const get = fromEndpoint(itemHandlers, "GET", {
+    name: "getItem",
+    path: "/api/items/{id}",
+  });
+  assertEquals(get.route, { method: "GET", path: "/api/items/{id}" });
+  // The id `--format routes` derives for this path and method.
+  assertEquals(get.operationId, "itemsRetrieve");
+
+  // PUT next to PATCH is `replace`, as in the generators.
+  assertEquals(
+    fromEndpoint(itemHandlers, "PUT", { name: "put", path: "/api/items/{id}" })
+      .operationId,
+    "itemsReplace",
+  );
+  assertEquals(
+    fromEndpoint(itemHandlers, "PATCH", {
+      name: "patch",
+      path: "/api/items/{id}",
+    }).operationId,
+    "itemsUpdate",
+  );
+
+  // The file-route form of the path is accepted.
+  assertEquals(
+    fromEndpoint(itemHandlers, "GET", {
+      name: "getItem",
+      path: "/api/items/[id]",
+    }).route,
+    { method: "GET", path: "/api/items/{id}" },
+  );
+
+  // Without a path, as before: the step name.
+  const plain = fromEndpoint(itemHandlers, "GET", { name: "getItem" });
+  assertEquals(plain.operationId, "getItem");
+  assertEquals(plain.route, undefined);
+
+  // An explicit operationId wins.
+  assertEquals(
+    fromEndpoint(itemHandlers, "GET", {
+      name: "getItem",
+      path: "/api/items/{id}",
+      operationId: "custom",
+    }).operationId,
+    "custom",
+  );
+});
+
+Deno.test("fromEndpoint with a path: a parameter the endpoint does not declare is refused", () => {
+  assertThrows(
+    () =>
+      fromEndpoint(itemHandlers, "GET", {
+        name: "getItem",
+        path: "/api/items/{itemId}",
+      }),
+    Error,
+    'the path /api/items/{itemId} has the parameter "itemId", which the GET endpoint does not declare in its params schema',
+  );
+  // `expand` is a query field, not a path parameter.
+  assertThrows(
+    () =>
+      fromEndpoint(itemHandlers, "GET", {
+        name: "getItem",
+        path: "/api/items/{id}/{expand}",
+      }),
+    Error,
+    '"expand"',
+  );
+});
+
+Deno.test("createHttpExecutor needs no route table for steps that know their route", async () => {
+  const proto = protocol({
+    name: "Items",
+    initial: "getItem",
+    steps: {
+      getItem: fromEndpoint(itemHandlers, "GET", {
+        name: "getItem",
+        path: "/api/items/{id}",
+      }),
+      rename: fromEndpointMapped(itemHandlers, "PUT", {
+        name: "rename",
+        path: "/api/items/{id}",
+        dependsOn: "getItem",
+        requestMapping: { id: fromStep("getItem", "id") },
+      }),
+    },
+  });
+
+  const seen: string[] = [];
+  const executor = createHttpExecutor(proto, {
+    baseUrl: "https://api.example.com",
+    fetch: (input, init) => {
+      seen.push(`${init?.method} ${String(input)}`);
+      return Promise.resolve(Response.json({ id: "i 1" }));
+    },
+  });
+
+  const session = createSession(proto, executor);
+  const { session: next } = await session.execute("getItem", {
+    id: "i 1",
+    expand: "owner",
+  });
+  await next.execute("rename", { id: "i 1", title: "New" });
+
+  assertEquals(seen, [
+    "GET https://api.example.com/api/items/i%201?expand=owner",
+    "PUT https://api.example.com/api/items/i%201",
+  ]);
 });
 
 // =============================================================================

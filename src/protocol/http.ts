@@ -27,8 +27,16 @@ export interface HttpExecutorConfig<
 > {
   /** Base URL for all API requests */
   readonly baseUrl: string;
-  /** Generated route metadata mapping operationId -> route info */
-  readonly routes: TRoutes;
+  /**
+   * Route metadata by operationId, as the route generators write it. Not
+   * needed when every step knows its route (`fromEndpoint()` with `path`).
+   */
+  readonly routes?: TRoutes;
+  /**
+   * Steps this executor is not asked to perform, by name: they are handled
+   * by another executor. They need no route.
+   */
+  readonly except?: readonly string[];
   /** Default headers to include with every request */
   readonly headers?: Record<string, string>;
   /** Custom fetch implementation (defaults to global fetch) */
@@ -105,6 +113,25 @@ export function createHttpExecutor<
 ): StepExecutor {
   const fetchFn = config.fetch ?? fetch;
 
+  // Every step is resolved now: a protocol that cannot be served fails
+  // when the executor is created, not at its first request.
+  const resolved = new Map<string, RouteConfig>();
+  const unresolved: string[] = [];
+  for (const [name, step] of Object.entries(protocol.steps)) {
+    if (config.except?.includes(name)) continue;
+    const routeId = step.operationId ?? name;
+    const route = step.route ?? config.routes?.[routeId];
+    if (route) resolved.set(name, route);
+    else unresolved.push(`"${name}" (operationId: ${routeId})`);
+  }
+  if (unresolved.length > 0) {
+    throw new Error(
+      `No route found for step ${
+        unresolved.join(", ")
+      }. A step needs a route of its own (fromEndpoint() with \`path\`) or an entry in \`routes\` under its operationId.`,
+    );
+  }
+
   return {
     async execute(
       stepName: string,
@@ -117,13 +144,10 @@ export function createHttpExecutor<
         throw new Error(`Unknown step: ${stepName}`);
       }
 
-      // Get route by operationId, fall back to step name
-      const routeId = step.operationId ?? stepName;
-      const route = config.routes[routeId as keyof TRoutes];
-
+      const route = resolved.get(stepName);
       if (!route) {
         throw new Error(
-          `No route found for step "${stepName}" (operationId: ${routeId})`,
+          `Step "${stepName}" is listed in \`except\`: this executor does not perform it`,
         );
       }
 
