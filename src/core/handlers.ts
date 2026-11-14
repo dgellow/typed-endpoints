@@ -22,12 +22,26 @@ import type {
 } from "./types.ts";
 import { validateRequest } from "./validation.ts";
 
-/** How to read a request out of a framework's context value. */
-export interface RequestAccess<TContext> {
+/** Path parameters as a router hands them over. */
+export type RawParams = Readonly<
+  Record<string, string | readonly string[] | undefined>
+>;
+
+/**
+ * How to read a request out of what a framework passes to a handler.
+ *
+ * `TContext` is the first argument, which the endpoint's own handler
+ * receives too. `TRest` are further arguments of the framework's handler
+ * signature (Next.js passes the path parameters in a second argument).
+ */
+export interface RequestAccess<TContext, TRest extends unknown[] = []> {
   /** The standard request. */
-  readonly request: (context: TContext) => Request;
-  /** The path parameters the router extracted. */
-  readonly params: (context: TContext) => Record<string, string>;
+  readonly request: (context: TContext, ...rest: TRest) => Request;
+  /** The path parameters the router extracted. May be a promise. */
+  readonly params: (
+    context: TContext,
+    ...rest: TRest
+  ) => RawParams | undefined | Promise<RawParams | undefined>;
 }
 
 /** A method definition with its handler, for context type `TContext`. */
@@ -85,9 +99,18 @@ export type ApiDefOf<TDef> = {
   readonly [M in keyof TDef]: Omit<TDef[M], "handler">;
 };
 
+/** A handler in a framework's signature, carrying its method definition. */
+export type RouteHandler<
+  TContext,
+  TRest extends unknown[],
+  TMethodDef,
+> =
+  & ((context: TContext, ...rest: TRest) => Promise<Response>)
+  & { readonly __methodDef: Omit<TMethodDef, "handler"> };
+
 /** What `buildHandlers()` returns: one handler per defined method. */
-export type Handlers<TContext, TDef> =
-  & { [M in keyof TDef]: (context: TContext) => Promise<Response> }
+export type Handlers<TContext, TDef, TRest extends unknown[] = []> =
+  & { [M in keyof TDef]: RouteHandler<TContext, TRest, TDef[M]> }
   & { __apiDef: ApiDefOf<TDef> };
 
 /** Options of `buildHandlers()`. */
@@ -201,12 +224,30 @@ function isSseEndpoint(def: unknown): boolean {
  * @param access How to read the request and the path parameters from the
  *   value the framework passes to a handler.
  */
-export function buildHandlers<TContext, TDef extends Record<string, unknown>>(
+export function buildHandlers<
+  TContext,
+  TDef extends Record<string, unknown>,
+  TRest extends unknown[] = [],
+>(
   apiDef: TDef,
-  access: RequestAccess<TContext>,
+  access: RequestAccess<TContext, TRest>,
   options: BuildHandlersOptions = {},
-): Handlers<TContext, TDef> {
-  const handlers: Record<string, (context: TContext) => Promise<Response>> = {};
+): Handlers<TContext, TDef, TRest> {
+  const handlers: Record<
+    string,
+    (context: TContext, ...rest: TRest) => Promise<Response>
+  > = {};
+
+  // Path parameters without the entries a router left undefined.
+  const paramsOf = async (
+    context: TContext,
+    rest: TRest,
+  ): Promise<Record<string, string>> => {
+    const raw = await access.params(context, ...rest) ?? {};
+    return Object.fromEntries(
+      Object.entries(raw).filter(([, value]) => value !== undefined),
+    ) as Record<string, string>;
+  };
 
   type MethodDef = HandlerMethodDef<TContext, z.ZodType, z.ZodType, z.ZodType>;
   type SseDef = HandlerSseMethodDef<
@@ -222,14 +263,14 @@ export function buildHandlers<TContext, TDef extends Record<string, unknown>>(
     // Handle SSE endpoints
     if (isSseEndpoint(def)) {
       const sseDef = def as SseDef;
-      handlers[method] = async (context: TContext) => {
-        const request = access.request(context);
+      handlers[method] = async (context: TContext, ...rest: TRest) => {
+        const request = access.request(context, ...rest);
         // Validate query and params only (SSE has no body)
         const result = await validateRequest(
           {
             json: () => Promise.resolve(undefined),
             url: request.url,
-            params: access.params(context),
+            params: await paramsOf(context, rest),
           },
           { query: sseDef.query, params: sseDef.params },
           "GET",
@@ -257,13 +298,13 @@ export function buildHandlers<TContext, TDef extends Record<string, unknown>>(
     } else {
       // Handle regular REST endpoints
       const methodDef = def as MethodDef;
-      handlers[method] = async (context: TContext) => {
-        const request = access.request(context);
+      handlers[method] = async (context: TContext, ...rest: TRest) => {
+        const request = access.request(context, ...rest);
         const result = await validateRequest(
           {
             json: () => request.json(),
             url: request.url,
-            params: access.params(context),
+            params: await paramsOf(context, rest),
           },
           methodDef,
           method,
@@ -286,6 +327,9 @@ export function buildHandlers<TContext, TDef extends Record<string, unknown>>(
     // deno-lint-ignore no-explicit-any
     const { handler: _, ...rest } = def as Record<string, any>;
     apiDefWithoutHandlers[method as HttpMethod] = rest;
+    // Each function carries its own definition as well: frameworks that
+    // take one export per method have no handler object to read it from.
+    Object.defineProperty(handlers[method], "__methodDef", { value: rest });
   }
 
   Object.defineProperty(handlers, "__apiDef", {
@@ -294,5 +338,90 @@ export function buildHandlers<TContext, TDef extends Record<string, unknown>>(
     writable: true,
     configurable: true,
   });
-  return handlers as Handlers<TContext, TDef>;
+  return handlers as unknown as Handlers<TContext, TDef, TRest>;
+}
+
+// =============================================================================
+// Integrations
+// =============================================================================
+
+/**
+ * The helpers of a framework integration, typed for the framework's
+ * handler signature.
+ */
+export interface Integration<TContext, TRest extends unknown[] = []> {
+  /**
+   * Define an API endpoint with full type inference for the handler.
+   *
+   * Zero runtime cost: returns its argument. It exists so that the schemas
+   * type the `validated` argument of the handler.
+   */
+  endpoint<
+    TBodySchema extends z.ZodType | undefined = undefined,
+    TQuerySchema extends z.ZodType | undefined = undefined,
+    TParamsSchema extends z.ZodType | undefined = undefined,
+    TResponseSchema extends z.ZodType | undefined = undefined,
+  >(
+    def: HandlerMethodDef<
+      TContext,
+      TBodySchema,
+      TQuerySchema,
+      TParamsSchema,
+      TResponseSchema
+    >,
+  ): HandlerMethodDef<
+    TContext,
+    TBodySchema,
+    TQuerySchema,
+    TParamsSchema,
+    TResponseSchema
+  >;
+
+  /**
+   * Define an SSE endpoint with full type inference.
+   *
+   * Zero runtime cost: returns its argument.
+   */
+  sseEndpoint<
+    TQuerySchema extends z.ZodType | undefined = undefined,
+    TParamsSchema extends z.ZodType | undefined = undefined,
+    TEvents extends SseEventDef = SseEventDef,
+  >(
+    def: HandlerSseMethodDef<TContext, TQuerySchema, TParamsSchema, TEvents>,
+  ): HandlerSseMethodDef<TContext, TQuerySchema, TParamsSchema, TEvents>;
+
+  /**
+   * Create the framework's handlers, with automatic validation: one
+   * function per method, each in the framework's handler signature.
+   */
+  createApiHandlers<TDef extends Record<string, unknown>>(
+    apiDef: TDef,
+  ): Handlers<TContext, TDef, TRest>;
+}
+
+/**
+ * Create the helpers of an integration from how the framework's handler
+ * arguments give access to the request.
+ *
+ * @example
+ * ```ts
+ * // A framework that calls handlers with (request, { params })
+ * const { endpoint, sseEndpoint, createApiHandlers } = defineIntegration<
+ *   Request,
+ *   [route: { params: Record<string, string> }]
+ * >({
+ *   request: (request) => request,
+ *   params: (_request, route) => route.params,
+ * });
+ * ```
+ */
+export function defineIntegration<TContext, TRest extends unknown[] = []>(
+  access: RequestAccess<TContext, TRest>,
+  options: BuildHandlersOptions = {},
+): Integration<TContext, TRest> {
+  return {
+    endpoint: (def) => def,
+    sseEndpoint: (def) => def,
+    createApiHandlers: (apiDef) => buildHandlers(apiDef, access, options),
+  };
 }

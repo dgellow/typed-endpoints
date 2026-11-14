@@ -11,14 +11,19 @@
  */
 
 import type { ZodType } from "zod";
+import { readModuleApi } from "../core/module_api.ts";
 import { TypeDeclarations, zodToTypeString } from "./zod.ts";
 
 /** A route file to import. */
 export interface RouteSource {
-  /** Path as discovered on disk; used in messages and to derive the URL path. */
+  /** Path as discovered on disk; used in messages. */
   readonly filePath: string;
   /** Module URL to import. */
   readonly url: string;
+  /** URL path in file-route notation, e.g. `/api/users/[id]`. */
+  readonly apiPath: string;
+  /** HTTP method, when the file name states it (Nitro). */
+  readonly method?: string;
 }
 
 /** One HTTP method of a route, with its schemas rendered as type text. */
@@ -45,6 +50,8 @@ export interface ExtractedMethod {
 
 export interface ExtractedRoute {
   readonly filePath: string;
+  /** URL path in file-route notation. */
+  readonly apiPath: string;
   readonly methods: Readonly<Record<string, ExtractedMethod>>;
 }
 
@@ -90,7 +97,7 @@ export async function extractRoutes(
   const routes: ExtractedRoute[] = [];
 
   for (const source of sources) {
-    let mod: { handler?: { __apiDef?: Record<string, MethodDefLike> } };
+    let mod: unknown;
     try {
       mod = await import(source.url);
     } catch (cause) {
@@ -100,7 +107,9 @@ export async function extractRoutes(
       );
     }
 
-    const apiDef = mod.handler?.__apiDef;
+    const apiDef = readModuleApi(mod, source.method) as
+      | Record<string, MethodDefLike>
+      | undefined;
     if (!apiDef) continue;
 
     const methods: Record<string, ExtractedMethod> = {};
@@ -183,7 +192,11 @@ export async function extractRoutes(
       };
     }
 
-    routes.push({ filePath: source.filePath, methods });
+    routes.push({
+      filePath: source.filePath,
+      apiPath: source.apiPath,
+      methods,
+    });
   }
 
   return {

@@ -3,6 +3,7 @@
 import { stat, writeFile } from "node:fs/promises";
 import process from "node:process";
 import { parseArgs } from "node:util";
+import { ROUTE_CONVENTIONS, type RouteConvention } from "./core/routes.ts";
 import { generateTypes } from "./tsgen/mod.ts";
 import { generateProtocolTypesFromModule } from "./protocol/typegen.ts";
 
@@ -17,6 +18,8 @@ Options:
   -o, --output <file>   Output file path (required)
   -c, --config <file>   Path to deno.json (auto-detected if not provided)
   -f, --format <fmt>    Output format: types, client, routes, or protocol (default: types)
+  --convention <name>   Route file layout: fresh, next, sveltekit, astro, or nitro
+                        (default: fresh; also the layout for Bun, Hono and fetch)
   -p, --protocol <file> Protocol module path (required when --format protocol)
   --client-import <mod> Module the client format imports its helper types from
                         (default: @dgellow/typed-endpoints/client)
@@ -32,6 +35,7 @@ Examples:
   typed-endpoints -r routes/api -o src/api-types.ts
   typed-endpoints -r routes/api -o src/api-client.ts --format client
   typed-endpoints -r routes/api -o src/api-routes.ts --format routes
+  typed-endpoints -r app/api -o src/api-client.ts --format client --convention next
   typed-endpoints --format protocol --protocol ./my-protocol.ts -o src/protocol-types.ts
 `;
 
@@ -71,6 +75,7 @@ async function main() {
         format: { type: "string", short: "f" },
         protocol: { type: "string", short: "p" },
         "client-import": { type: "string" },
+        convention: { type: "string" },
         help: { type: "boolean", short: "h" },
       },
       strict: true,
@@ -102,6 +107,15 @@ async function main() {
   if (format && !["types", "client", "routes", "protocol"].includes(format)) {
     fail(
       `Invalid format "${format}". Must be: types, client, routes, or protocol`,
+    );
+  }
+
+  const convention = args.convention as RouteConvention | undefined;
+  if (convention && !ROUTE_CONVENTIONS.includes(convention)) {
+    fail(
+      `Invalid convention "${convention}". Must be: ${
+        ROUTE_CONVENTIONS.join(", ")
+      }`,
     );
   }
 
@@ -138,6 +152,7 @@ async function main() {
       config,
       format,
       clientImport: args["client-import"],
+      convention,
     });
     console.log(`Generated ${format ?? "types"} written to ${args.output}`);
   } catch (error) {

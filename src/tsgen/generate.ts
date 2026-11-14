@@ -6,12 +6,13 @@ import {
   capitalize,
   deriveOperationId,
   endsWithParam,
-  filePathToApiPath,
   fileUrlOf,
   HTTP_METHODS,
   httpMethodToResourceMethod,
   listRouteFiles,
   pathToResourceSegments,
+  type RouteConvention,
+  routeOfFile,
 } from "../core/routes.ts";
 import { pathToTypeName } from "./path.ts";
 import { isIdentifier } from "./zod.ts";
@@ -25,7 +26,7 @@ import {
 /** Options of `generateTypes()`. */
 export interface TypeGenOptions {
   /** Directories containing route files. Defaults to ["routes/api"] */
-  readonly routesDirs?: string[];
+  readonly routesDirs?: readonly string[];
   /** Output file path. If provided, writes generated types to this file */
   readonly output?: string;
   /**
@@ -44,6 +45,12 @@ export interface TypeGenOptions {
    * - "routes": Runtime route metadata for use with createHttpExecutor()
    */
   readonly format?: "types" | "client" | "routes";
+  /**
+   * The framework whose route file layout `routesDirs` follows. Defaults
+   * to "fresh" (`routes/api/users/[id].ts`), which is also what the Bun,
+   * Hono and fetch integrations read. See `RouteConvention`.
+   */
+  readonly convention?: RouteConvention;
   /**
    * Module the generated client types import their helper types from.
    * Only used by the "client" format, and only when an endpoint's response
@@ -158,15 +165,22 @@ function assertNoCollisions(
 function buildEndpoints(extraction: Extraction): EndpointType[] {
   const endpoints: EndpointType[] = [];
 
-  for (const { filePath, methods } of extraction.routes) {
-    const apiPath = filePathToApiPath(filePath);
+  // How many methods a path has, across files: one file per method is a
+  // layout too (Nitro's `users.get.ts` next to `users.post.ts`).
+  const methodsOfPath = new Map<string, number>();
+  for (const { apiPath, methods } of extraction.routes) {
+    const count = HTTP_METHODS.filter((m) => methods[m]).length;
+    methodsOfPath.set(apiPath, (methodsOfPath.get(apiPath) ?? 0) + count);
+  }
+
+  for (const { filePath, apiPath, methods } of extraction.routes) {
     const baseName = pathToTypeName(apiPath);
     const defined = HTTP_METHODS.filter((m) => methods[m]);
 
     for (const method of defined) {
       const def: ExtractedMethod = methods[method];
       // Disambiguate if multiple methods on same endpoint
-      const name = defined.length > 1
+      const name = methodsOfPath.get(apiPath)! > 1
         ? `${baseName}${capitalize(method.toLowerCase())}`
         : baseName;
 
@@ -198,7 +212,12 @@ function buildEndpoints(extraction: Extraction): EndpointType[] {
 export async function generateTypes(
   options: TypeGenOptions = {},
 ): Promise<string> {
-  const { routesDirs = ["routes/api"], output, config } = options;
+  const {
+    routesDirs = ["routes/api"],
+    output,
+    config,
+    convention = "fresh",
+  } = options;
 
   const routeFiles = (await Promise.all(routesDirs.map(listRouteFiles)))
     .flat();
@@ -211,12 +230,18 @@ export async function generateTypes(
   // The query string makes each in-process run import the current file,
   // not a cached module.
   const cacheBuster = inSubprocess ? "" : `?t=${Date.now()}`;
-  const sources: RouteSource[] = await Promise.all(
-    routeFiles.sort().map(async (filePath) => ({
+  const sources: RouteSource[] = [];
+  for (const filePath of routeFiles.sort()) {
+    // Not every file below the directory is a route in every convention.
+    const route = routeOfFile(filePath, convention);
+    if (!route) continue;
+    sources.push({
       filePath,
       url: await fileUrlOf(filePath) + cacheBuster,
-    })),
-  );
+      apiPath: route.apiPath,
+      ...(route.method && { method: route.method }),
+    });
+  }
 
   const extraction = inSubprocess
     ? await extractWithConfig(sources, config)

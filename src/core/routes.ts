@@ -92,33 +92,134 @@ export async function fileUrlOf(path: string): Promise<string> {
 // =============================================================================
 
 /**
+ * Where a framework keeps its route files and how it spells a path.
+ *
+ * | Convention  | Route file                                | URL path         |
+ * | ----------- | ----------------------------------------- | ---------------- |
+ * | `fresh`     | `routes/api/users/[id].ts`                | `/api/users/[id]` |
+ * | `next`      | `app/api/users/[id]/route.ts`             | `/api/users/[id]` |
+ * | `sveltekit` | `src/routes/api/users/[id]/+server.ts`    | `/api/users/[id]` |
+ * | `astro`     | `src/pages/api/users/[id].ts`             | `/api/users/[id]` |
+ * | `nitro`     | `server/api/users/[id].get.ts`            | `/api/users/[id]`, GET |
+ *
+ * `fresh` is also the layout `fileRoutes()` reads for Bun, Hono and plain
+ * fetch handlers.
+ */
+export type RouteConvention =
+  | "fresh"
+  | "next"
+  | "sveltekit"
+  | "astro"
+  | "nitro";
+
+/** The conventions, for validating an option. */
+export const ROUTE_CONVENTIONS: readonly RouteConvention[] = [
+  "fresh",
+  "next",
+  "sveltekit",
+  "astro",
+  "nitro",
+];
+
+/** What a file path says about the route it defines. */
+export interface RouteOfFile {
+  /** URL path in file-route notation, e.g. `/api/users/[id]`. */
+  readonly apiPath: string;
+  /** HTTP method, when the file name states it (Nitro). */
+  readonly method?: HttpMethod;
+}
+
+/** The part of `path` after the last directory named `marker`. */
+function after(path: string, marker: string): string | undefined {
+  const inside = path.lastIndexOf(`/${marker}/`);
+  if (inside !== -1) return path.slice(inside + marker.length + 1);
+  if (path.startsWith(`${marker}/`)) return path.slice(marker.length);
+  return undefined;
+}
+
+/** Remove `(group)` and `@slot` folders, which are not part of the URL. */
+function withoutGroups(path: string): string {
+  return path.replace(/\/(\([^)/]+\)|@[^/]+)(?=\/|$)/g, "");
+}
+
+/** `[[x]]` to `[x]`, `[[...x]]` to `[...x]`, `[x=matcher]` to `[x]`. */
+function plainParams(path: string): string {
+  return path
+    .replace(/\[\[(\.\.\.)?(\w+)\]\]/g, "[$1$2]")
+    .replace(/\[(\.\.\.)?(\w+)=\w+\]/g, "[$1$2]");
+}
+
+function withoutIndex(path: string): string {
+  return path.endsWith("/index")
+    ? path.slice(0, -"/index".length) || "/"
+    : path;
+}
+
+/**
+ * The route a file defines under a convention, or `undefined` when the
+ * convention does not treat the file as a route (for example a helper next
+ * to a Next.js `route.ts`).
+ *
+ * Works on the path as given: relative, `./`-prefixed and absolute paths
+ * give the same result, because everything up to the convention's root
+ * directory is dropped.
+ */
+export function routeOfFile(
+  filePath: string,
+  convention: RouteConvention = "fresh",
+): RouteOfFile | undefined {
+  const path = filePath.replace(/\\/g, "/").replace(/\.(ts|tsx)$/, "");
+
+  switch (convention) {
+    case "fresh": {
+      const rest = after(path, "routes") ?? path;
+      return { apiPath: withoutGroups(withoutIndex(rest)) };
+    }
+
+    case "next": {
+      // Only `route.ts` files are endpoints; the path is their directory.
+      if (!/(^|\/)route$/.test(path)) return undefined;
+      const dir = path.replace(/\/?route$/, "");
+      const rest = after(`${dir}/`, "app")?.replace(/\/$/, "") ?? dir;
+      return { apiPath: plainParams(withoutGroups(rest)) || "/" };
+    }
+
+    case "sveltekit": {
+      // Only `+server.ts` files are endpoints.
+      if (!/(^|\/)\+server$/.test(path)) return undefined;
+      const dir = path.replace(/\/?\+server$/, "");
+      const rest = after(`${dir}/`, "routes")?.replace(/\/$/, "") ?? dir;
+      return { apiPath: plainParams(withoutGroups(rest)) || "/" };
+    }
+
+    case "astro": {
+      const rest = after(path, "pages") ?? path;
+      return { apiPath: withoutIndex(rest) };
+    }
+
+    case "nitro": {
+      // `server/routes/x` serves `/x`; `server/api/x` serves `/api/x`.
+      const rest = after(path, "routes") ?? after(path, "server") ?? path;
+      const suffix = /\.(get|post|put|delete|patch|head|options)$/i.exec(rest);
+      const bare = suffix ? rest.slice(0, suffix.index) : rest;
+      return {
+        apiPath: withoutIndex(bare),
+        ...(suffix && { method: suffix[1].toUpperCase() as HttpMethod }),
+      };
+    }
+  }
+}
+
+/**
  * Convert a route file path to its URL path in file-route notation.
  * e.g. `src/routes/api/users/[id].ts` -> `/api/users/[id]`
  *
- * Everything up to and including the `routes` directory is dropped, so the
- * result is the same for relative, `./`-prefixed and absolute paths.
+ * Fresh's convention: everything up to and including the `routes`
+ * directory is dropped, so the result is the same for relative,
+ * `./`-prefixed and absolute paths. See `routeOfFile()` for the others.
  */
 export function filePathToApiPath(filePath: string): string {
-  let path = filePath.replace(/\\/g, "/");
-
-  // Extract from routes/ if present anywhere in path
-  const routesIdx = path.indexOf("/routes/");
-  if (routesIdx !== -1) {
-    path = path.slice(routesIdx + "/routes".length);
-  } else if (path.startsWith("routes/")) {
-    path = "/" + path.slice("routes/".length);
-  }
-
-  path = path.replace(/\.(ts|tsx)$/, "");
-
-  if (path.endsWith("/index")) {
-    path = path.slice(0, -6) || "/";
-  }
-
-  // Strip route groups like (auth), (admin), etc.
-  path = path.replace(/\/\([^)]+\)/g, "");
-
-  return path;
+  return routeOfFile(filePath, "fresh")!.apiPath;
 }
 
 /**

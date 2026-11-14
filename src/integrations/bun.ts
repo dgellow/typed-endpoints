@@ -43,11 +43,7 @@ import {
   type Handlers,
   type HandlerSseMethodDef,
 } from "../core/handlers.ts";
-import {
-  filePathToApiPath,
-  fileUrlOf,
-  listRouteFiles,
-} from "../core/routes.ts";
+import { formatApiPath, loadFileRoutes } from "../core/file_routes.ts";
 
 export type { SseEvent, SseEventDef, SseMethodDef } from "../core/types.ts";
 export type {
@@ -156,9 +152,10 @@ export type BunRouteHandlers = Readonly<
  * `/users/:id`, `/files/[...path]` is `/files/*`.
  */
 export function toBunRoutePattern(apiPath: string): string {
-  return apiPath
-    .replace(/\[\.\.\.\w+\]/g, "*")
-    .replace(/\[(\w+)\]/g, ":$1");
+  return formatApiPath(apiPath, {
+    param: (name) => `:${name}`,
+    rest: () => "*",
+  });
 }
 
 /**
@@ -178,19 +175,8 @@ export async function fileRoutes(
   dir: string,
 ): Promise<Record<string, BunRouteHandlers>> {
   const routes: Record<string, BunRouteHandlers> = {};
-  for (const filePath of await listRouteFiles(dir)) {
-    const mod = await import(await fileUrlOf(filePath)) as {
-      handler?: BunRouteHandlers;
-    };
-    if (!mod.handler || typeof mod.handler !== "object") continue;
-
-    const pattern = toBunRoutePattern(filePathToApiPath(filePath));
-    if (routes[pattern]) {
-      throw new Error(
-        `Two route files serve ${pattern}; the second is ${filePath}`,
-      );
-    }
-    routes[pattern] = mod.handler;
+  for (const route of await loadFileRoutes<BunRouteHandlers>(dir)) {
+    routes[toBunRoutePattern(route.apiPath)] = route.handlers;
   }
   return routes;
 }
