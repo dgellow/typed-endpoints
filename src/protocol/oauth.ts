@@ -11,7 +11,7 @@
  */
 
 import { z } from "zod";
-import { dependentStep, protocol, step } from "./dsl.ts";
+import { dependentStep, protocol, revoking, step } from "./dsl.ts";
 
 // =============================================================================
 // Schema Definitions
@@ -113,22 +113,29 @@ export const authorizeStep = step({
  * `when` states which authorize responses the step can follow. TypeScript
  * infers the type guard from the predicate, so `prev` in `request` is the
  * success variant and `prev.code` needs no check.
+ *
+ * The step revokes `authorize`: a client must not use an authorization
+ * code more than once (RFC 6749, section 4.1.2), so a second exchange
+ * needs a new authorization.
  */
-export const exchangeStep = dependentStep({
-  name: "exchange",
-  dependsOn: authorizeStep,
-  description: "Exchange authorization code for access token",
-  when: (prev) => prev.type === "success",
-  request: (prev) =>
-    z.object({
-      grant_type: z.literal("authorization_code"),
-      code: z.literal(prev.code), // THE KEY: code comes from authorize response
-      redirect_uri: z.url().optional(),
-      client_id: z.string(),
-      client_secret: z.string(),
-    }),
-  response: ExchangeResponseSchema,
-});
+export const exchangeStep = revoking(
+  dependentStep({
+    name: "exchange",
+    dependsOn: authorizeStep,
+    description: "Exchange authorization code for access token",
+    when: (prev) => prev.type === "success",
+    request: (prev) =>
+      z.object({
+        grant_type: z.literal("authorization_code"),
+        code: z.literal(prev.code), // THE KEY: code comes from authorize response
+        redirect_uri: z.url().optional(),
+        client_id: z.string(),
+        client_secret: z.string(),
+      }),
+    response: ExchangeResponseSchema,
+  }),
+  ["authorize"],
+);
 
 /** A successful token response. */
 type TokenSuccess = Extract<
@@ -167,24 +174,30 @@ export const refreshStep = dependentStep({
  * Step 4: Token Revocation
  *
  * Client revokes access or refresh token.
+ *
+ * The step revokes `exchange`: with the tokens gone, `refresh` and a
+ * second `revoke` are no longer available.
  */
-export const revokeStep = dependentStep({
-  name: "revoke",
-  dependsOn: exchangeStep,
-  description: "Revoke access or refresh token",
-  when: (prev) => prev.type === "success",
-  request: () =>
-    z.object({
-      token: z.string(), // access_token or refresh_token
-      token_type_hint: z.enum(["access_token", "refresh_token"]).optional(),
-      client_id: z.string(),
-      client_secret: z.string().optional(),
+export const revokeStep = revoking(
+  dependentStep({
+    name: "revoke",
+    dependsOn: exchangeStep,
+    description: "Revoke access or refresh token",
+    when: (prev) => prev.type === "success",
+    request: () =>
+      z.object({
+        token: z.string(), // access_token or refresh_token
+        token_type_hint: z.enum(["access_token", "refresh_token"]).optional(),
+        client_id: z.string(),
+        client_secret: z.string().optional(),
+      }),
+    response: z.object({
+      // RFC 7009 - revocation response is empty on success
+      revoked: z.literal(true),
     }),
-  response: z.object({
-    // RFC 7009 - revocation response is empty on success
-    revoked: z.literal(true),
   }),
-});
+  ["exchange"],
+);
 
 // =============================================================================
 // Complete Protocol
@@ -204,11 +217,15 @@ export const revokeStep = dependentStep({
  * 2. You can't call `exchange` until the session knows `authorize` succeeded
  *    (`session.narrow("authorize", (r) => r.type === "success")`); the same
  *    for `refresh` and `revoke` after `exchange`
- * 3. The shape of each request
+ * 3. You can't call `exchange` twice for one `authorize`, or `refresh` after
+ *    `revoke`, on the session those steps returned
+ * 4. The shape of each request
  *
  * Enforced at runtime:
- * 4. The `code` in `exchange` must match what `authorize` returned
- * 5. The `when` guard of each step, for callers that bypass the types
+ * 5. The `code` in `exchange` must match what `authorize` returned
+ * 6. The `when` guard of each step, for callers that bypass the types
+ * 7. With `createSession(..., { singleUse: true })`: an earlier session value
+ *    cannot be used again, which closes the gap 3 leaves
  */
 export const oauth2AuthCodeProtocol = protocol({
   name: "OAuth2AuthorizationCode",
