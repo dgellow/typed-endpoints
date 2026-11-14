@@ -13,9 +13,25 @@ deno add jsr:@dgellow/typed-endpoints
 bunx jsr add @dgellow/typed-endpoints
 ```
 
-The library runs on Deno and on Bun; both are tested in CI. Route handlers are
-provided for [Fresh](#fresh) and for [`Bun.serve()`](#bun). The typed client,
-the protocol module and the generators are the same on both.
+The library runs on Deno and on Bun; both are tested in CI. The typed client,
+the protocol module and the generators are the same everywhere. Route handlers
+are provided for:
+
+| Framework                            | Import                               | Route file                             | `--convention` |
+| ------------------------------------ | ------------------------------------ | -------------------------------------- | -------------- |
+| [Fresh](#fresh)                      | `@dgellow/typed-endpoints/fresh`     | `routes/api/users/[id].ts`             | `fresh`        |
+| [Bun.serve](#bun)                    | `@dgellow/typed-endpoints/bun`       | `routes/api/users/[id].ts`             | `fresh`        |
+| [Hono](#hono)                        | `@dgellow/typed-endpoints/hono`      | `routes/api/users/[id].ts`             | `fresh`        |
+| [Next.js](#nextjs)                   | `@dgellow/typed-endpoints/next`      | `app/api/users/[id]/route.ts`          | `next`         |
+| [SvelteKit](#sveltekit)              | `@dgellow/typed-endpoints/sveltekit` | `src/routes/api/users/[id]/+server.ts` | `sveltekit`    |
+| [Astro](#astro)                      | `@dgellow/typed-endpoints/astro`     | `src/pages/api/users/[id].ts`          | `astro`        |
+| [Nitro, h3](#nitro-and-h3)           | `@dgellow/typed-endpoints/nitro`     | `server/api/users/[id].get.ts`         | `nitro`        |
+| [Plain fetch](#plain-fetch-handlers) | `@dgellow/typed-endpoints/fetch`     | `routes/api/users/[id].ts`             | `fresh`        |
+
+Every integration has the same `endpoint()`, `sseEndpoint()` and
+`createApiHandlers()`; what differs is the value a handler receives and how a
+route file exports its handlers. The generators read each framework's own file
+layout: pass the convention with `--convention` or the `convention` option.
 
 ## Usage
 
@@ -110,20 +126,6 @@ await generateTypes({
 const spec = await generateOpenApiSpec({ routesDir: "routes/api" });
 ```
 
-Another framework needs a few lines: `buildHandlers()` takes the method
-definitions and how to read the request and the path parameters from whatever
-the framework passes to a handler.
-
-```typescript
-import { buildHandlers } from "@dgellow/typed-endpoints";
-
-// Hono-style context
-const handlers = buildHandlers<Context, typeof def>(def, {
-  request: (c) => c.req.raw,
-  params: (c) => c.req.param(),
-});
-```
-
 Differences from Deno:
 
 - Route files are imported into the generating process. On Deno they are
@@ -132,6 +134,171 @@ Differences from Deno:
   `config` option has no effect.
 - A catch-all route is Bun's `*`, which has no parameter name. The handler reads
   the rest of the path from `req.url`.
+
+### Hono
+
+```typescript
+import { Hono } from "hono";
+import { z } from "zod";
+import {
+  createApiHandlers,
+  endpoint,
+  mountFileRoutes,
+} from "@dgellow/typed-endpoints/hono";
+
+const users = createApiHandlers({
+  GET: endpoint({
+    params: z.object({ id: z.string() }),
+    handler: (c, { params }) => Response.json({ id: params.id }),
+  }),
+});
+
+const app = new Hono();
+app.get("/api/users/:id", users.GET);
+
+// Or register a directory of route files that export `handler`:
+await mountFileRoutes(app, "routes"); // routes/api/users/[id].ts -> /api/users/:id
+```
+
+`withContext<Context<Env>>()` returns the same helpers typed with your app's
+context, so a handler sees its variables and bindings.
+
+### Next.js
+
+App Router route handlers. A `route.ts` exports one function per method;
+destructure them from `createApiHandlers()`:
+
+```typescript
+// app/api/users/[id]/route.ts
+import { z } from "zod";
+import { createApiHandlers, endpoint } from "@dgellow/typed-endpoints/next";
+
+export const { GET, DELETE } = createApiHandlers({
+  GET: endpoint({
+    params: z.object({ id: z.string() }),
+    response: User,
+    handler: (_request, { params }) => Response.json(getUser(params.id)),
+  }),
+  DELETE: endpoint({
+    params: z.object({ id: z.string() }),
+    handler: () => new Response(null, { status: 204 }),
+  }),
+});
+```
+
+`params` is awaited for you (Next.js passes a promise).
+`withRequest<NextRequest>()` types the handler's request as `NextRequest`.
+
+```sh
+typed-endpoints -r app/api -o src/api.ts --format client --convention next
+```
+
+### SvelteKit
+
+```typescript
+// src/routes/api/users/[id]/+server.ts
+import { z } from "zod";
+import {
+  createApiHandlers,
+  endpoint,
+} from "@dgellow/typed-endpoints/sveltekit";
+
+export const { GET } = createApiHandlers({
+  GET: endpoint({
+    params: z.object({ id: z.string() }),
+    handler: (_event, { params }) => Response.json(getUser(params.id)),
+  }),
+});
+```
+
+`withEvent<RequestEvent>()` types the handler's event, including `locals`.
+Generate with `--convention sveltekit` on `src/routes`.
+
+### Astro
+
+```typescript
+// src/pages/api/users/[id].ts
+import { z } from "zod";
+import { createApiHandlers, endpoint } from "@dgellow/typed-endpoints/astro";
+
+export const prerender = false;
+
+export const { GET } = createApiHandlers({
+  GET: endpoint({
+    params: z.object({ id: z.string() }),
+    handler: (_context, { params }) => Response.json(getUser(params.id)),
+  }),
+});
+```
+
+`withContext<APIContext>()` types the handler's context. Generate with
+`--convention astro` on `src/pages`.
+
+### Nitro and h3
+
+For h3 v2 and Nitro v3, where `event.req` is a standard `Request`. A Nitro route
+file handles one method, named in the file name; `createHandler()` makes its
+default export:
+
+```typescript
+// server/api/users/[id].get.ts
+import { z } from "zod";
+import { createHandler, endpoint } from "@dgellow/typed-endpoints/nitro";
+
+export default createHandler(endpoint({
+  params: z.object({ id: z.string() }),
+  handler: (_event, { params }) => Response.json(getUser(params.id)),
+}));
+```
+
+The generators take the method from the file name (`--convention nitro`); a file
+without a method suffix answers every method and is left out of generated
+output. For an h3 app, `createApiHandlers()` gives handlers by method:
+`app.get("/users/:id", users.GET)`.
+
+### Plain fetch handlers
+
+For anything that serves `(request: Request) => Response`: `Deno.serve`,
+Cloudflare Workers, `Bun.serve({ fetch })`. This integration brings a small
+router:
+
+```typescript
+import { fileRouter } from "@dgellow/typed-endpoints/fetch";
+
+// routes/api/users/[id].ts exports `handler`, as for Fresh and Bun
+Deno.serve(await fileRouter("routes"));
+```
+
+`createRouter({ "/users/[id]": handlers, ... })` builds the same from a table. A
+route with more static segments wins over one with parameters, which wins over a
+catch-all; an unknown path is answered with 404, an undefined method with 405.
+
+### Other frameworks
+
+An integration is a few lines. `defineIntegration()` takes how to read the
+request and the path parameters from what the framework passes to a handler, and
+returns `endpoint()`, `sseEndpoint()` and `createApiHandlers()` typed for it:
+
+```typescript
+import { defineIntegration } from "@dgellow/typed-endpoints";
+
+// A framework that calls handlers with (request, { params })
+export const { endpoint, sseEndpoint, createApiHandlers } = defineIntegration<
+  Request,
+  [route: { params: Record<string, string> }]
+>({
+  request: (request) => request,
+  params: (_request, route) => route.params,
+});
+```
+
+How the integrations are verified:
+
+- Fresh, Bun, Hono and h3 run in tests (`./scripts/test`, `./scripts/test-bun`).
+- Next.js, SvelteKit and Astro are not run. Their handlers are type-checked
+  against the frameworks' own type definitions, at pinned versions
+  (`./scripts/check-framework-types`), and exercised with the arguments each
+  framework documents.
 
 ### OpenAPI Generation
 
@@ -605,6 +772,8 @@ Options:
   -r, --routes <dir>    Routes directory, repeatable (default: routes/api)
   -o, --output <file>   Output file path (required)
   -f, --format <type>   Output format: types, client, routes, or protocol (default: types)
+  --convention <name>   Route file layout: fresh, next, sveltekit, astro, or nitro
+                        (default: fresh; also the layout for Bun, Hono and fetch)
   -p, --protocol <file> Protocol module path (required when --format protocol)
   --client-import <mod> Module the client format imports its helper types from
                         (default: @dgellow/typed-endpoints/client)
@@ -627,6 +796,8 @@ src/
 │   ├── validation.ts  # Request validation
 │   ├── routes.ts      # Route discovery, path conversion, operationId derivation
 │   ├── handlers.ts    # Route handlers with validation, for any framework
+│   ├── file_routes.ts # Loading a directory of route files into a routing table
+│   ├── module_api.ts  # How a route module exposes its method definitions
 │   ├── runtime.ts     # What differs between Deno and Bun (module resolution)
 │   ├── zod_internals.ts # Readers for Zod schema internals
 │   ├── dependent.ts   # projection(), expansion(): responses typed by the request
@@ -659,6 +830,12 @@ src/
 ├── integrations/
 │   ├── fresh.ts       # Fresh v2 runtime adapter (endpoint, sseEndpoint)
 │   ├── bun.ts         # Bun.serve() adapter (endpoint, sseEndpoint, fileRoutes)
+│   ├── hono.ts        # Hono adapter (mountFileRoutes)
+│   ├── next.ts        # Next.js App Router route handlers
+│   ├── sveltekit.ts   # SvelteKit +server.ts endpoints
+│   ├── astro.ts       # Astro endpoints
+│   ├── nitro.ts       # Nitro v3 / h3 v2 event handlers
+│   ├── fetch.ts       # Plain fetch handlers and a router
 │   └── vite.ts        # Vite build-time plugins (OpenAPI, protocol types)
 ├── cli.ts             # CLI for type generation
 └── mod.ts             # Root exports
