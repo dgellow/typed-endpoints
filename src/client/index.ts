@@ -33,6 +33,7 @@ import type {
   TypedClient,
   TypedSseEvent,
 } from "./types.ts";
+import { createSseParser } from "./sse.ts";
 
 export type {
   ApiSchema,
@@ -83,34 +84,54 @@ function buildQuery(query?: Record<string, unknown>): string {
 }
 
 /**
- * Parse SSE messages from raw text chunk.
+ * Raised when the data of an SSE event is not valid JSON.
+ *
+ * Thrown to the consumer of the subscription. It does not trigger a
+ * reconnect: the server would send the same event again.
  */
-function parseSseMessages(
-  chunk: string,
-): Array<{ event?: string; data?: string; id?: string }> {
-  const messages: Array<{ event?: string; data?: string; id?: string }> = [];
-  const blocks = chunk.split("\n\n").filter(Boolean);
-
-  for (const block of blocks) {
-    const message: { event?: string; data?: string; id?: string } = {};
-    for (const line of block.split("\n")) {
-      if (line.startsWith("event: ")) {
-        message.event = line.slice(7);
-      } else if (line.startsWith("data: ")) {
-        message.data = line.slice(6);
-      } else if (line.startsWith("id: ")) {
-        message.id = line.slice(4);
-      }
-    }
-    if (message.data !== undefined) {
-      messages.push(message);
-    }
+export class SseDataError extends Error {
+  constructor(
+    public readonly event: string,
+    public readonly data: string,
+    options?: ErrorOptions,
+  ) {
+    super(`SSE event "${event}" has data that is not valid JSON`, options);
+    this.name = "SseDataError";
   }
-  return messages;
+}
+
+/** Wait `ms` milliseconds. Resolves `false` early if the signal aborts. */
+function delay(ms: number, signal?: AbortSignal): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve(false);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve(true);
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** Errors that asking again cannot fix. */
+function isFatalSseError(error: unknown): boolean {
+  if (error instanceof SseDataError) return true;
+  return error instanceof ClientError && error.status >= 400 &&
+    error.status < 500;
 }
 
 /**
  * Create SSE subscription as AsyncIterable.
+ *
+ * The iteration ends when the server closes the stream: an SSE endpoint
+ * signals completion by returning from its handler. Network failures and 5xx
+ * responses are retried; 4xx responses and undecodable events are not.
  */
 async function* createSseSubscription<TEvents extends SseEventsDef>(
   fetchFn: typeof fetch,
@@ -118,12 +139,8 @@ async function* createSseSubscription<TEvents extends SseEventsDef>(
   headers: Record<string, string>,
   options: SubscribeOptions = {},
 ): AsyncIterable<TypedSseEvent<TEvents>> {
-  const {
-    signal,
-    reconnect = true,
-    reconnectDelay = 1000,
-    maxReconnectAttempts = 5,
-  } = options;
+  const { signal, reconnect = true, maxReconnectAttempts = 5 } = options;
+  let reconnectDelay = options.reconnectDelay ?? 1000;
 
   let attempts = 0;
   let lastEventId: string | undefined;
@@ -160,35 +177,44 @@ async function* createSseSubscription<TEvents extends SseEventsDef>(
       attempts = 0; // Reset on successful connection
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      let buffer = "";
+      const parser = createSseParser();
 
-      while (true) {
-        const { done, value } = await reader.read();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const messages = parseSseMessages(buffer);
-
-        // Keep incomplete messages in buffer
-        const lastNewline = buffer.lastIndexOf("\n\n");
-        if (lastNewline !== -1) {
-          buffer = buffer.slice(lastNewline + 2);
-        }
-
-        for (const msg of messages) {
-          if (msg.id) {
-            lastEventId = msg.id;
+          const events = parser.push(decoder.decode(value, { stream: true }));
+          if (parser.lastEventId !== undefined) {
+            lastEventId = parser.lastEventId;
+          }
+          if (parser.retry !== undefined) {
+            reconnectDelay = parser.retry;
           }
 
-          if (msg.data) {
+          for (const raw of events) {
+            // An event with empty data carries no JSON value (some servers
+            // use it as a keep-alive). It is skipped.
+            if (raw.data === "") continue;
+
+            let data: unknown;
+            try {
+              data = JSON.parse(raw.data);
+            } catch (cause) {
+              throw new SseDataError(raw.event, raw.data, { cause });
+            }
+
             yield {
-              event: msg.event ?? "message",
-              data: JSON.parse(msg.data),
-              id: msg.id,
+              event: raw.event,
+              data,
+              id: raw.id,
             } as TypedSseEvent<TEvents>;
           }
         }
+      } finally {
+        // Runs when the stream ends, fails, or the consumer stops iterating.
+        // Cancelling releases the connection in the last two cases.
+        await reader.cancel().catch(() => {});
       }
 
       // Stream ended normally, exit
@@ -198,14 +224,17 @@ async function* createSseSubscription<TEvents extends SseEventsDef>(
         return;
       }
 
+      if (isFatalSseError(error)) {
+        throw error;
+      }
+
       attempts++;
       if (!reconnect || attempts >= maxReconnectAttempts) {
         throw error;
       }
 
-      await new Promise((resolve) =>
-        setTimeout(resolve, reconnectDelay * attempts)
-      );
+      const waited = await delay(reconnectDelay * attempts, signal);
+      if (!waited) return;
     }
   }
 }

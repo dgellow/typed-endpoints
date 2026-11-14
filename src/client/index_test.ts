@@ -1,5 +1,5 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
-import { ClientError, createClient } from "./index.ts";
+import { ClientError, createClient, SseDataError } from "./index.ts";
 
 // Mock API type for testing (using type instead of interface for index signature compatibility)
 type TestApi = {
@@ -542,4 +542,181 @@ Deno.test("createClient.subscribe passes query params", async () => {
     requests[0].url,
     "http://localhost:3000/api/stream?filter=active&limit=10",
   );
+});
+
+// =============================================================================
+// SSE failure handling
+// =============================================================================
+
+type StreamApi = {
+  stream: {
+    subscribe: { events: { update: { value: number } } };
+  };
+};
+
+function sseResponse(body: string | ReadableStream<Uint8Array>): Response {
+  return new Response(body, {
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
+Deno.test("createClient.subscribe does not retry a 4xx response", async () => {
+  let fetchCount = 0;
+  const client = createClient<StreamApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: createMockFetch(() => {
+      fetchCount++;
+      return new Response("nope", { status: 403, statusText: "Forbidden" });
+    }),
+  });
+
+  const error = await assertRejects(async () => {
+    for await (const _ of client.stream.subscribe({ reconnectDelay: 1 })) {
+      // not reached
+    }
+  }, ClientError);
+
+  assertEquals(error.status, 403);
+  assertEquals(fetchCount, 1);
+});
+
+Deno.test("createClient.subscribe retries a 5xx response and resumes", async () => {
+  const lastEventIds: (string | undefined)[] = [];
+  let fetchCount = 0;
+  const client = createClient<StreamApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: createMockFetch((_url, init) => {
+      fetchCount++;
+      lastEventIds.push(
+        (init?.headers as Record<string, string>)["Last-Event-ID"],
+      );
+      if (fetchCount === 1) {
+        // Delivers one event, then the connection breaks.
+        let pulls = 0;
+        return sseResponse(
+          new ReadableStream({
+            pull(controller) {
+              if (pulls++ === 0) {
+                controller.enqueue(
+                  new TextEncoder().encode(
+                    'event: update\nid: 1\ndata: {"value":1}\n\n',
+                  ),
+                );
+              } else {
+                controller.error(new Error("connection reset"));
+              }
+            },
+          }),
+        );
+      }
+      if (fetchCount === 2) {
+        return new Response("down", { status: 503 });
+      }
+      return sseResponse('event: update\nid: 2\ndata: {"value":2}\n\n');
+    }),
+  });
+
+  const values: number[] = [];
+  for await (const e of client.stream.subscribe({ reconnectDelay: 1 })) {
+    values.push(e.data.value);
+  }
+
+  assertEquals(values, [1, 2]);
+  assertEquals(fetchCount, 3);
+  assertEquals(lastEventIds, [undefined, "1", "1"]);
+});
+
+Deno.test("createClient.subscribe reports undecodable data without reconnecting", async () => {
+  let fetchCount = 0;
+  const client = createClient<StreamApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: createMockFetch(() => {
+      fetchCount++;
+      return sseResponse(
+        'event: update\ndata: {"value":1}\n\nevent: update\ndata: not json\n\n',
+      );
+    }),
+  });
+
+  const values: number[] = [];
+  const error = await assertRejects(async () => {
+    for await (const e of client.stream.subscribe({ reconnectDelay: 1 })) {
+      values.push(e.data.value);
+    }
+  }, SseDataError);
+
+  assertEquals(values, [1]);
+  assertEquals(error.event, "update");
+  assertEquals(error.data, "not json");
+  assertEquals(fetchCount, 1);
+});
+
+Deno.test("createClient.subscribe closes the connection when the consumer stops", async () => {
+  let cancelled = false;
+  const client = createClient<StreamApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: createMockFetch(() =>
+      sseResponse(
+        new ReadableStream({
+          start(controller) {
+            // An open stream: one event, never closed by the server.
+            controller.enqueue(
+              new TextEncoder().encode('event: update\ndata: {"value":1}\n\n'),
+            );
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }),
+      )
+    ),
+  });
+
+  for await (const e of client.stream.subscribe()) {
+    assertEquals(e.data.value, 1);
+    break;
+  }
+
+  assertEquals(cancelled, true);
+});
+
+Deno.test("createClient.subscribe stops waiting to reconnect when aborted", async () => {
+  const controller = new AbortController();
+  let fetchCount = 0;
+  const client = createClient<StreamApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: createMockFetch(() => {
+      fetchCount++;
+      queueMicrotask(() => controller.abort());
+      return new Response("down", { status: 500 });
+    }),
+  });
+
+  const started = Date.now();
+  for await (
+    const _ of client.stream.subscribe({
+      signal: controller.signal,
+      reconnectDelay: 60_000,
+    })
+  ) {
+    // not reached
+  }
+
+  assertEquals(fetchCount, 1);
+  assertEquals(Date.now() - started < 5_000, true);
+});
+
+Deno.test("createClient.subscribe joins multi-line data and accepts CRLF", async () => {
+  type TextApi = { log: { subscribe: { events: { line: string[] } } } };
+  const client = createClient<TextApi>({
+    baseUrl: "http://localhost:3000",
+    fetch: createMockFetch(() =>
+      sseResponse(': hello\r\nevent:line\r\ndata:["a",\r\ndata:"b"]\r\n\r\n')
+    ),
+  });
+
+  const events = [];
+  for await (const e of client.log.subscribe()) events.push(e);
+
+  assertEquals(events, [{ event: "line", data: ["a", "b"], id: undefined }]);
 });
