@@ -740,6 +740,18 @@ export function conformance(
     await refused({ word: "administrator" }, "word");
   });
 
+  test("edge: a pattern ends where the text ends", async () => {
+    // In JavaScript `$` is the end of the text. In some engines it is
+    // also before a line break that ends the text.
+    await accepted({ digits: "123" });
+    await refused({ digits: "123\n" }, "digits");
+    await refused({ email: "a@b.co\n" }, "email");
+    await refused({ when: "2026-11-14T10:00:00Z\n" }, "when");
+    // `\w` is a letter of ASCII, a digit or an underscore.
+    await accepted({ word: "cafe_1" });
+    await refused({ word: "caf\u00e9" }, "word");
+  });
+
   test("edge: numbers are JavaScript numbers", async () => {
     // 2.0 is an integer; the handler sees 2.
     const whole = await edge(JSON.parse('{"count": 2}'));
@@ -948,6 +960,15 @@ export function conformance(
         await bad.text(),
         'event: tick\nid: 0\ndata: {"n":0}\n\n: error\n\n',
       );
+    });
+
+    test("an event stream asked to resume after an id it never gave", async () => {
+      // The header is the client's: a handler does not fail on it.
+      const response = await fetch(`${baseUrl()}/api/ticks?count=2`, {
+        headers: { "Last-Event-ID": "not-a-number" },
+      });
+      assertEquals(response.status, 200);
+      assertEquals(await response.text(), 'event: done\ndata: {"total":2}\n\n');
     });
 
     test("an event stream that is silent is kept alive with comments", async () => {

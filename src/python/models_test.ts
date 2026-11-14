@@ -15,6 +15,7 @@ import {
   pascalCase,
   pythonLiteral,
   PythonModels,
+  pythonPattern,
   snakeCase,
 } from "./models.ts";
 
@@ -72,10 +73,11 @@ Deno.test("python models: plain types and their constraints", () => {
     type(z.string().min(1).max(40)),
     "Annotated[str, Field(min_length=1, max_length=40)]",
   );
-  // A pattern is a raw string: its backslashes are the pattern's.
+  // A pattern is compiled as JavaScript reads it: `$` is the end of the
+  // text, which Python writes `\Z`. The text is a raw string.
   assertEquals(
     type(z.string().regex(/^[a-z]+\d$/)),
-    'Annotated[str, Field(pattern=r"^[a-z]+\\d$")]',
+    'Annotated[str, Field(pattern=_pattern(r"^[a-z]+\\d\\Z"))]',
   );
   assertEquals(type(z.boolean()), "bool");
   assertEquals(type(z.null()), "None");
@@ -507,13 +509,23 @@ Deno.test("python models: a long pattern is a constant with a name", () => {
     }),
   );
   assertEquals(
-    source.split("\n\n\n")[0],
-    `_UUID_PATTERN = (
-    "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-f"
-    "A-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff"
-    ")$"
+    source.split("\n\n\n").slice(0, 2).join("\n\n\n"),
+    `def _pattern(source: str) -> re.Pattern[str]:
+    """Compile a pattern of the API as JavaScript reads it.
+
+    There the classes for digits and for word characters are ASCII.
+    """
+    return re.compile(source, re.ASCII)
+
+
+_UUID_PATTERN = _pattern(
+    r"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-"
+    r"fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffff"
+    r"ff)\\Z"
 )
-_PATTERN_1 = "^(alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa)-[0-9]{4}$"`,
+_PATTERN_1 = _pattern(
+    r"^(alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa)-[0-9]{4}\\Z"
+)`,
   );
   assertEquals(
     classes(source).split("\n").slice(3),
@@ -521,11 +533,18 @@ _PATTERN_1 = "^(alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa)-[0-9]{
       // What a format means has the format's name; the same pattern is
       // the same constant.
       "    id: str = Field(pattern=_UUID_PATTERN)",
-      '    code: str = Field(pattern=r"^[a-z]+\\d$")',
+      '    code: str = Field(pattern=_pattern(r"^[a-z]+\\d\\Z"))',
       "    plan: str = Field(pattern=_PATTERN_1)",
       "    again: str | None = Field(default=None, pattern=_UUID_PATTERN)",
     ],
   );
+});
+
+Deno.test("python models: a pattern of JavaScript, as Python reads it the same way", () => {
+  // `$` is the end of the text; in a class and escaped it is a dollar.
+  assertEquals(pythonPattern("^\\d+$"), "^\\d+\\Z");
+  assertEquals(pythonPattern("^[$a]\\$$"), "^[$a]\\$\\Z");
+  assertEquals(pythonPattern("^(a|b$)"), "^(a|b\\Z)");
 });
 
 Deno.test("python models: names and literals", () => {

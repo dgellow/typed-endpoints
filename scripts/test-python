@@ -37,6 +37,11 @@ uv run --frozen python -m unittest --quiet test_runtime
 # Where the generated client finds the next page, for every pagination style.
 uv run --frozen python -m unittest --quiet test_pagination
 
+# What a handler may do between two events of a stream, and what the
+# generated client does with answers that are not the API's.
+uv run --frozen python -m unittest --quiet test_streams
+uv run --frozen python -m unittest --quiet test_client_offline
+
 # A free port, then the application on it.
 port="$(uv run --frozen python -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 log="$(mktemp)"

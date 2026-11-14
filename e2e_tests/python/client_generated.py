@@ -7,13 +7,14 @@ Needs Python 3.12.
 Not in this module: server-sent event streams (`GET /api/ticks`).
 """
 
+import re
 from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal, cast
 from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 from pydantic.alias_generators import to_camel
 
 # An integer JavaScript represents exactly: what Zod's int() accepts.
@@ -42,8 +43,16 @@ class ApiError(Exception):
         self.body = body
 
 
+class ResponseError(ApiError):
+    """A response whose body is not what its operation declares."""
+
+
 class PaginationError(RuntimeError):
     """A paginated list cannot be followed to its next page."""
+
+
+class PathError(ValueError):
+    """A path parameter that would make the request go to another path."""
 
 
 # =============================================================================
@@ -51,20 +60,28 @@ class PaginationError(RuntimeError):
 # =============================================================================
 
 
-_DATE_TIME_PATTERN = (
+def _pattern(source: str) -> re.Pattern[str]:
+    """Compile a pattern of the API as JavaScript reads it.
+
+    There the classes for digits and for word characters are ASCII.
+    """
+    return re.compile(source, re.ASCII)
+
+
+_DATE_TIME_PATTERN = _pattern(
     r"^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)"
     r"-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)"
     r"-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3])"
-    r":[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$"
+    r":[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))\Z"
 )
-_UUID_PATTERN = (
-    "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-f"
-    "A-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff"
-    ")$"
+_UUID_PATTERN = _pattern(
+    r"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-"
+    r"fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffff"
+    r"ff)\Z"
 )
-_EMAIL_PATTERN = (
+_EMAIL_PATTERN = _pattern(
     r"^(?:[A-Za-z0-9_'+\-]+\.)*[A-Za-z0-9_'+\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9"
-    r"\-]*\.)+[A-Za-z]{2,}$"
+    r"\-]*\.)+[A-Za-z]{2,}\Z"
 )
 
 
@@ -110,9 +127,9 @@ class EdgesCreateBody(_Json):
     """The body of `POST /api/edges`."""
 
     short: str | None = Field(default=None, max_length=4)
-    digits: str | None = Field(default=None, pattern=r"^\d+$")
-    plain: str | None = Field(default=None, pattern=r"^[\D]+$")
-    word: str | None = Field(default=None, pattern=r"^(?!admin)\w+$")
+    digits: str | None = Field(default=None, pattern=_pattern(r"^\d+\Z"))
+    plain: str | None = Field(default=None, pattern=_pattern(r"^[\D]+\Z"))
+    word: str | None = Field(default=None, pattern=_pattern(r"^(?!admin)\w+\Z"))
     count: SafeInt | None = None
     step: float | None = Field(default=None, multiple_of=0.1)
     huge: float | None = Field(default=None, le=9007199254740991)
@@ -440,12 +457,22 @@ type _Step = tuple[Literal["query"], dict[str, Any]] | tuple[Literal["url"], str
 
 
 def _segment(value: str) -> str:
-    """Encode a path parameter."""
+    """Encode a path parameter.
+
+    Empty, `.` and `..` are refused: a URL with such a segment is the URL
+    of another path, whatever the encoding.
+    """
+    if value in {"", ".", ".."}:
+        message = f"{value!r} cannot be a segment of a path"
+        raise PathError(message)
     return quote(value, safe="")
 
 
 def _rest(value: str) -> str:
     """Encode a catch-all path parameter: it keeps its slashes."""
+    if any(segment in {".", ".."} for segment in value.split("/")):
+        message = f"{value!r} has a segment that is `.` or `..`"
+        raise PathError(message)
     return quote(value, safe="/")
 
 
@@ -474,11 +501,19 @@ def _content(response: httpx.Response) -> object:
         return response.text
 
 
+def _parse[T](status: int, content: object, adapter: TypeAdapter[T]) -> T:
+    """Read a body as its type; one that is something else raises."""
+    try:
+        return adapter.validate_python(content)
+    except ValidationError as error:
+        raise ResponseError(status, content) from error
+
+
 def _expect[T](response: httpx.Response, adapter: TypeAdapter[T]) -> T:
     """Parse the body of a success; any other status raises."""
     if not response.is_success:
         raise ApiError(response.status_code, _content(response))
-    return adapter.validate_python(_content(response))
+    return _parse(response.status_code, _content(response), adapter)
 
 
 def _result[T](
@@ -488,9 +523,15 @@ def _result[T](
 ) -> T | Fail[Any, Any]:
     """Parse the body of a success, or a declared error as a value."""
     declared = errors.get(response.status_code)
-    if declared is not None:
-        return Fail(response.status_code, declared.validate_python(_content(response)))
-    return _expect(response, adapter)
+    if declared is None:
+        return _expect(response, adapter)
+    content = _content(response)
+    try:
+        return Fail(response.status_code, declared.validate_python(content))
+    except ValidationError:
+        # The status, from something that is not this API: a proxy, a
+        # framework's own answer.
+        raise ApiError(response.status_code, content) from None
 
 
 def _at(value: object, path: str | None) -> object:
@@ -569,7 +610,8 @@ def _after_page(
     total_pages = _at(page, meta.get("totalPages"))
     total = _at(page, meta.get("total"))
     last = (
-        count < size
+        count == 0
+        or count < size
         or (isinstance(total_pages, int) and current >= total_pages)
         or (isinstance(total, int) and (current - 1) * size + count >= total)
     )
@@ -713,15 +755,16 @@ class Client:
         for page in self._pages(
             "notes_list", "GET", "/api/notes", _query(query), _NOTES_LIST_PAGINATION
         ):
-            yield _NOTES_LIST_RESPONSE.validate_python(page)
+            yield _parse(200, page, _NOTES_LIST_RESPONSE)
 
     def notes_list_items(self, query: NotesListQuery | None = None) -> Iterator[Note]:
         """Yield every item of `GET /api/notes`, across its pages."""
         for page in self._pages(
             "notes_list", "GET", "/api/notes", _query(query), _NOTES_LIST_PAGINATION
         ):
+            _parse(200, page, _NOTES_LIST_RESPONSE)
             for item in _page_items(page, _NOTES_LIST_PAGINATION):
-                yield _NOTES_LIST_ITEM.validate_python(item)
+                yield _parse(200, item, _NOTES_LIST_ITEM)
 
     def notes_create(self, body: NotesCreateBody) -> Note:
         """Call `POST /api/notes`."""
@@ -889,7 +932,7 @@ class AsyncClient:
         async for page in self._pages(
             "notes_list", "GET", "/api/notes", _query(query), _NOTES_LIST_PAGINATION
         ):
-            yield _NOTES_LIST_RESPONSE.validate_python(page)
+            yield _parse(200, page, _NOTES_LIST_RESPONSE)
 
     async def notes_list_items(
         self, query: NotesListQuery | None = None
@@ -898,8 +941,9 @@ class AsyncClient:
         async for page in self._pages(
             "notes_list", "GET", "/api/notes", _query(query), _NOTES_LIST_PAGINATION
         ):
+            _parse(200, page, _NOTES_LIST_RESPONSE)
             for item in _page_items(page, _NOTES_LIST_PAGINATION):
-                yield _NOTES_LIST_ITEM.validate_python(item)
+                yield _parse(200, item, _NOTES_LIST_ITEM)
 
     async def notes_create(self, body: NotesCreateBody) -> Note:
         """Call `POST /api/notes`."""

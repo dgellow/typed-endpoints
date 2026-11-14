@@ -15,7 +15,6 @@ if (!url) {
 // Requests are validated by Pydantic, whose rules differ from Zod's here.
 conformance("fastapi", () => url, {
   differences: {
-    "unicode-digits": "Python's re matches every Unicode digit with \\d",
     "whole-float-is-not-integer": "a strict Pydantic int refuses 2.0",
     "null-for-optional":
       "an optional field is `T | None`, which accepts an explicit null",

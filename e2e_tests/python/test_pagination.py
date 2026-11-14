@@ -130,6 +130,9 @@ class Page(unittest.TestCase):
         self.assertIsNone(step(self.META, {"items": [3, 4], "total": 4}, {"page": 2}))
         self.assertIsNone(step(self.META, {"items": [1]}))
         self.assertIsNone(step(self.META, {"items": []}, {"page": 3}))
+        # Also the first page, when nothing else says so: no size is known.
+        bare = {"style": "page", "items": "items", "pageParam": "page"}
+        self.assertIsNone(step(bare, {"items": []}, page_size=0))
 
     def test_the_first_page_gives_the_size_when_the_query_does_not(self) -> None:
         self.assertEqual(
