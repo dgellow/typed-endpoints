@@ -327,3 +327,90 @@ Deno.test("a mapped step cannot run when the source response lacks the mapped va
     'Cannot execute "refresh": field "refresh_token" is mapped from "exchange.refresh_token", which the response of "exchange" does not contain',
   );
 });
+
+// =============================================================================
+// Structure: names, dependencies, cycles
+// =============================================================================
+
+const empty = z.object({});
+const first = step({
+  name: "first",
+  request: empty,
+  response: z.object({ x: z.string() }),
+});
+
+function dependsOn(name: string, on: string) {
+  return {
+    __kind: "dependent_step",
+    name,
+    dependsOn: on,
+    request: () => empty,
+    response: empty,
+  };
+}
+
+function structure(steps: Record<string, unknown>, extra = {}) {
+  return { __kind: "protocol", name: "P", initial: "first", steps, ...extra };
+}
+
+Deno.test("validateProtocol rejects an initial step that is not a step", () => {
+  assertEquals(errorsOf(structure({ first }, { initial: "start" })), [
+    'Initial step "start" not found in steps',
+  ]);
+});
+
+Deno.test("validateProtocol rejects a terminal step that is not a step", () => {
+  assertEquals(
+    errorsOf(structure({ first }, { terminal: ["first", "end"] })),
+    ['Terminal step "end" not found in steps'],
+  );
+});
+
+Deno.test("validateProtocol rejects a dependency on a step that does not exist", () => {
+  assertEquals(
+    errorsOf(structure({ first, second: dependsOn("second", "ghost") })),
+    [`Step "second" depends on "ghost" which doesn't exist`],
+  );
+});
+
+Deno.test("validateProtocol rejects a mapping from a step that does not exist", () => {
+  const second = {
+    __kind: "mapped_step",
+    name: "second",
+    dependsOn: "first",
+    requestSchema: z.object({ x: z.string() }),
+    requestMapping: { x: fromStep("ghost", "x") },
+    response: empty,
+  };
+  assertEquals(errorsOf(structure({ first, second })), [
+    `Step "second" depends on "ghost" which doesn't exist`,
+  ]);
+});
+
+Deno.test("validateProtocol rejects a dependency cycle", () => {
+  const errors = errorsOf(
+    structure({
+      first,
+      second: dependsOn("second", "third"),
+      third: dependsOn("third", "second"),
+    }),
+  );
+  assertEquals(errors, ['Circular dependency detected involving "second"']);
+});
+
+Deno.test("validateProtocol rejects a step that depends on itself", () => {
+  assertEquals(
+    errorsOf(structure({ first, second: dependsOn("second", "second") })),
+    ['Circular dependency detected involving "second"'],
+  );
+});
+
+Deno.test("validateProtocol reports every problem, not the first", () => {
+  const errors = errorsOf(
+    structure(
+      { first, second: dependsOn("renamed", "ghost") },
+      { initial: "start", terminal: ["end"] },
+    ),
+  );
+  assertEquals(errors.length, 4, errors.join("\n"));
+});

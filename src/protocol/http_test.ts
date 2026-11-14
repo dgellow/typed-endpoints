@@ -10,6 +10,7 @@ import { z } from "zod";
 import { createApiHandlers, endpoint } from "../integrations/fresh.ts";
 import { createHttpExecutor, HttpError } from "./http.ts";
 import { createSession } from "./client.ts";
+import { InvalidResponseError } from "./errors.ts";
 import { protocol } from "./dsl.ts";
 import { fromEndpoint, fromEndpointDependent } from "./compose.ts";
 
@@ -765,5 +766,83 @@ Deno.test("fromEndpoint rejects a request schema it cannot merge", () => {
     () => fromEndpoint(handler, "POST", { name: "bulk" }),
     Error,
     "its body schema is not a plain object schema",
+  );
+});
+
+// =============================================================================
+// Response decoding
+// =============================================================================
+
+function executorAnswering(response: () => Response) {
+  return createHttpExecutor(authProtocol, {
+    baseUrl: "https://api.example.com",
+    routes: testRoutes,
+    fetch: () => Promise.resolve(response()),
+  });
+}
+
+const noContext = { protocol: "Auth", history: [], responses: {} };
+
+Deno.test("createHttpExecutor decodes a JSON response", async () => {
+  const executor = executorAnswering(() => Response.json({ ok: true }));
+
+  assertEquals(
+    await executor.execute(
+      "login",
+      { username: "a", password: "b" },
+      noContext,
+    ),
+    { ok: true },
+  );
+});
+
+Deno.test("createHttpExecutor returns an empty object for 204", async () => {
+  const executor = executorAnswering(() => new Response(null, { status: 204 }));
+
+  assertEquals(
+    await executor.execute(
+      "login",
+      { username: "a", password: "b" },
+      noContext,
+    ),
+    {},
+  );
+});
+
+Deno.test("createHttpExecutor wraps a non-JSON response as { text }", async () => {
+  const executor = executorAnswering(() =>
+    new Response("pong", { headers: { "Content-Type": "text/plain" } })
+  );
+
+  assertEquals(
+    await executor.execute(
+      "login",
+      { username: "a", password: "b" },
+      noContext,
+    ),
+    { text: "pong" },
+  );
+});
+
+Deno.test("createHttpExecutor rejects a step the protocol does not have", async () => {
+  const executor = executorAnswering(() => Response.json({}));
+
+  await assertRejects(
+    () => executor.execute("nope", {}, noContext),
+    Error,
+    "Unknown step: nope",
+  );
+});
+
+Deno.test("a session rejects a response the step's schema does not accept", async () => {
+  const executor = executorAnswering(() =>
+    new Response("<html>", { headers: { "Content-Type": "text/html" } })
+  );
+  const session = createSession(authProtocol, executor);
+
+  // `{ text: "<html>" }` is not the login response.
+  await assertRejects(
+    () => session.execute("login", { username: "a", password: "b" }),
+    InvalidResponseError,
   );
 });
