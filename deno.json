@@ -28,7 +28,8 @@
     ],
     "exclude": [
       "**/*_test.ts",
-      "**/*.test.ts"
+      "**/*.test.ts",
+      "**/fixtures/**"
     ]
   },
   "tasks": {
