@@ -47,6 +47,23 @@ export type ResponsesDef = Readonly<
   >
 >;
 
+/**
+ * The status codes from 400 upwards among the keys of a `responses`
+ * declaration: the error responses an endpoint declares.
+ */
+export type ErrorStatus<TResponses> = {
+  [S in keyof TResponses & number]: `${S}` extends `4${string}` | `5${string}`
+    ? S
+    : never;
+}[keyof TResponses & number];
+
+/** The schema a `responses` declaration has for status `S`. */
+export type DeclaredResponse<TResponses, S> = S extends keyof TResponses
+  ? TResponses[S] extends z.ZodType ? TResponses[S]
+  : TResponses[S] extends { readonly schema: infer T extends z.ZodType } ? T
+  : never
+  : never;
+
 /** Schemas and metadata of one HTTP method of a route. */
 export interface ApiMethodDef<
   TBodySchema extends z.ZodType | undefined = undefined,

@@ -459,15 +459,22 @@ A call rejects with `ClientError` for any status outside 200 to 299; its `body`
 is `unknown`. An endpoint can declare its error responses per status code:
 
 ```typescript
+import { fail } from "@dgellow/typed-endpoints";
+
 GET: endpoint({
   params: z.object({ id: z.string() }),
   response: Item,
   responses: { 404: NotFound, 409: Conflict },
   handler: (_ctx, { params }) =>
-    items.get(params.id) ??
-      Response.json({ error: "not_found", id: params.id }, { status: 404 }),
+    items.get(params.id) ?? fail(404, { error: "not_found", id: params.id }),
 }),
 ```
+
+`fail(status, body)` answers with a declared error. The status has to be one the
+endpoint declares and the body has to fit the schema declared for it; both are
+compile errors otherwise. The body is parsed with that schema and sent as JSON
+with that status. A body the schema rejects is a 500 and is logged, like a
+returned value the response schema rejects.
 
 Every client method then has `result()`. It takes the same arguments and
 resolves with the response or a declared error, as a value typed by its status:
@@ -495,8 +502,8 @@ if (result.ok) {
   return. Without `routes`, nothing is known to be declared
 - `--format types` names each body: `ItemsByIdPutError409`
 - The client does not validate an error body, as it does not validate a
-  response. A handler sends a declared error as a `Response`, which is not
-  checked against the declared schema
+  response. On the server, `fail()` checks it; a hand-built `Response` is sent
+  as it is
 - A protocol step can have the same outcomes as its response: see "Steps that
   branch on an HTTP status"
 

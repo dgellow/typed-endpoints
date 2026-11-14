@@ -22,7 +22,11 @@
 
 import { z } from "zod";
 import { apiPathToTemplate, deriveOperationId } from "../core/routes.ts";
-import type { HttpMethod } from "../core/types.ts";
+import type {
+  DeclaredResponse,
+  ErrorStatus,
+  HttpMethod,
+} from "../core/types.ts";
 import { zodDef } from "../core/zod_internals.ts";
 import type { MappingForRequest } from "./dsl.ts";
 import type { FieldMapping } from "./mapping.ts";
@@ -109,21 +113,12 @@ export type EndpointResponseSchema<D> = [SchemaAt<D, "response">] extends
  * keys of its `responses` from 400 upwards.
  */
 export type ErrorStatusOf<D> = D extends { readonly responses?: infer R }
-  ? NonNullable<R> extends infer TDeclared ? {
-      [S in keyof TDeclared & number]: `${S}` extends
-        `4${string}` | `5${string}` ? S : never;
-    }[keyof TDeclared & number]
-  : never
+  ? ErrorStatus<NonNullable<R>>
   : never;
 
 /** The schema a method definition declares for status `S`. */
 export type DeclaredSchema<D, S> = D extends { readonly responses?: infer R }
-  ? S extends keyof NonNullable<R>
-    ? NonNullable<R>[S] extends z.ZodType ? NonNullable<R>[S]
-    : NonNullable<R>[S] extends { readonly schema: infer T extends z.ZodType }
-      ? T
-    : never
-  : never
+  ? DeclaredResponse<NonNullable<R>, S>
   : never;
 
 /**

@@ -97,9 +97,11 @@ e2e_tests/framework-types/ # Compile-only check against the frameworks' types
   `node:child_process` and `fs.access`: they need `--allow-env` and
   `--allow-sys`
 - A handler returns a value (typed by `z.input` of the response schema, parsed
-  at runtime, reduced by `projection()`/`expansion()` rules, sent as JSON) or a
-  `Response` (sent unchecked). A value the schema rejects is a 500 and is
-  logged, never sent
+  at runtime, reduced by `projection()`/`expansion()` rules, sent as JSON), a
+  `fail(status, body)` for an error the endpoint declares in `responses` (typed
+  and parsed by the schema declared for that status), or a `Response` (sent
+  unchecked). A value or failure body the schema rejects is a 500 and is logged,
+  never sent
 - A framework integration is a thin wrapper around `core/handlers.ts`
   (`defineIntegration()`). It describes the framework's handler argument by the
   members it reads (no dependency on the framework) and offers a `with…<T>()`

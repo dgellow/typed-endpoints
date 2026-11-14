@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { fail } from "@/core/handlers.ts";
 import { createApiHandlers, endpoint } from "@/integrations/fresh.ts";
 
 const Item = z.object({
@@ -17,8 +18,8 @@ const store = new Map<string, z.output<typeof Item>>([
   ["a", { id: "a", title: "First", version: 1 }],
 ]);
 
-const notFound = (id: string) =>
-  Response.json({ error: "not_found", id }, { status: 404 });
+// A declared error: typed and parsed by the schema declared for 404.
+const notFound = (id: string) => fail(404, { error: "not_found", id });
 
 export const handler = createApiHandlers({
   GET: endpoint({
@@ -43,10 +44,7 @@ export const handler = createApiHandlers({
         return Response.json({ error: "teapot" }, { status: 418 });
       }
       if (item.version !== body.version) {
-        return Response.json(
-          { error: "conflict", current: item.version },
-          { status: 409 },
-        );
+        return fail(409, { error: "conflict", current: item.version });
       }
       const next = { ...item, title: body.title, version: item.version + 1 };
       store.set(item.id, next);

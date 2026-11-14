@@ -14,6 +14,8 @@
 import type { z } from "zod";
 import type {
   ApiMethodDef,
+  DeclaredResponse,
+  ErrorStatus,
   HttpMethod,
   ResponsesDef,
   SseEvent,
@@ -22,7 +24,11 @@ import type {
   ValidatedRequest,
 } from "./types.ts";
 import { applyDependentResponse } from "./dependent.ts";
+import type { ReadonlyDeep } from "./dependent_types.ts";
 import { validateRequest } from "./validation.ts";
+
+/** Property that marks a `Failure`, shared by every copy of this module. */
+const FAILURE: unique symbol = Symbol.for("typed-endpoints.failure") as never;
 
 /** Path parameters as a router hands them over. */
 export type RawParams = Readonly<
@@ -73,6 +79,10 @@ export interface HandlerMethodDef<
    *   `projection()` or `expansion()` places, and sent as JSON with status
    *   200. A value the schema rejects is a server error: the client gets
    *   500 and the issues are logged.
+   * - `fail(status, body)` for an error response the method declares in
+   *   `responses`. The body is typed by the schema declared for that
+   *   status, parsed with it, and sent as JSON with that status. A body
+   *   the schema rejects is a server error, as above.
    * - a `Response`, which is sent as it is and not checked. For other
    *   status codes, headers, or bodies that are not JSON.
    */
@@ -83,16 +93,77 @@ export interface HandlerMethodDef<
       TQuerySchema extends z.ZodType ? z.infer<TQuerySchema> : unknown,
       TParamsSchema extends z.ZodType ? z.infer<TParamsSchema> : unknown
     >,
-  ) => HandlerResult<TResponseSchema> | Promise<HandlerResult<TResponseSchema>>;
+  ) =>
+    | HandlerResult<TResponseSchema, TResponses>
+    | Promise<HandlerResult<TResponseSchema, TResponses>>;
 }
 
 /**
- * What a handler may return: a `Response`, or, when the method declares a
- * `response` schema, a value of that schema's input type.
+ * What a handler may return: a `Response`; when the method declares a
+ * `response` schema, a value of that schema's input type; and, for each
+ * error status it declares in `responses`, a `fail()` with a body of that
+ * status's schema.
  */
-export type HandlerResult<TResponseSchema> = TResponseSchema extends z.ZodType
-  ? Response | z.input<TResponseSchema>
-  : Response;
+export type HandlerResult<TResponseSchema, TResponses = undefined> =
+  | (TResponseSchema extends z.ZodType ? Response | z.input<TResponseSchema>
+    : Response)
+  | DeclaredFailure<TResponses>;
+
+/** A declared error response, as a handler returns it. Made by `fail()`. */
+export class Failure<TStatus extends number = number, TBody = unknown> {
+  /** Marks the value across copies of this module. */
+  readonly [FAILURE] = true;
+
+  /**
+   * Create the failure. Use `fail()`.
+   *
+   * @param status The HTTP status.
+   * @param body The response body.
+   */
+  constructor(
+    /** The HTTP status. */
+    readonly status: TStatus,
+    /** The response body. */
+    readonly body: TBody,
+  ) {}
+}
+
+/**
+ * Answer with an error response the endpoint declares.
+ *
+ * ```ts
+ * GET: endpoint({
+ *   params: z.object({ id: z.string() }),
+ *   response: Item,
+ *   responses: { 404: NotFound },
+ *   handler: (_ctx, { params }) =>
+ *     items.get(params.id) ??
+ *       fail(404, { error: "not_found", id: params.id }),
+ * })
+ * ```
+ *
+ * The status has to be one the endpoint declares, and the body has to fit
+ * the schema declared for it: both are compile errors otherwise. The body
+ * is parsed with that schema before it is sent.
+ *
+ * @param status A status the endpoint declares in `responses`.
+ * @param body The body, of the schema declared for the status.
+ */
+export function fail<const TStatus extends number, const TBody>(
+  status: TStatus,
+  body: TBody,
+): Failure<TStatus, TBody> {
+  return new Failure(status, body);
+}
+
+/** The `fail()` values a handler may return, given its `responses`. */
+export type DeclaredFailure<TResponses> = TResponses extends ResponsesDef ? {
+    [S in ErrorStatus<TResponses>]: Failure<
+      S,
+      ReadonlyDeep<z.input<DeclaredResponse<TResponses, S>>>
+    >;
+  }[ErrorStatus<TResponses>]
+  : never;
 
 /** An SSE method definition with its generator, for context `TContext`. */
 export interface HandlerSseMethodDef<
@@ -147,6 +218,43 @@ export interface BuildHandlersOptions {
    * reject or iterate unknown keys of a route object. Default: false.
    */
   readonly hiddenApiDef?: boolean;
+}
+
+function isFailure(value: unknown): value is Failure {
+  return typeof value === "object" && value !== null && FAILURE in value;
+}
+
+/**
+ * The response for a `fail()` a handler returned: the body parsed by the
+ * schema declared for the status, as JSON with that status.
+ */
+function respondWithFailure(
+  method: string,
+  request: Request,
+  def: { readonly responses?: ResponsesDef },
+  failure: Failure,
+): Response {
+  const where = `${method} ${new URL(request.url).pathname}`;
+  const declared = def.responses?.[failure.status];
+  if (!declared) {
+    console.error(
+      `${where}: the handler failed with status ${failure.status}, which the endpoint does not declare in \`responses\``,
+    );
+    return jsonError("Internal Server Error", 500);
+  }
+  const schema = "schema" in declared ? declared.schema : declared;
+  const parsed = schema.safeParse(failure.body);
+  if (!parsed.success) {
+    console.error(
+      `${where}: the handler failed with a body that does not match the schema declared for ${failure.status}:`,
+      parsed.error.issues,
+    );
+    return jsonError("Internal Server Error", 500);
+  }
+  return new Response(JSON.stringify(parsed.data), {
+    status: failure.status,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 /** JSON error response */
@@ -377,6 +485,9 @@ export function buildHandlers<
 
         const returned = await methodDef.handler(context, result.data);
         if (returned instanceof Response) return returned;
+        if (isFailure(returned)) {
+          return respondWithFailure(method, request, methodDef, returned);
+        }
         return respondWith(method, request, methodDef, returned, result.data);
       };
     }
