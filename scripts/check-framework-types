@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+#
+# Type-check the integrations against the frameworks' own type definitions.
+#
+# Installs Next.js, SvelteKit, Astro, Hono and h3 at exact versions in a
+# throwaway project, next to the library sources installed as a package,
+# and runs the TypeScript compiler over e2e_tests/framework-types/check.ts.
+#
+# Next.js, SvelteKit and Astro are not run by any test: this is what shows
+# that the handlers createApiHandlers() returns are handlers of those
+# frameworks. To follow a framework release, change its version below.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+
+if ! command -v bun >/dev/null 2>&1; then
+  echo "error: bun is not installed (https://bun.sh)" >&2
+  exit 1
+fi
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+pkg="$work/node_modules/@dgellow/typed-endpoints"
+mkdir -p "$pkg"
+cp -R "$root/src" "$pkg/src"
+find "$pkg/src" \( -name '*_test.ts' -o -name '*.test.ts' \) -type f -delete
+find "$pkg/src" \( -name fixtures -o -name __snapshots__ \) -type d -prune -exec rm -rf {} +
+bun "$root/scripts/bun-package.ts" "$root/deno.json" "$pkg/package.json" "$work/base.json"
+
+cd "$work"
+cat > package.json <<'JSON'
+{
+  "name": "framework-types",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "next": "16.4.6",
+    "@sveltejs/kit": "3.2.0",
+    "astro": "7.4.12",
+    "hono": "4.13.18",
+    "h3": "2.0.8",
+    "typescript": "6.0.3",
+    "@types/node": "^22"
+  }
+}
+JSON
+# The library's own npm dependencies, at the versions deno.json names.
+bun -e '
+  const base = JSON.parse(await Bun.file("base.json").text());
+  const pkg = JSON.parse(await Bun.file("package.json").text());
+  Object.assign(pkg.dependencies, base.dependencies);
+  await Bun.write("package.json", JSON.stringify(pkg, null, 2));
+'
+rm base.json
+
+cat > tsconfig.json <<'JSON'
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true
+  },
+  "files": ["check.ts"]
+}
+JSON
+cp "$root/e2e_tests/framework-types/check.ts" check.ts
+
+bun install --silent --ignore-scripts
+bunx tsc -p tsconfig.json
+echo "framework types: ok"

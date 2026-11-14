@@ -34,10 +34,23 @@ writeFileSync(
   ),
 );
 
+// Frameworks the Bun tests run the integrations in. The package itself
+// does not depend on them. Exact versions: a new release of a framework
+// changes what is tested only when this file changes.
+const frameworks = {
+  hono: "4.13.18",
+  h3: "2.0.8",
+};
+
 writeFileSync(
   consumerPath,
   JSON.stringify(
-    { name: "bun-consumer", private: true, type: "module", dependencies },
+    {
+      name: "bun-consumer",
+      private: true,
+      type: "module",
+      dependencies: { ...dependencies, ...frameworks },
+    },
     null,
     2,
   ),
