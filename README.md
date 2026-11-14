@@ -1219,7 +1219,7 @@ src/
 │   ├── errors.ts      # Errors thrown by protocol sessions
 │   ├── introspect.ts  # Schema path lookup used by validateProtocol()
 │   ├── http.ts        # HTTP executor for real endpoint connections
-│   ├── openapi.ts     # x-protocol OpenAPI extension
+│   ├── openapi.ts     # x-protocols OpenAPI extension
 │   ├── compose.ts     # Endpoint composition (fromEndpoint, fromEndpointMapped)
 │   ├── typegen.ts     # Branded type generation from protocols
 │   ├── oauth.ts       # OAuth 2.0 reference implementation
@@ -1652,7 +1652,8 @@ a mapping is accepted.
   `fromEndpointMapped()`
 - **Branded type generation** via `generateProtocolTypes()` — compile-time
   provenance enforcement from `mappedStep()` definitions
-- **OpenAPI x-protocol extension** for spec generation
+- **OpenAPI `x-protocols` extension**: protocols in the spec, each step linked
+  to its operation
 - **Plans** (`runPlan()`): compositions as request types, with compile-time
   tracking of what has run
 - **Protocol fuzzing** (`fuzzProtocol()`): checks that a server refuses the
@@ -2253,7 +2254,8 @@ past `maxDepth`, optional parts are left out and lists are empty.
 
 ### OpenAPI Protocol Extensions
 
-Export protocols to OpenAPI `x-protocol` extension format:
+Protocols are exported to the `x-protocols` extension, a list at the root of the
+OpenAPI document:
 
 ```typescript
 import {
@@ -2261,37 +2263,61 @@ import {
   protocolToOpenApi,
 } from "@dgellow/typed-endpoints/protocol";
 
-// Convert protocol to x-protocol format
-const xProtocol = protocolToOpenApi(oauth2Protocol);
+// One protocol as an x-protocols entry
+const entry = protocolToOpenApi(oauth2Protocol);
 
-// Or add directly to an OpenAPI spec
+// Or appended to the list of an OpenAPI spec
 const spec = await generateOpenApiSpec({ routesDir: "routes/api" });
 const specWithProtocol = addProtocolToSpec(spec, oauth2Protocol);
 ```
 
-Generated x-protocol extension:
+The entry for the OAuth reference protocol:
 
 ```yaml
-x-protocol:
-  name: OAuth2AuthorizationCode
-  description: OAuth 2.0 Authorization Code Grant (RFC 6749 Section 4.1)
-  initial: authorize
-  terminal: [revoke]
-  steps:
-    - name: authorize
-      description: Redirect user to authorization server for authentication
-      next: [exchange]
-    - name: exchange
-      dependsOn: authorize
-      description: Exchange authorization code for access token
-      next: [refresh, revoke]
-    - name: refresh
-      dependsOn: exchange
-      description: Refresh access token using refresh token
-    - name: revoke
-      dependsOn: exchange
-      description: Revoke access or refresh token
+x-protocols:
+  - name: OAuth2AuthorizationCode
+    description: OAuth 2.0 Authorization Code Grant (RFC 6749 Section 4.1)
+    initial: authorize
+    terminal: [revoke]
+    steps:
+      - name: authorize
+        kind: step
+        next: [exchange]
+        description: Redirect user to authorization server for authentication
+      - name: exchange
+        kind: dependent
+        dependsOn: authorize
+        revokes: [authorize]
+        next: [refresh, revoke]
+        description: Exchange authorization code for access token
+      - name: refresh
+        kind: dependent
+        dependsOn: exchange
+        renews: exchange
+        description: Refresh access token using refresh token
+      - name: revoke
+        kind: dependent
+        dependsOn: exchange
+        revokes: [exchange]
+        description: Revoke access or refresh token
 ```
+
+What a step entry carries:
+
+| Member        | Meaning                                                                                                         |
+| ------------- | --------------------------------------------------------------------------------------------------------------- |
+| `kind`        | `step`, `dependent` (request schema computed from a response) or `mapped` (fields forwarded)                    |
+| `operationId` | The operation of the same document the step performs, when the step knows it (`fromEndpoint()`)                 |
+| `dependsOn`   | The step whose response this one follows                                                                        |
+| `sources`     | Every step whose response it reads, when there is one besides `dependsOn`                                       |
+| `mappings`    | For a mapped step: `{ field: { step, path } }`, where each forwarded request field comes from                   |
+| `revokes`     | Steps whose responses are no longer usable afterwards                                                           |
+| `renews`      | The step whose response this step's response takes the place of                                                 |
+| `next`        | Steps that read this one's response. Not a transition relation: a step without dependencies can run at any time |
+
+The protocol entry also has `onAbandon` when the protocol names one. Request and
+response schemas are not repeated: a step that has an `operationId` refers to
+the operation that describes them.
 
 ### Future: API Hierarchy for Composition
 

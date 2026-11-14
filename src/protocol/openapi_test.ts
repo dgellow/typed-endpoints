@@ -8,7 +8,15 @@ import { assertEquals, assertThrows } from "@std/assert";
 import { assertSnapshot } from "@std/testing/snapshot";
 import { z } from "zod";
 
-import { dependentStep, protocol, step } from "./dsl.ts";
+import {
+  dependentStep,
+  mappedStep,
+  protocol,
+  renewing,
+  revoking,
+  step,
+} from "./dsl.ts";
+import { fromStep } from "./mapping.ts";
 import { oauth2AuthCodeProtocol } from "./oauth.ts";
 import {
   addProtocolsToSpec,
@@ -152,7 +160,7 @@ Deno.test("protocolToOpenApi throws on invalid protocol", () => {
 // addProtocolToSpec Tests
 // =============================================================================
 
-Deno.test("addProtocolToSpec adds x-protocol to spec", () => {
+Deno.test("addProtocolToSpec lists the protocol under x-protocols", () => {
   const spec = {
     openapi: "3.1.0",
     info: { title: "Test API", version: "1.0.0" },
@@ -163,7 +171,22 @@ Deno.test("addProtocolToSpec adds x-protocol to spec", () => {
 
   assertEquals(result.openapi, "3.1.0");
   assertEquals(result.info, { title: "Test API", version: "1.0.0" });
-  assertEquals(result["x-protocol"].name, "SimpleProtocol");
+  assertEquals(result["x-protocols"].map((p) => p.name), ["SimpleProtocol"]);
+  assertEquals("x-protocol" in result, false);
+
+  // A second protocol is appended; the first one stays.
+  const both = addProtocolToSpec(result, branchingProtocol);
+  assertEquals(both["x-protocols"].map((p) => p.name), [
+    "SimpleProtocol",
+    "BranchingProtocol",
+  ]);
+  // And the same for several at once.
+  const three = addProtocolsToSpec(both, [oauth2AuthCodeProtocol]);
+  assertEquals(three["x-protocols"].map((p) => p.name), [
+    "SimpleProtocol",
+    "BranchingProtocol",
+    "OAuth2AuthorizationCode",
+  ]);
 });
 
 Deno.test("addProtocolToSpec preserves existing spec properties", () => {
@@ -210,4 +233,95 @@ Deno.test("addProtocolsToSpec handles empty array", () => {
   const result = addProtocolsToSpec(spec, []);
 
   assertEquals(result["x-protocols"], []);
+});
+
+// =============================================================================
+// What a step entry carries
+// =============================================================================
+
+Deno.test("a step entry names its kind, operation, sources, mappings, and what it revokes and renews", () => {
+  const login = step({
+    name: "login",
+    operationId: "authLoginCreate",
+    request: z.object({ user: z.string() }),
+    response: z.object({ token: z.string(), account: z.string() }),
+  });
+  const refresh = renewing(
+    mappedStep({
+      name: "refresh",
+      operationId: "authRefreshCreate",
+      dependsOn: "login",
+      requestMapping: { token: fromStep("login", "token") },
+      requestSchema: z.object({ token: z.string() }),
+      response: z.object({ token: z.string(), account: z.string() }),
+    }),
+    login,
+  );
+  const quote = step({
+    name: "quote",
+    request: z.object({ amount: z.number() }),
+    response: z.object({ quote: z.object({ id: z.string() }) }),
+  });
+  const pay = mappedStep({
+    name: "pay",
+    dependsOn: "quote",
+    requestMapping: {
+      quoteId: fromStep("quote", "quote.id"),
+      token: fromStep("login", "token"),
+    },
+    requestSchema: z.object({ quoteId: z.string(), token: z.string() }),
+    response: z.object({ paid: z.boolean() }),
+  });
+  const logout = revoking(
+    dependentStep({
+      name: "logout",
+      dependsOn: "login",
+      request: () => z.object({}),
+      response: z.object({}),
+    }),
+    ["login"],
+  );
+
+  const exported = protocolToOpenApi(protocol({
+    name: "Checkout",
+    initial: "login",
+    terminal: ["logout"],
+    steps: { login, refresh, quote, pay, logout },
+  }));
+  const entry = (name: string) => exported.steps.find((s) => s.name === name)!;
+
+  assertEquals(entry("login"), {
+    name: "login",
+    kind: "step",
+    operationId: "authLoginCreate",
+    next: ["refresh", "pay", "logout"],
+  });
+  assertEquals(entry("refresh"), {
+    name: "refresh",
+    kind: "mapped",
+    operationId: "authRefreshCreate",
+    dependsOn: "login",
+    mappings: { token: { step: "login", path: "token" } },
+    renews: "login",
+  });
+  // A step without an operationId has none; one that depends on nothing
+  // has no `dependsOn`.
+  assertEquals(entry("quote"), { name: "quote", kind: "step", next: ["pay"] });
+  // Every source is listed when there is one besides `dependsOn`.
+  assertEquals(entry("pay"), {
+    name: "pay",
+    kind: "mapped",
+    dependsOn: "quote",
+    sources: ["quote", "login"],
+    mappings: {
+      quoteId: { step: "quote", path: "quote.id" },
+      token: { step: "login", path: "token" },
+    },
+  });
+  assertEquals(entry("logout"), {
+    name: "logout",
+    kind: "dependent",
+    dependsOn: "login",
+    revokes: ["login"],
+  });
 });

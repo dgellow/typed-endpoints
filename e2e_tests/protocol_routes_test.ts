@@ -9,8 +9,10 @@
 
 import { assertEquals } from "@std/assert";
 
+import { generateOpenApiSpec } from "@/core/openapi.ts";
 import { generateTypes } from "@/tsgen/mod.ts";
 import {
+  addProtocolToSpec,
   createHttpExecutor,
   fromEndpoint,
   type HandlerWithApiDef,
@@ -24,6 +26,8 @@ import { handler as posts } from "./fixtures/nested/routes/api/users/[id]/posts.
 import { handler as post } from "./fixtures/nested/routes/api/users/[id]/posts/[postId].ts";
 import { handler as tags } from "./fixtures/nested/routes/api/users/[id]/tags.ts";
 import { handler as health } from "./fixtures/nested/routes/health.ts";
+import { handler as reports } from "../src/core/fixtures/described/routes/api/reports.ts";
+import { handler as reportTags } from "../src/core/fixtures/described/routes/api/reports/[id]/tags.ts";
 
 /** Every endpoint of the fixture, with the file-route form of its path. */
 const ENDPOINTS: [HandlerWithApiDef, string][] = [
@@ -106,4 +110,55 @@ Deno.test("E2E: steps with a path are served without a route table", async () =>
   } finally {
     await server.shutdown();
   }
+});
+
+Deno.test("E2E: a step in x-protocols names an operation of the generated spec", async () => {
+  // The protocol's steps and the document's operations come from the
+  // same handlers; nothing names an operation by hand.
+  const proto = protocol({
+    name: "Reports",
+    initial: "create",
+    steps: {
+      create: fromEndpoint(reports, "POST", {
+        name: "create",
+        path: "/api/reports",
+      }),
+      list: fromEndpoint(reports, "GET", {
+        name: "list",
+        path: "/api/reports",
+      }),
+      untag: fromEndpoint(reportTags, "DELETE", {
+        name: "untag",
+        path: "/api/reports/[id]/tags",
+      }),
+    },
+  });
+
+  const spec = addProtocolToSpec(
+    await generateOpenApiSpec({
+      routesDir: "src/core/fixtures/described/routes/api",
+    }),
+    proto,
+  );
+
+  const operations = new Map<string, string>();
+  for (const [path, item] of Object.entries(spec.paths ?? {})) {
+    for (const [method, operation] of Object.entries(item ?? {})) {
+      const id = (operation as { operationId?: string }).operationId;
+      if (id) operations.set(id, `${method.toUpperCase()} ${path}`);
+    }
+  }
+
+  const [listed] = spec["x-protocols"];
+  assertEquals(
+    listed.steps.map((step) => [
+      step.name,
+      operations.get(step.operationId ?? ""),
+    ]),
+    [
+      ["create", "POST /api/reports"],
+      ["list", "GET /api/reports"],
+      ["untag", "DELETE /api/reports/{id}/tags"],
+    ],
+  );
 });

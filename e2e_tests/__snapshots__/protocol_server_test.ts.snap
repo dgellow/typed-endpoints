@@ -1,35 +1,40 @@
 export const snapshot = {};
 
-snapshot[`E2E: OpenAPI spec with x-protocol extension 1`] = `
+snapshot[`E2E: OpenAPI spec with x-protocols extension 1`] = `
 {
-  "x-protocol": {
-    description: "Simplified authentication protocol",
-    initial: "login",
-    name: "SimpleAuth",
-    steps: [
-      {
-        description: "Authenticate with credentials",
-        name: "login",
-        next: [
-          "refresh",
-          "logout",
-        ],
-      },
-      {
-        dependsOn: "login",
-        description: "Refresh session",
-        name: "refresh",
-      },
-      {
-        dependsOn: "login",
-        description: "End session",
-        name: "logout",
-      },
-    ],
-    terminal: [
-      "logout",
-    ],
-  },
+  "x-protocols": [
+    {
+      description: "Simplified authentication protocol",
+      initial: "login",
+      name: "SimpleAuth",
+      steps: [
+        {
+          description: "Authenticate with credentials",
+          kind: "step",
+          name: "login",
+          next: [
+            "refresh",
+            "logout",
+          ],
+        },
+        {
+          dependsOn: "login",
+          description: "Refresh session",
+          kind: "dependent",
+          name: "refresh",
+        },
+        {
+          dependsOn: "login",
+          description: "End session",
+          kind: "dependent",
+          name: "logout",
+        },
+      ],
+      terminal: [
+        "logout",
+      ],
+    },
+  ],
   info: {
     title: "Auth API",
     version: "1.0.0",

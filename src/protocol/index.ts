@@ -275,7 +275,7 @@ export {
 } from "./openapi.ts";
 
 // OpenAPI extension types
-export type { XProtocol, XProtocolStep } from "./openapi.ts";
+export type { XProtocol, XProtocolMapping, XProtocolStep } from "./openapi.ts";
 
 // HTTP executor
 export { createHttpExecutor, HttpError } from "./http.ts";
