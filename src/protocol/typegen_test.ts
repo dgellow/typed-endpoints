@@ -218,3 +218,56 @@ Deno.test("generateProtocolTypes: two steps with the same type name are an error
     'Steps "get-token" and "getToken" generate the same type names (GetTokenRequest, GetTokenResponse)',
   );
 });
+
+Deno.test("generateProtocolTypes: recursive schemas become named types, per side", async () => {
+  const Node = z.object({
+    id: z.string(),
+    get children() {
+      return z.array(Node);
+    },
+  });
+  const proto = protocol({
+    name: "Tree",
+    initial: "load",
+    steps: {
+      load: step({
+        name: "load",
+        request: z.object({ root: Node.optional() }),
+        response: z.object({ tree: Node, token: z.string() }),
+      }),
+      save: mappedStep({
+        name: "save",
+        dependsOn: "load",
+        requestSchema: z.object({ token: z.string(), tree: Node }),
+        requestMapping: { token: fromStep("load", "token") },
+        response: z.array(Node),
+      }),
+      // Neither an object nor a union: rendered as is.
+      ping: step({ name: "ping", request: z.object({}), response: z.string() }),
+    },
+  });
+
+  const output = generateProtocolTypes(proto);
+
+  // Declared once per side, before the first step that uses them.
+  assertStringIncludes(
+    output,
+    "// Named types\n" +
+      "export type RecursiveInput = { id: string; children: RecursiveInput[]; };\n" +
+      "export type Recursive = { id: string; children: Recursive[]; };\n" +
+      "\n// Step: load",
+  );
+  assertStringIncludes(
+    output,
+    "export type LoadRequest = { root?: RecursiveInput | undefined; };",
+  );
+  assertStringIncludes(
+    output,
+    'export type SaveRequest = { token: StepOutput<string, "load", "token">; tree: RecursiveInput; };',
+  );
+  assertStringIncludes(output, "export type SaveResponse = Recursive[];");
+  assertStringIncludes(output, "export type PingRequest = {};");
+  assertStringIncludes(output, "export type PingResponse = string;");
+
+  await assertCompiles(output);
+});
