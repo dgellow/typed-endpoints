@@ -174,8 +174,10 @@ export const RUNTIME = String.raw`
 /// Checks requests and responses against the contract. The module's API is
 /// its types, the Handlers trait and the router; nothing in here is part
 /// of it.
-// A contract does not need every helper.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "one runtime for every contract: this one may not use each keyword or request part"
+)]
 mod runtime {
     use std::collections::HashMap;
     use std::fmt::Write as _;
@@ -275,8 +277,8 @@ mod runtime {
         /// constant of its own.
         pub(super) tag: Option<&'static str>,
         pub(super) all_of: Option<&'static [Schema]>,
-        pub(super) min_length: Option<u64>,
-        pub(super) max_length: Option<u64>,
+        pub(super) min_length: Option<usize>,
+        pub(super) max_length: Option<usize>,
         /// A regular expression, as JavaScript reads it.
         pub(super) pattern: Option<&'static Pattern>,
         pub(super) format: Option<&'static str>,
@@ -285,8 +287,8 @@ mod runtime {
         pub(super) exclusive_minimum: Option<f64>,
         pub(super) exclusive_maximum: Option<f64>,
         pub(super) multiple_of: Option<f64>,
-        pub(super) min_items: Option<u64>,
-        pub(super) max_items: Option<u64>,
+        pub(super) min_items: Option<usize>,
+        pub(super) max_items: Option<usize>,
         /// The schema of every item of a list.
         pub(super) items: Option<&'static Schema>,
         /// The schemas of a tuple's items, by position.
@@ -367,8 +369,21 @@ mod runtime {
         path: Vec<Value>,
         /// What is wrong there.
         message: String,
-        /// The kind of issue, named as Zod names it.
-        code: &'static str,
+        code: Code,
+    }
+
+    /// The kind of an issue, named as Zod names it.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    enum Code {
+        InvalidType,
+        InvalidValue,
+        InvalidUnion,
+        InvalidFormat,
+        TooSmall,
+        TooBig,
+        NotMultipleOf,
+        UnrecognizedKeys,
     }
 
     /// The part of a request a schema describes.
@@ -402,15 +417,16 @@ mod runtime {
         }
     }
 
-    /// What Zod calls the type of a JSON value.
-    fn kind_of(value: &Value) -> &'static str {
+    /// The type of a JSON value. A number is a number: whether it is an
+    /// integer is a question about its value.
+    fn type_of(value: &Value) -> Type {
         match value {
-            Value::Null => "null",
-            Value::Bool(_) => "boolean",
-            Value::Number(_) => "number",
-            Value::String(_) => "string",
-            Value::Array(_) => "array",
-            Value::Object(_) => "object",
+            Value::Null => Type::Null,
+            Value::Bool(_) => Type::Boolean,
+            Value::Number(_) => Type::Number,
+            Value::String(_) => Type::String,
+            Value::Array(_) => Type::Array,
+            Value::Object(_) => Type::Object,
         }
     }
 
@@ -420,8 +436,10 @@ mod runtime {
     /// The integer a number is, if it is one that every side can hold.
     fn whole(number: f64) -> Option<i64> {
         let safe = number.fract() == 0.0 && number.abs() <= MAX_SAFE_INTEGER;
-        // Checked above: the cast neither truncates nor wraps.
-        #[allow(clippy::cast_possible_truncation)]
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "checked above: the cast neither truncates nor wraps"
+        )]
         safe.then_some(number as i64)
     }
 
@@ -561,45 +579,62 @@ mod runtime {
         }
     }
 
+    /// A step from a value to one of its parts.
+    #[derive(Debug, Clone, Copy)]
+    enum Step<'a> {
+        Member(&'a str),
+        Item(usize),
+    }
+
+    /// What is wrong with a value: nothing, if it fits. The last argument
+    /// says whether the value arrived as text (a query, a path).
+    fn issues_of(schema: &'static Schema, value: Option<&Value>, text: bool) -> Vec<Issue> {
+        let mut checker = Checker {
+            issues: Vec::new(),
+            path: Vec::new(),
+            text,
+        };
+        checker.check(schema, value);
+        checker.issues
+    }
+
     /// Checks JSON values against a schema and collects what is wrong.
-    #[derive(Default)]
-    struct Checker {
+    struct Checker<'a> {
         issues: Vec<Issue>,
-        /// Where the value being checked is.
-        path: Vec<Value>,
+        /// Where the value being checked is. It borrows the names: a path
+        /// is written out for an issue, and for nothing else.
+        path: Vec<Step<'a>>,
         /// Whether the values arrived as text (a query, a path).
         text: bool,
     }
 
-    impl Checker {
-        fn issue(&mut self, code: &'static str, message: impl Into<String>) {
+    impl<'a> Checker<'a> {
+        fn issue(&mut self, code: Code, message: impl Into<String>) {
+            let path = self
+                .path
+                .iter()
+                .map(|step| match *step {
+                    Step::Member(name) => Value::from(name),
+                    Step::Item(index) => Value::from(index),
+                })
+                .collect();
             self.issues.push(Issue {
-                path: self.path.clone(),
+                path,
                 message: message.into(),
                 code,
             });
         }
 
-        /// Whether the value fits the schema, without recording why not.
-        fn fits(&self, schema: &'static Schema, value: &Value) -> bool {
-            let mut probe = Checker {
-                text: self.text,
-                ..Checker::default()
-            };
-            probe.check(schema, Some(value));
-            probe.issues.is_empty()
-        }
-
         /// Checks the value at a member or an index.
-        fn check_at(&mut self, key: Value, schema: &'static Schema, value: Option<&Value>) {
-            self.path.push(key);
+        fn check_at(&mut self, step: Step<'a>, schema: &'static Schema, value: Option<&'a Value>) {
+            self.path.push(step);
             self.check(schema, value);
             self.path.pop();
         }
 
         /// Checks a value and records what is wrong. The value is only
         /// read, so that trying an alternative costs no copy.
-        fn check(&mut self, schema: &'static Schema, value: Option<&Value>) {
+        fn check(&mut self, schema: &'static Schema, value: Option<&'a Value>) {
             let schema = schema.resolved();
 
             // A value that is listed: a missing one is not.
@@ -607,7 +642,7 @@ mod runtime {
                 if !value.is_some_and(|value| constant.is(value)) {
                     let expected = constant.json();
                     self.issue(
-                        "invalid_value",
+                        Code::InvalidValue,
                         format!("Invalid input: expected {expected}"),
                     );
                 }
@@ -618,7 +653,7 @@ mod runtime {
                     let listed: Vec<String> = options.iter().map(|option| option.json()).collect();
                     let listed = listed.join("|");
                     self.issue(
-                        "invalid_value",
+                        Code::InvalidValue,
                         format!("Invalid option: expected one of {listed}"),
                     );
                 }
@@ -639,11 +674,11 @@ mod runtime {
                 > 1;
             let Some(value) = value else {
                 if several {
-                    self.issue("invalid_union", "Invalid input");
+                    self.issue(Code::InvalidUnion, "Invalid input");
                 } else {
                     let expected = schema.expected();
                     self.issue(
-                        "invalid_type",
+                        Code::InvalidType,
                         format!("Invalid input: expected {expected}, received undefined"),
                     );
                 }
@@ -676,36 +711,36 @@ mod runtime {
             if schema.types.is_empty() {
                 return true;
             }
-            let actual = kind_of(value);
+            let actual = type_of(value);
             let integral = value.as_f64().is_some_and(|number| number.fract() == 0.0);
             let fits = schema.types.iter().any(|allowed| match allowed {
-                Type::Integer => actual == "number" && integral,
-                other => other.name() == actual,
+                Type::Integer => actual == Type::Number && integral,
+                other => *other == actual,
             });
             if fits {
                 return true;
             }
             if several {
-                self.issue("invalid_union", "Invalid input");
+                self.issue(Code::InvalidUnion, "Invalid input");
                 return false;
             }
             let expected = schema.expected();
             let numeric = schema.allows(Type::Integer) || schema.allows(Type::Number);
-            let received = if schema.allows(Type::Integer) && actual == "number" {
+            let received = if schema.allows(Type::Integer) && actual == Type::Number {
                 // The right kind and the wrong value.
                 self.issue(
-                    "invalid_type",
+                    Code::InvalidType,
                     "Invalid input: expected int, received number",
                 );
                 return false;
-            } else if self.text && numeric && actual == "string" {
+            } else if self.text && numeric && actual == Type::String {
                 // Text that is not a number, read as a number.
                 "NaN"
             } else {
-                actual
+                actual.name()
             };
             self.issue(
-                "invalid_type",
+                Code::InvalidType,
                 format!("Invalid input: expected {expected}, received {received}"),
             );
             false
@@ -715,7 +750,7 @@ mod runtime {
             &mut self,
             schema: &'static Schema,
             alternatives: &'static [Schema],
-            value: Option<&Value>,
+            value: Option<&'a Value>,
         ) {
             // T or null: what is wrong with a value that is not null is
             // what is wrong with it as a T.
@@ -735,19 +770,19 @@ mod runtime {
             let Some(value) = value else {
                 if schema.tag.is_some() {
                     self.issue(
-                        "invalid_type",
+                        Code::InvalidType,
                         "Invalid input: expected object, received undefined",
                     );
                 } else {
-                    self.issue("invalid_union", "Invalid input");
+                    self.issue(Code::InvalidUnion, "Invalid input");
                 }
                 return;
             };
             if let Some(tag) = schema.tag {
                 if !value.is_object() {
-                    let actual = kind_of(value);
+                    let actual = type_of(value).name();
                     self.issue(
-                        "invalid_type",
+                        Code::InvalidType,
                         format!("Invalid input: expected object, received {actual}"),
                     );
                     return;
@@ -773,9 +808,9 @@ mod runtime {
                         .map(|constant| format!("'{constant}'"))
                         .collect();
                     let listed = listed.join(" | ");
-                    self.path.push(Value::from(tag));
+                    self.path.push(Step::Member(tag));
                     self.issue(
-                        "invalid_union",
+                        Code::InvalidUnion,
                         format!("Invalid discriminator value. Expected {listed}"),
                     );
                     self.path.pop();
@@ -786,27 +821,28 @@ mod runtime {
             // Each alternative is tried once. One that fits has nothing to
             // report, so it is not checked a second time: in a union that
             // refers to itself that would double the work at every level.
+            let text = self.text;
             if !alternatives
                 .iter()
-                .any(|alternative| self.fits(alternative, value))
+                .any(|alternative| issues_of(alternative, Some(value), text).is_empty())
             {
-                self.issue("invalid_union", "Invalid input");
+                self.issue(Code::InvalidUnion, "Invalid input");
             }
         }
 
         fn check_string(&mut self, schema: &Schema, text: &str) {
             // In code points, as Zod and JSON Schema count: neither bytes
             // nor what JavaScript's length gives outside the BMP.
-            let length = u64::try_from(text.chars().count()).unwrap_or(u64::MAX);
+            let length = text.chars().count();
             if let Some(minimum) = schema.min_length.filter(|minimum| length < *minimum) {
                 self.issue(
-                    "too_small",
+                    Code::TooSmall,
                     format!("Too small: expected string to have >={minimum} characters"),
                 );
             }
             if let Some(maximum) = schema.max_length.filter(|maximum| length > *maximum) {
                 self.issue(
-                    "too_big",
+                    Code::TooBig,
                     format!("Too big: expected string to have <={maximum} characters"),
                 );
             }
@@ -819,16 +855,22 @@ mod runtime {
                     let source = pattern.source;
                     format!("Invalid string: must match pattern /{source}/")
                 };
-                self.issue("invalid_format", message);
+                self.issue(Code::InvalidFormat, message);
             }
         }
 
         fn check_number(&mut self, schema: &Schema, amount: f64) {
-            // The range of integers a JavaScript number holds exactly is
-            // the bound of an int, not one the schema's author wrote.
-            #[allow(clippy::float_cmp)]
+            // An integer is bounded by the range a JavaScript number holds
+            // exactly, and Zod says "int" for that bound. The contract
+            // cannot say whether the author of an integer wrote the same
+            // bound again; Zod then reports it twice, this once.
+            let integer = schema.allows(Type::Integer);
+            #[allow(
+                clippy::float_cmp,
+                reason = "the bound is that number or another, not a result of arithmetic"
+            )]
             let what = |bound: f64| {
-                if bound.abs() == MAX_SAFE_INTEGER {
+                if integer && bound.abs() == MAX_SAFE_INTEGER {
                     "int"
                 } else {
                     "number"
@@ -837,7 +879,7 @@ mod runtime {
             if let Some(minimum) = schema.minimum.filter(|minimum| amount < *minimum) {
                 let (what, minimum) = (what(minimum), js_number(minimum));
                 self.issue(
-                    "too_small",
+                    Code::TooSmall,
                     format!("Too small: expected {what} to be >={minimum}"),
                 );
             }
@@ -847,14 +889,14 @@ mod runtime {
             {
                 let minimum = js_number(minimum);
                 self.issue(
-                    "too_small",
+                    Code::TooSmall,
                     format!("Too small: expected number to be >{minimum}"),
                 );
             }
             if let Some(maximum) = schema.maximum.filter(|maximum| amount > *maximum) {
                 let (what, maximum) = (what(maximum), js_number(maximum));
                 self.issue(
-                    "too_big",
+                    Code::TooBig,
                     format!("Too big: expected {what} to be <={maximum}"),
                 );
             }
@@ -864,7 +906,7 @@ mod runtime {
             {
                 let maximum = js_number(maximum);
                 self.issue(
-                    "too_big",
+                    Code::TooBig,
                     format!("Too big: expected number to be <{maximum}"),
                 );
             }
@@ -874,23 +916,23 @@ mod runtime {
             if let Some(step) = schema.multiple_of.filter(off_step) {
                 let step = js_number(step);
                 self.issue(
-                    "not_multiple_of",
+                    Code::NotMultipleOf,
                     format!("Invalid number: must be a multiple of {step}"),
                 );
             }
         }
 
-        fn check_array(&mut self, schema: &Schema, items: &[Value]) {
-            let count = u64::try_from(items.len()).unwrap_or(u64::MAX);
+        fn check_array(&mut self, schema: &Schema, items: &'a [Value]) {
+            let count = items.len();
             if let Some(minimum) = schema.min_items.filter(|minimum| count < *minimum) {
                 self.issue(
-                    "too_small",
+                    Code::TooSmall,
                     format!("Too small: expected array to have >={minimum} items"),
                 );
             }
             if let Some(maximum) = schema.max_items.filter(|maximum| count > *maximum) {
                 self.issue(
-                    "too_big",
+                    Code::TooBig,
                     format!("Too big: expected array to have <={maximum} items"),
                 );
             }
@@ -898,17 +940,17 @@ mod runtime {
             for (index, item) in items.iter().enumerate() {
                 let positioned = schema.prefix_items.and_then(|schemas| schemas.get(index));
                 if let Some(schema) = positioned.or(schema.items) {
-                    self.check_at(Value::from(index), schema, Some(item));
+                    self.check_at(Step::Item(index), schema, Some(item));
                 }
             }
         }
 
-        fn check_object(&mut self, schema: &Schema, members: &Map<String, Value>) {
+        fn check_object(&mut self, schema: &Schema, members: &'a Map<String, Value>) {
             for (name, property) in schema.properties.into_iter().flatten() {
                 match members.get(*name) {
-                    Some(member) => self.check_at(Value::from(*name), property, Some(member)),
+                    Some(member) => self.check_at(Step::Member(name), property, Some(member)),
                     None if schema.required.contains(name) => {
-                        self.check_at(Value::from(*name), property, None);
+                        self.check_at(Step::Member(name), property, None);
                     }
                     None => {}
                 }
@@ -928,7 +970,7 @@ mod runtime {
                         let noun = if unknown.len() == 1 { "key" } else { "keys" };
                         let unknown = unknown.join(", ");
                         self.issue(
-                            "unrecognized_keys",
+                            Code::UnrecognizedKeys,
                             format!("Unrecognized {noun}: {unknown}"),
                         );
                     }
@@ -936,7 +978,7 @@ mod runtime {
                 Additional::Each(each) => {
                     for (name, member) in members {
                         if schema.property(name).is_none() {
-                            self.check_at(Value::from(name.as_str()), each, Some(member));
+                            self.check_at(Step::Member(name), each, Some(member));
                         }
                     }
                 }
@@ -1086,16 +1128,12 @@ mod runtime {
         schema: &'static Schema,
         mut value: Option<Value>,
     ) -> Result<T, Refused> {
-        let mut checker = Checker {
-            text: part.is_text(),
-            ..Checker::default()
-        };
         if let Some(value) = value.as_mut() {
             as_javascript(value);
         }
-        checker.check(schema, value.as_ref());
-        if !checker.issues.is_empty() {
-            return Err(invalid(part, &checker.issues).into());
+        let issues = issues_of(schema, value.as_ref(), part.is_text());
+        if !issues.is_empty() {
+            return Err(invalid(part, &issues).into());
         }
         serde_json::from_value(value.unwrap_or(Value::Null)).map_err(|error| {
             // The schema accepted the value and the type did not: the two
@@ -1268,10 +1306,9 @@ mod runtime {
                     return internal_error();
                 }
             };
-            let mut checker = Checker::default();
-            checker.check(schema.unwrap_or(&Schema::ANY), Some(&json));
-            if !checker.issues.is_empty() {
-                let issues = serde_json::to_string(&checker.issues).unwrap_or_default();
+            let issues = issues_of(schema.unwrap_or(&Schema::ANY), Some(&json), false);
+            if !issues.is_empty() {
+                let issues = serde_json::to_string(&issues).unwrap_or_default();
                 tracing::error!(operation, %status, issues, "the returned value does not match its schema");
                 return internal_error();
             }

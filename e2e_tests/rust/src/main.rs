@@ -166,6 +166,7 @@ impl api::Handlers for Notes {
             ("digits", body.digits.is_some()),
             ("email", body.email.is_some()),
             ("flag", body.flag.is_some()),
+            ("huge", body.huge.is_some()),
             ("id", body.id.is_some()),
             // Null is a member that arrived.
             ("maybe", !body.maybe.is_absent()),
@@ -212,6 +213,12 @@ impl api::Handlers for Notes {
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
+    // The module reports a failure it does not tell the client about
+    // through `tracing`: without a subscriber nobody hears of a 500.
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .init();
+
     // Port 0: the system picks one, and the address is printed for the
     // script that runs the tests.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;

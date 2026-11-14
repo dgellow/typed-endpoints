@@ -304,6 +304,17 @@ Deno.test("rust axum: an event stream is listed and left out", () => {
     }),
   );
   assertEquals(lines.some((line) => line.includes("ticks_list")), false);
-  const at = lines.indexOf("// Not generated: server-sent event streams.");
-  assertEquals(lines[at + 1], "//   GET /ticks");
+  // In the module's documentation, where rustdoc shows it.
+  const at = lines.indexOf("//! # Not served");
+  assertEquals(lines.slice(at + 2, at + 5), [
+    "//! Server-sent event streams are not generated yet:",
+    "//!",
+    "//! - `GET /ticks`",
+  ]);
+
+  // The documentation names what a crate with the module needs and what
+  // a client is answered.
+  for (const heading of ["//! # Crates", "//! # Types", "//! # Answers"]) {
+    assertEquals(lines.includes(heading), true, heading);
+  }
 });

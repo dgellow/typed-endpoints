@@ -1215,8 +1215,13 @@ What does not cross, or not yet:
 - A body over axum's size limit is a 413, which the TypeScript handlers never
   answer: they read a body of any size
 - A 500 is reported through `tracing`: an application without a subscriber
-  writes nothing
-- Not generated yet: event streams (listed in a comment in the module), a
+  writes nothing. The module's documentation says so, and the test server
+  installs one: `./scripts/test-rust` fails if a handler's failure is not in its
+  log
+- An integer whose author wrote the bound of a safe integer again
+  (`z.int().max(Number.MAX_SAFE_INTEGER)`) is refused with one issue where Zod
+  reports two: the contract has one bound
+- Not generated yet: event streams (listed in the module's documentation), a
   client, request-dependent responses, protocols
 
 How it is checked (`./scripts/test-rust`, with the pinned toolchain): the

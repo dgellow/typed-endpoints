@@ -765,6 +765,21 @@ export function conformance(
     assertEquals(constant.status, 200, "version: 2.0");
     await constant.body?.cancel();
 
+    // The largest integer a number holds exactly is the bound of every
+    // int. As a bound a schema's author wrote for a number, it is a
+    // bound of a number, and the issue says so.
+    await accepted({ huge: 2.5 });
+    const huge = await send("POST", "/api/edges", '{"huge": 1e300}');
+    assertEquals(huge.status, 400);
+    const [issue] = (await huge.json() as Invalid).issues;
+    assertEquals(issue.path, ["huge"]);
+    if (!differs("issues-in-other-words")) {
+      assertEquals(
+        issue.message,
+        "Too big: expected number to be <=9007199254740991",
+      );
+    }
+
     // A multiple of 0.1, whatever binary floating point makes of it.
     await accepted({ step: 0.3 });
     await accepted({ step: 1.1 });
