@@ -112,11 +112,14 @@ class PathError(ValueError):
     """A path parameter that would make the request go to another path."""
 `.trim();
 
-const RUNTIME = `
-# Where the next page is: a query to ask with, a URL to ask, or nowhere.
-type _Step = tuple[Literal["query"], dict[str, Any]] | tuple[Literal["url"], str] | None
+/**
+ * The fixed part of the module, in blocks. A module gets the blocks it
+ * uses: a type checker in strict mode reports a private function that
+ * nothing calls.
+ */
 
-
+/** Encoding a path parameter. */
+const SEGMENT = `
 def _segment(value: str) -> str:
     """Encode a path parameter.
 
@@ -127,16 +130,20 @@ def _segment(value: str) -> str:
         message = f"{value!r} cannot be a segment of a path"
         raise PathError(message)
     return quote(value, safe="")
+`.trim();
 
-
+/** Encoding a catch-all path parameter. */
+const REST = `
 def _rest(value: str) -> str:
     """Encode a catch-all path parameter: it keeps its slashes."""
     if any(segment in {".", ".."} for segment in value.split("/")):
         message = f"{value!r} has a segment that is \`.\` or \`..\`"
         raise PathError(message)
     return quote(value, safe="/")
+`.trim();
 
-
+/** Writing a query. */
+const QUERY = `
 def _query(query: BaseModel | None) -> dict[str, Any]:
     """Write query parameters as httpx takes them; a list repeats its key."""
     if query is None:
@@ -145,13 +152,17 @@ def _query(query: BaseModel | None) -> dict[str, Any]:
         mode="json", by_alias=True, exclude_unset=True
     )
     return {key: value for key, value in values.items() if value is not None}
+`.trim();
 
-
+/** Writing a body. */
+const BODY = `
 def _body(adapter: TypeAdapter[Any], body: object) -> object:
     # Fields that were not set stay absent: absent and null are different.
     return adapter.dump_python(body, mode="json", by_alias=True, exclude_unset=True)
+`.trim();
 
-
+/** Reading a response. */
+const RESPONSES = `
 def _content(response: httpx.Response) -> object:
     """Read the body of a response: parsed JSON, the text, or None when empty."""
     if not response.content:
@@ -175,8 +186,10 @@ def _expect[T](response: httpx.Response, adapter: TypeAdapter[T]) -> T:
     if not response.is_success:
         raise ApiError(response.status_code, _content(response))
     return _parse(response.status_code, _content(response), adapter)
+`.trim();
 
-
+/** Reading a response of an operation that declares errors. */
+const RESULT = `
 def _result[T](
     response: httpx.Response,
     adapter: TypeAdapter[T],
@@ -193,6 +206,12 @@ def _result[T](
         # The status, from something that is not this API: a proxy, a
         # framework's own answer.
         raise ApiError(response.status_code, content) from None
+`.trim();
+
+/** Finding the next page of a list. */
+const PAGINATION = `
+# Where the next page is: a query to ask with, a URL to ask, or nowhere.
+type _Step = tuple[Literal["query"], dict[str, Any]] | tuple[Literal["url"], str] | None
 
 
 def _at(value: object, path: str | None) -> object:
@@ -426,24 +445,50 @@ export function renderPythonClient(
     });
   }
 
-  const body: string[] = [
-    PRELUDE,
-    "",
-    "",
-    ...banner("Models"),
-    ...models.render(),
-    ...banner("Client"),
+  // What the module needs of its fixed part.
+  const paginated = rendered.some((item) =>
+    item.operation.pagination && item.response
+  );
+  const params = rendered.flatMap((item) => item.operation.pathParams);
+  const fixed = [
+    ...(params.some((param) => !param.catchAll) ? [SEGMENT] : []),
+    ...(params.some((param) => param.catchAll) ? [REST] : []),
+    ...(rendered.some((item) => item.query) ? [QUERY] : []),
+    ...(rendered.some((item) => item.body) ? [BODY] : []),
+    ...(rendered.length > 0 ? [RESPONSES] : []),
+    ...(rendered.some((item) => item.result) ? [RESULT] : []),
+    ...(paginated ? [PAGINATION] : []),
+  ];
+
+  // What comes first under the banner: the types of the results and the
+  // adapters, if the module has any.
+  const adapterLines = rendered.flatMap(adapters);
+  const head = [
     ...(results.length > 0
       ? [
         "# What a call returns that takes the declared errors as values.",
         ...results,
-        "",
+        ...(adapterLines.length > 0 ? [""] : []),
       ]
       : []),
+    ...adapterLines,
   ];
-  for (const item of rendered) body.push(...adapters(item));
-  body.push("", "", RUNTIME, "", "", ...clientClass(rendered, false));
-  body.push("", "", ...clientClass(rendered, true));
+  const features = { result: results.length > 0, paginated };
+  const modelLines = models.render();
+  const body: string[] = [
+    PRELUDE,
+    "",
+    "",
+    ...(modelLines.length > 0 ? [...banner("Models"), ...modelLines] : []),
+    ...banner("Client"),
+    // Two empty lines between what is defined at the top level.
+    [
+      ...(head.length > 0 ? [head.join("\n")] : []),
+      ...fixed,
+      clientClass(rendered, false, features).join("\n"),
+      clientClass(rendered, true, features).join("\n"),
+    ].join("\n\n\n"),
+  ];
 
   const source = body.join("\n");
   return [
@@ -550,6 +595,7 @@ function pathExpression(operation: ContractOperation): string {
 function clientClass(
   rendered: readonly Rendered[],
   isAsync: boolean,
+  features: { readonly result: boolean; readonly paginated: boolean },
 ): string[] {
   const name = isAsync ? "AsyncClient" : "Client";
   const http = isAsync ? "httpx.AsyncClient" : "httpx.Client";
@@ -560,12 +606,23 @@ function clientClass(
 
   const lines: string[] = [
     `class ${name}:`,
-    `    """The operations as ${isAsync ? "coroutines" : "methods"}.`,
-    "",
-    "    A plain call returns the parsed response and raises `ApiError` for a",
-    "    status outside 200-299. `_result` returns a declared error as a `Fail`.",
-    "    `_pages` and `_items` follow a paginated list to its end.",
-    '    """',
+    ...docstring(
+      4,
+      [
+        `The operations as ${isAsync ? "coroutines" : "methods"}.`,
+        "",
+        [
+          "A plain call returns the parsed response and raises `ApiError` " +
+          "for a status outside 200-299.",
+          ...(features.result
+            ? ["`_result` returns a declared error as a `Fail`."]
+            : []),
+          ...(features.paginated
+            ? ["`_pages` and `_items` follow a paginated list to its end."]
+            : []),
+        ].join(" "),
+      ].join("\n"),
+    ),
     "",
     "    def __init__(",
     "        self,",
@@ -616,41 +673,45 @@ function clientClass(
     "            json=body,",
     "            headers=self._headers,",
     "        )",
-    "",
-    `    ${def} _pages(`,
-    "        self,",
-    "        call: str,",
-    "        method: str,",
-    "        path: str,",
-    "        query: dict[str, Any],",
-    "        meta: Mapping[str, Any],",
-    `    ) -> ${iterator}[object]:`,
-    '        """Yield every page of a list, as parsed JSON."""',
-    "        url: httpx.URL | None = None",
-    "        size: int | None = None",
-    "        while True:",
-    "            if url is None:",
-    `                response = ${wait}self._send(method, path, query)`,
-    "            else:",
-    ...fit(
-      16,
-      "response = ",
-      `${wait}self._http.request(method, url, headers=self._headers)`,
-    ),
-    "            if not response.is_success:",
-    "                raise ApiError(response.status_code, _content(response))",
-    "            page = _content(response)",
-    "            yield page",
-    "            if size is None:",
-    "                size = len(_page_items(page, meta))",
-    "            step = _next_page(call, meta, page, query, size)",
-    "            if step is None:",
-    "                return",
-    '            if step[0] == "query":',
-    "                query = step[1]",
-    "            else:",
-    "                url = _same_origin(call, response.url, step[1])",
   ];
+  if (features.paginated) {
+    lines.push(
+      "",
+      `    ${def} _pages(`,
+      "        self,",
+      "        call: str,",
+      "        method: str,",
+      "        path: str,",
+      "        query: dict[str, Any],",
+      "        meta: Mapping[str, Any],",
+      `    ) -> ${iterator}[object]:`,
+      '        """Yield every page of a list, as parsed JSON."""',
+      "        url: httpx.URL | None = None",
+      "        size: int | None = None",
+      "        while True:",
+      "            if url is None:",
+      `                response = ${wait}self._send(method, path, query)`,
+      "            else:",
+      ...fit(
+        16,
+        "response = ",
+        `${wait}self._http.request(method, url, headers=self._headers)`,
+      ),
+      "            if not response.is_success:",
+      "                raise ApiError(response.status_code, _content(response))",
+      "            page = _content(response)",
+      "            yield page",
+      "            if size is None:",
+      "                size = len(_page_items(page, meta))",
+      "            step = _next_page(call, meta, page, query, size)",
+      "            if step is None:",
+      "                return",
+      '            if step[0] == "query":',
+      "                query = step[1]",
+      "            else:",
+      "                url = _same_origin(call, response.url, step[1])",
+    );
+  }
 
   for (const item of rendered) {
     lines.push("", ...operationMethods(item, { def, wait, iterator, loop }));

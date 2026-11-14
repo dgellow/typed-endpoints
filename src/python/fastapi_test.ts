@@ -12,7 +12,12 @@
 
 import { assertEquals } from "@std/assert";
 
-import { PARTIAL_APIS } from "../../e2e_tests/python/partial_modules.ts";
+import {
+  PARTIAL_APIS,
+  undefinedNames,
+  unused,
+  unusedImports,
+} from "../../e2e_tests/python/partial_modules.ts";
 import type { Contract, ContractOperation } from "../contract/index.ts";
 import { renderFastApi } from "./fastapi.ts";
 
@@ -22,55 +27,6 @@ const [CREATE] = PARTIAL_APIS.body_only.operations;
 
 function contract(...operations: ContractOperation[]): Contract {
   return { version: 1, operations };
-}
-
-/**
- * The private names a module defines at its top level and does not use
- * anywhere else in it.
- */
-function unused(source: string): string[] {
-  const defined = [
-    ...source.matchAll(
-      /^(?:(?:async )?def |class |type )?(_[A-Za-z0-9_]+)(?=[ (:[=])/gm,
-    ),
-  ].map((match) => match[1]);
-  return [...new Set(defined)].filter((name) =>
-    source.match(new RegExp(`(?<![\\w.])${name}\\b`, "g"))!.length < 2
-  );
-}
-
-/** The private names a module uses and does not define at its top level. */
-function undefinedNames(source: string): string[] {
-  const defined = new Set(
-    [
-      ...source.matchAll(
-        /^(?:(?:async )?def |class |type )?(_[A-Za-z0-9_]+)(?=[ (:[=])/gm,
-      ),
-    ].map((match) => match[1]),
-  );
-  // Without strings and comments, where a name is a word.
-  const code = source.replace(/"""[\s\S]*?"""/g, "")
-    .replace(/"(?:[^"\\\n]|\\.)*"/g, "")
-    .replace(/#.*$/gm, "");
-  const used = [...code.matchAll(/(?<![\w.])_[A-Za-z][A-Za-z0-9_]*/g)]
-    .map((match) => match[0]);
-  return [...new Set(used)].filter((name) => !defined.has(name));
-}
-
-/** The names a module imports and does not use. */
-function unusedImports(source: string): string[] {
-  const body = source.replace(/^(?:from \S+ )?import [^(\n]+$/gm, "")
-    .replace(/^from \S+ import \([^)]*\)$/gm, "");
-  const imported = [
-    ...source.matchAll(/^from \S+ import \(?([^)]*?)\)?$/gm),
-  ].flatMap((match) => match[1].split(",").map((name) => name.trim()))
-    .concat(
-      [...source.matchAll(/^import (\S+)$/gm)].map((match) => match[1]),
-    )
-    .filter((name) => name !== "");
-  return imported.filter((name) =>
-    !new RegExp(`(?<![\\w."])${name.replaceAll(".", "\\.")}\\b(?!")`).test(body)
-  );
 }
 
 for (const [name, api] of Object.entries(PARTIAL_APIS)) {

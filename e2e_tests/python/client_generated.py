@@ -465,10 +465,6 @@ _TREES_CREATE_RESPONSE: TypeAdapter[TreesCreateResponse] = TypeAdapter(
 )
 
 
-# Where the next page is: a query to ask with, a URL to ask, or nowhere.
-type _Step = tuple[Literal["query"], dict[str, Any]] | tuple[Literal["url"], str] | None
-
-
 def _segment(value: str) -> str:
     """Encode a path parameter.
 
@@ -545,6 +541,10 @@ def _result[T](
         # The status, from something that is not this API: a proxy, a
         # framework's own answer.
         raise ApiError(response.status_code, content) from None
+
+
+# Where the next page is: a query to ask with, a URL to ask, or nowhere.
+type _Step = tuple[Literal["query"], dict[str, Any]] | tuple[Literal["url"], str] | None
 
 
 def _at(value: object, path: str | None) -> object:
@@ -679,9 +679,9 @@ def _same_origin(call: str, page: httpx.URL, url: str) -> httpx.URL:
 class Client:
     """The operations as methods.
 
-    A plain call returns the parsed response and raises `ApiError` for a
-    status outside 200-299. `_result` returns a declared error as a `Fail`.
-    `_pages` and `_items` follow a paginated list to its end.
+    A plain call returns the parsed response and raises `ApiError` for a status outside
+    200-299. `_result` returns a declared error as a `Fail`. `_pages` and `_items`
+    follow a paginated list to its end.
     """
 
     def __init__(
@@ -873,9 +873,9 @@ class Client:
 class AsyncClient:
     """The operations as coroutines.
 
-    A plain call returns the parsed response and raises `ApiError` for a
-    status outside 200-299. `_result` returns a declared error as a `Fail`.
-    `_pages` and `_items` follow a paginated list to its end.
+    A plain call returns the parsed response and raises `ApiError` for a status outside
+    200-299. `_result` returns a declared error as a `Fail`. `_pages` and `_items`
+    follow a paginated list to its end.
     """
 
     def __init__(
