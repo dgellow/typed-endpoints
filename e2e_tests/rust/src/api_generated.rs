@@ -406,6 +406,14 @@ pub type ShapesCreateResponseUnit = ShapesCreateBodyUnit;
 
 /// A member that may be left out, be null, or have a value: three
 /// different things on the wire.
+///
+/// A field of this type needs two serde attributes, which the generated
+/// structs have. The first makes a member that is left out absent; the
+/// second keeps an absent member from being written. Without them an
+/// absent member reads and writes as null.
+///
+///     #[serde(default, skip_serializing_if = "MaybeAbsent::is_absent")]
+///     pub note: MaybeAbsent<String>,
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum MaybeAbsent<T> {
     /// The member is not there.
@@ -419,16 +427,60 @@ pub enum MaybeAbsent<T> {
 
 impl<T> MaybeAbsent<T> {
     /// Whether the member is not there.
-    pub fn is_absent(&self) -> bool {
+    #[must_use]
+    pub const fn is_absent(&self) -> bool {
         matches!(self, Self::Absent)
     }
 
+    /// Whether the member is there and is null.
+    #[must_use]
+    pub const fn is_null(&self) -> bool {
+        matches!(self, Self::Null)
+    }
+
     /// The value, if the member has one.
-    pub fn value(&self) -> Option<&T> {
+    #[must_use]
+    pub const fn value(&self) -> Option<&T> {
         match self {
             Self::Value(value) => Some(value),
             Self::Absent | Self::Null => None,
         }
+    }
+
+    /// The same state, with a reference to the value.
+    #[must_use]
+    pub const fn as_ref(&self) -> MaybeAbsent<&T> {
+        match self {
+            Self::Absent => MaybeAbsent::Absent,
+            Self::Null => MaybeAbsent::Null,
+            Self::Value(value) => MaybeAbsent::Value(value),
+        }
+    }
+
+    /// The same state, with the value changed.
+    pub fn map<U>(self, change: impl FnOnce(T) -> U) -> MaybeAbsent<U> {
+        match self {
+            Self::Absent => MaybeAbsent::Absent,
+            Self::Null => MaybeAbsent::Null,
+            Self::Value(value) => MaybeAbsent::Value(change(value)),
+        }
+    }
+
+    /// None for a member that is not there; else its value, or None for
+    /// null.
+    #[must_use]
+    pub fn into_option(self) -> Option<Option<T>> {
+        match self {
+            Self::Absent => None,
+            Self::Null => Some(None),
+            Self::Value(value) => Some(Some(value)),
+        }
+    }
+}
+
+impl<T> From<T> for MaybeAbsent<T> {
+    fn from(value: T) -> Self {
+        Self::Value(value)
     }
 }
 
@@ -436,6 +488,13 @@ impl<T> From<Option<T>> for MaybeAbsent<T> {
     /// A member that is there: its value, or null.
     fn from(value: Option<T>) -> Self {
         value.map_or(Self::Null, Self::Value)
+    }
+}
+
+impl<T> From<Option<Option<T>>> for MaybeAbsent<T> {
+    /// None is a member that is not there.
+    fn from(value: Option<Option<T>>) -> Self {
+        value.map_or(Self::Absent, Self::from)
     }
 }
 
@@ -1849,6 +1908,25 @@ mod runtime {
         safe.then_some(number as i64)
     }
 
+    /// Reads a value's numbers as JavaScript does, which has one kind of
+    /// number: 2.0 is the integer 2. Done once, before a value is checked,
+    /// so that checking only reads and the typed value is built from what
+    /// was checked. It holds everywhere in the value, also where the
+    /// contract says nothing about a member: the TypeScript handlers see
+    /// 2 there too.
+    fn as_javascript(value: &mut Value) {
+        match value {
+            Value::Number(number) if number.is_f64() => {
+                if let Some(integer) = number.as_f64().and_then(whole) {
+                    *number = Number::from(integer);
+                }
+            }
+            Value::Array(items) => items.iter_mut().for_each(as_javascript),
+            Value::Object(members) => members.values_mut().for_each(as_javascript),
+            _ => {}
+        }
+    }
+
     /// A number as JavaScript writes it: an integer has no fraction.
     fn js_number(number: f64) -> String {
         whole(number).map_or_else(|| number.to_string(), |integer| integer.to_string())
@@ -1959,21 +2037,20 @@ mod runtime {
                 text: self.text,
                 ..Checker::default()
             };
-            probe.check(schema, Some(&mut value.clone()));
+            probe.check(schema, Some(value));
             probe.issues.is_empty()
         }
 
         /// Checks the value at a member or an index.
-        fn check_at(&mut self, key: Value, schema: &'static Schema, value: Option<&mut Value>) {
+        fn check_at(&mut self, key: Value, schema: &'static Schema, value: Option<&Value>) {
             self.path.push(key);
             self.check(schema, value);
             self.path.pop();
         }
 
-        /// Checks a value and records what is wrong. An integer written
-        /// with a fraction of zero (1.0) is rewritten as an integer, which
-        /// is what it is in JavaScript.
-        fn check(&mut self, schema: &'static Schema, value: Option<&mut Value>) {
+        /// Checks a value and records what is wrong. The value is only
+        /// read, so that trying an alternative costs no copy.
+        fn check(&mut self, schema: &'static Schema, value: Option<&Value>) {
             let schema = schema.resolved();
 
             // A value that is listed: a missing one is not.
@@ -2025,7 +2102,7 @@ mod runtime {
             };
             if let Some(parts) = schema.all_of {
                 for part in parts {
-                    self.check(part, Some(&mut *value));
+                    self.check(part, Some(value));
                 }
                 return;
             }
@@ -2036,12 +2113,7 @@ mod runtime {
             match value {
                 Value::String(text) => self.check_string(schema, text),
                 Value::Number(number) => {
-                    let amount = number.as_f64().unwrap_or(f64::NAN);
-                    self.check_number(schema, amount);
-                    let written_as_float = schema.allows(Type::Integer) && number.is_f64();
-                    if let Some(integer) = whole(amount).filter(|_| written_as_float) {
-                        *number = Number::from(integer);
-                    }
+                    self.check_number(schema, number.as_f64().unwrap_or(f64::NAN));
                 }
                 Value::Array(items) => self.check_array(schema, items),
                 Value::Object(members) => self.check_object(schema, members),
@@ -2094,7 +2166,7 @@ mod runtime {
             &mut self,
             schema: &'static Schema,
             alternatives: &'static [Schema],
-            value: Option<&mut Value>,
+            value: Option<&Value>,
         ) {
             // T or null: what is wrong with a value that is not null is
             // what is wrong with it as a T.
@@ -2153,13 +2225,14 @@ mod runtime {
                 return;
             }
 
-            match alternatives
+            // Each alternative is tried once. One that fits has nothing to
+            // report, so it is not checked a second time: in a union that
+            // refers to itself that would double the work at every level.
+            if !alternatives
                 .iter()
-                .find(|alternative| self.fits(alternative, value))
+                .any(|alternative| self.fits(alternative, value))
             {
-                // Checked again for its effect on the value.
-                Some(alternative) => self.check(alternative, Some(value)),
-                None => self.issue("invalid_union", "Invalid input"),
+                self.issue("invalid_union", "Invalid input");
             }
         }
 
@@ -2250,7 +2323,7 @@ mod runtime {
             }
         }
 
-        fn check_array(&mut self, schema: &Schema, items: &mut [Value]) {
+        fn check_array(&mut self, schema: &Schema, items: &[Value]) {
             let count = u64::try_from(items.len()).unwrap_or(u64::MAX);
             if let Some(minimum) = schema.min_items.filter(|minimum| count < *minimum) {
                 self.issue(
@@ -2265,7 +2338,7 @@ mod runtime {
                 );
             }
             // A tuple gives a schema per position; a list one for every item.
-            for (index, item) in items.iter_mut().enumerate() {
+            for (index, item) in items.iter().enumerate() {
                 let positioned = schema.prefix_items.and_then(|schemas| schemas.get(index));
                 if let Some(schema) = positioned.or(schema.items) {
                     self.check_at(Value::from(index), schema, Some(item));
@@ -2273,9 +2346,9 @@ mod runtime {
             }
         }
 
-        fn check_object(&mut self, schema: &Schema, members: &mut Map<String, Value>) {
+        fn check_object(&mut self, schema: &Schema, members: &Map<String, Value>) {
             for (name, property) in schema.properties.into_iter().flatten() {
-                match members.get_mut(*name) {
+                match members.get(*name) {
                     Some(member) => self.check_at(Value::from(*name), property, Some(member)),
                     None if schema.required.contains(name) => {
                         self.check_at(Value::from(*name), property, None);
@@ -2304,7 +2377,7 @@ mod runtime {
                     }
                 }
                 Additional::Each(each) => {
-                    for (name, member) in members.iter_mut() {
+                    for (name, member) in members {
                         if schema.property(name).is_none() {
                             self.check_at(Value::from(name.as_str()), each, Some(member));
                         }
@@ -2439,7 +2512,10 @@ mod runtime {
             text: part.is_text(),
             ..Checker::default()
         };
-        checker.check(schema, value.as_mut());
+        if let Some(value) = value.as_mut() {
+            as_javascript(value);
+        }
+        checker.check(schema, value.as_ref());
         if !checker.issues.is_empty() {
             return Err(Box::new(invalid(part, &checker.issues)));
         }
@@ -2584,7 +2660,7 @@ mod runtime {
             value: &T,
         ) -> Response {
             let operation = self.name;
-            let mut json = match serde_json::to_value(value) {
+            let json = match serde_json::to_value(value) {
                 Ok(json) => json,
                 Err(error) => {
                     tracing::error!(operation, %error, "the returned value cannot be written as JSON");
@@ -2592,7 +2668,7 @@ mod runtime {
                 }
             };
             let mut checker = Checker::default();
-            checker.check(schema.unwrap_or(&Schema::ANY), Some(&mut json));
+            checker.check(schema.unwrap_or(&Schema::ANY), Some(&json));
             if !checker.issues.is_empty() {
                 let issues = serde_json::to_string(&checker.issues).unwrap_or_default();
                 tracing::error!(operation, %status, issues, "the returned value does not match its schema");
