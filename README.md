@@ -212,6 +212,102 @@ Pagination metadata is included in:
 - Generated TypeScript types (`pagination: { style: "cursor"; ... }`)
 - OpenAPI spec (`x-pagination` extension)
 
+### Responses That Depend on the Request
+
+`GET /users?fields=id,name` returns objects with two properties.
+`GET /users/1?expand=team` returns a user with its team. The type of such a
+response is a function of the request, which a fixed response type cannot say:
+it is either too wide (every property optional) or wrong.
+
+`projection()` and `expansion()` declare the dependency in the route:
+
+```typescript
+import { createApiHandlers, endpoint } from "@dgellow/typed-endpoints/fresh";
+import {
+  expansion,
+  fieldsOf,
+  projection,
+  relationsOf,
+  select,
+} from "@dgellow/typed-endpoints";
+
+const User = z.object({ id: z.string(), name: z.string(), email: z.string() });
+const Team = z.object({ id: z.string(), title: z.string() });
+
+// routes/api/users.ts
+export const handler = createApiHandlers({
+  GET: endpoint({
+    query: z.object({ fields: fieldsOf(User) }), // optional list of property names
+    response: z.object({ data: z.array(projection(User, "fields")) }),
+    handler: async (_ctx, { query }) =>
+      Response.json({
+        data: (await getUsers()).map((user) => select(user, query.fields)),
+      }),
+  }),
+});
+
+// routes/api/users/[id].ts
+const relations = { team: Team, manager: User };
+export const handler = createApiHandlers({
+  GET: endpoint({
+    params: z.object({ id: z.string() }),
+    query: z.object({ expand: relationsOf(relations) }),
+    response: expansion(User, "expand", relations),
+    handler: (_ctx, { params, query }) => { ... },
+  }),
+});
+```
+
+The client types generated with `--format client` compute the response type of
+each call from its arguments:
+
+```typescript
+const page = await client.users.list({ query: { fields: ["id", "name"] } });
+page.data[0].name; // string
+page.data[0].email; // compile error: not requested
+
+const all = await client.users.list();
+all.data[0].email; // string
+
+const user = await client.users.retrieve("1", { query: { expand: ["team"] } });
+user.team.title; // string, not optional
+user.manager; // compile error: not expanded
+
+client.users.list({ query: { fields: ["password"] } }); // compile error
+```
+
+What the type says is what the list is known to contain:
+
+| Argument                                   | Response type                                   |
+| ------------------------------------------ | ----------------------------------------------- |
+| `fields: ["id", "name"]`                   | `{ id: string; name: string }`                  |
+| parameter absent, or `fields: []`          | the complete object                             |
+| `fields: someArray` (`("id" \| "name")[]`) | `{ id?: string; name?: string }`                |
+| `fields: ["id", nameOrEmail]`              | `{ id: string; name?: string; email?: string }` |
+
+A list written in the call is a tuple, so its members are certain. A list
+computed elsewhere is an array that may hold any subset, so the properties it
+may name are optional.
+
+How it works:
+
+- The builders return ordinary Zod schemas: `projection(User, "fields")` is
+  `User.partial()`, `expansion(User, "expand", relations)` is `User` with the
+  relations optional. Request validation, OpenAPI output and `--format types`
+  use them as they are.
+- The schema also carries the rule. The generator writes it into the client
+  types as `Dependent<Projection<User, "fields">, Partial<User>>`.
+- A client method of such an endpoint is generic in its options
+  (`<const O>(options: O) => Promise<Resolve<Response, O>>`). `Resolve` applies
+  the rule to the type of the options.
+- TypeScript has no type-level functions. `Projection` and `Expansion` are
+  interfaces whose `response` member refers to `this["request"]`; intersecting
+  the interface with `{ request: O }` applies it.
+
+The response is not checked against the rule at runtime, on either side: the
+handler is trusted to return what was asked for (`select()` does it for
+projections).
+
 ### Server-Sent Events (SSE)
 
 Define typed SSE endpoints with `sseEndpoint`:
@@ -432,6 +528,8 @@ Options:
   -o, --output <file>   Output file path (required)
   -f, --format <type>   Output format: types, client, routes, or protocol (default: types)
   -p, --protocol <file> Protocol module path (required when --format protocol)
+  --client-import <mod> Module the client format imports its helper types from
+                        (default: @dgellow/typed-endpoints/client)
   -c, --config <file>   Path to deno.json (auto-detected if not provided)
   -h, --help            Show help
 
@@ -451,6 +549,8 @@ src/
 │   ├── validation.ts  # Request validation
 │   ├── routes.ts      # Route discovery, path conversion, operationId derivation
 │   ├── zod_internals.ts # Readers for Zod schema internals
+│   ├── dependent.ts   # projection(), expansion(): responses typed by the request
+│   ├── dependent_types.ts # Type-level functions: ResponseFamily, Apply, Resolve
 │   └── openapi.ts     # OpenAPI spec generation (x-pagination)
 ├── pagination/
 │   ├── types.ts       # Pagination type definitions
