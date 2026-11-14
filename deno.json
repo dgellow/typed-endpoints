@@ -8,6 +8,11 @@
       ]
     }
   },
+  "fmt": {
+    "exclude": [
+      "**/*.generated.ts"
+    ]
+  },
   "exclude": [
     "CHANGELOG.md",
     "TypeScript",

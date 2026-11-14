@@ -12,6 +12,35 @@ export type {
   ValidatedRequest,
 } from "./core/types.ts";
 
+// Responses whose type depends on the request
+export {
+  expansion,
+  type ExpansionSchema,
+  fieldsOf,
+  type NamesSchema,
+  type OutputOf,
+  projection,
+  type ProjectionSchema,
+  relationsOf,
+  select,
+} from "./core/dependent.ts";
+export type {
+  Apply,
+  CertainNames,
+  Dependent,
+  DependentDescriptor,
+  Expansion,
+  Flatten,
+  IsUnion,
+  PossibleNames,
+  Projection,
+  QueryList,
+  ReadonlyDeep,
+  Resolve,
+  ResolveIn,
+  ResponseFamily,
+} from "./core/dependent_types.ts";
+
 // Validation
 export {
   parseSearchParams,
